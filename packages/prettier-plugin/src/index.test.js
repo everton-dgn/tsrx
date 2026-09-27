@@ -100,20 +100,32 @@ describe('prettier-plugin', () => {
 	});
 
 	it('formats dynamic element tag expressions', async () => {
-		const input = `function App(){return <><{registry.item}/><{items[0]}/><{'section'}/><{\`article\`}/></>;}`;
+		const input = `function App(){return <><{registry.item}/><{items[0]}/><{'section'}/><{registry[props.kind]}/></>;}`;
 		const expected = `function App() {
   return (
     <>
       <{registry.item} />
       <{items[0]} />
       <{"section"} />
-      <{\`article\`} />
+      <{registry[props.kind]} />
     </>
   );
 }`;
 
 		const result = await format(input);
 		expect(result).toBeWithNewline(expected);
+	});
+
+	// Dynamic tag expressions must be an identifier, a member access, or a
+	// string literal (#737). Formatting propagates the strict parser's error.
+	it.each([
+		'export function App({ c }) @{ <main><{c?A:B} title="t"><p>{c}</p></{c?A:B}></main> }',
+		'export function App() @{ <{getTag()}/> }',
+		'export function App() @{ <{c ? <b>&#123;x&#125; &amp;lt; &gt;</b> : "i"} /> }',
+	])('rejects an invalid dynamic tag in %j', async (input) => {
+		await expect(format(input)).rejects.toMatchObject({
+			code: 'tsrx-dynamic-tag-expression',
+		});
 	});
 
 	it('formats a fragment code block with setup and template control flow', async () => {
@@ -23492,6 +23504,28 @@ I {}`,
 			],
 			['type as = 1;', 'type as = 1;\n'],
 			['type satisfies<T> = T;', 'type satisfies<T> = T;\n'],
+			// `intrinsic` is a keyword there (#716), which was printed as an unknown
+			// node.
+			[
+				'type Uppercase<S extends string> = intrinsic;',
+				'type Uppercase<S extends string> = intrinsic;\n',
+			],
+			// Import attributes in an import type (#717), `type` written with an
+			// escape (#718), and `declare` after decorators after `export default`
+			// (#720).
+			[
+				'let x: import("m", { with: { "resolution-mode": "import" } }).X;',
+				'let x: import("m", { with: { "resolution-mode": "import" } }).X;\n',
+			],
+			['import \\u0074ype { a } from "m";', 'import type { a } from "m";\n'],
+			['export { \\u0074ype a } from "m";', 'export { type a } from "m";\n'],
+			[
+				'export default @dec declare class A {}',
+				`export default
+@dec
+declare class A {}
+`,
+			],
 		])('formats %j like Prettier', async (input, expected) => {
 			const output = await format(input);
 			expect(output).toBe(expected);
@@ -23514,6 +23548,14 @@ I {}`,
 				'export global {}',
 				"'export' modifier cannot be applied to ambient modules and module augmentations since they are always visible.",
 			],
+			// #719: modifiers TypeScript reports from its checker.
+			['public class A {}', "'public' modifier cannot appear on a module or namespace element."],
+			['declare declare class A {}', "'declare' modifier already seen."],
+			['abstract export class A {}', "'export' modifier must precede 'abstract' modifier."],
+			[
+				'export declare async function f(): void;',
+				"'async' modifier cannot be used in an ambient context.",
+			],
 		])('refuses %j', async (input, message) => {
 			await expect(format(input)).rejects.toThrow(message);
 		});
@@ -23528,9 +23570,8 @@ I {}`,
 		// failed after a child container (#694). In an element in a spread
 		// argument or an unbraced attribute value in a container, character
 		// references were printed decoded: `&#123;x&#125;` became `{x}` (#693).
-		// Since #656 those are template text; only an element in a dynamic tag
-		// name is read that way. A text prints from its `raw`, the text as
-		// written.
+		// Since #656 those are template text. A text prints from its `raw`, the
+		// text as written.
 		it.each([
 			[
 				'a `>` in an element in a container',
@@ -23578,13 +23619,6 @@ I {}`,
 				'a `>` first in an unbraced attribute value in a container',
 				`export function App() @{
   <main>{c && <div title=<b>> b &#123;x&#125;</b> />}</main>
-}
-`,
-			],
-			[
-				'references in an element in a dynamic tag name',
-				`export function App() @{
-  <{c ? <b>&#123;x&#125; &amp;lt; &gt;</b> : "i"} />
 }
 `,
 			],

@@ -389,6 +389,24 @@ describe('elements', () => {
 		await expectFormat(`const d = <{Tag} a="1">x</{Tag}>;`, `const d = <{Tag} a="1">x</{Tag}>;\n`);
 	});
 
+	// A dynamic tag expression other than an identifier, a member access, or a
+	// string literal is reported (#737), but the tree is complete, so the file
+	// is formatted.
+	test('dynamic tags that are only reported', async () => {
+		await expectFormat(
+			`export function App({ c }) @{ <main><{c?A:B}   title="t"><p>{c}</p></{c?A:B}><{getTag()}/></main> }`,
+			`export function App({ c }) @{
+  <main>
+    <{c ? A : B} title="t">
+      <p>{c}</p>
+    </{c ? A : B}>
+    <{getTag()} />
+  </main>
+}
+`,
+		);
+	});
+
 	test('<style> bodies are formatted as CSS, with their comments', async () => {
 		await expectFormat(
 			`function App() @{ <div><style>/* theme */ .a { color: red } .b{margin:0}</style><p class="a" /></div> }`,
@@ -531,7 +549,7 @@ describe('text keeps its characters as written', () => {
 `,
 		],
 		[
-			'references in an element in a dynamic tag name',
+			'references in an element in a reported dynamic tag name',
 			`export function App() @{
   <{c ? <b>&#123;x&#125; &amp;lt; &gt;</b> : "i"} />
 }
@@ -663,6 +681,111 @@ const b = (
   </p>
 );
 `,
+		);
+	});
+
+	// A comment adds nothing to the text around it: the whitespace on its two
+	// sides is one run, which renders a space without a line break, and nothing
+	// with one beside an element or the start or end of the children (#639).
+	test('the whitespace around a comment renders the same after formatting (#639)', async () => {
+		await expectFormat(
+			`export function App() @{
+  <>
+    <div><b>t</b> /* c */ </div>
+    <div> /* c */ <i /></div>
+    <div>
+      /* c */ 2</div>
+    <div>{x} /* c */
+    </div>
+    <p><i /> {" "}// c
+    </p>
+  </>
+}`,
+			`export function App() @{
+  <>
+    <div>
+      <b>t</b> /* c */{" "}
+    </div>
+    <div>
+      {" "}
+      /* c */ <i />
+    </div>
+    <div>
+      /* c */ 2
+    </div>
+    <div>
+      {x} /* c */
+    </div>
+    <p>
+      <i />{" "}// c
+    </p>
+  </>
+}
+`,
+		);
+	});
+
+	// A `{" "}` beside a comment is part of the comment's run. It becomes a
+	// plain space where one renders, and stays `{" "}` next to a line break the
+	// comment keeps, which would drop a plain space.
+	test('a {" "} beside a comment keeps its space', async () => {
+		await expectFormat(
+			`export function App() @{
+  <>
+    <p>one{" "}/* c */two</p>
+    <p><b />{" "}/* c */<i /></p>
+    <p><b />/* c */{" "}<i /></p>
+    <p>one{" "}/* c */
+      <b /></p>
+    <p>one{" "}
+      // c
+      two</p>
+  </>
+}`,
+			`export function App() @{
+  <>
+    <p>one /* c */two</p>
+    <p>
+      <b /> /* c */<i />
+    </p>
+    <p>
+      <b />/* c */ <i />
+    </p>
+    <p>
+      one{" "}/* c */
+      <b />
+    </p>
+    <p>
+      one
+      // c
+      two
+    </p>
+  </>
+}
+`,
+		);
+	});
+
+	test('a {" "} with a comment inside is printed with its comment', async () => {
+		await expectFormat(
+			`const a = <p>one /* c */{/* d */ " "}two</p>;`,
+			`const a = <p>one /* c */{/* d */ " "}two</p>;\n`,
+		);
+	});
+
+	// Prettier treats a run of spaces as one (`<p>a  b</p>` prints `a b`), so a
+	// space on each side of a comment renders like the one in the source.
+	test('the space around a group of comments breaks in one place', async () => {
+		await expectFormat(
+			`const a = <p>one /* c */ /* d */ <b /></p>;`,
+			`const a = (
+  <p>
+    one /* c */ /* d */{" "}
+    <b />
+  </p>
+);
+`,
+			{ printWidth: 20 },
 		);
 	});
 
@@ -850,6 +973,31 @@ describe('prettier/standalone', () => {
 	});
 });
 
+// Where core's tree differs from typescript-estree's, the adapter reshapes it.
+describe('the typescript-estree shape', () => {
+	test("a comment in a class method's type parameters stays in them (#630)", async () => {
+		await expectFormat(
+			`class A {
+  m</* c */ T>(a: T) {}
+  n<
+    // c
+    T,
+  >(a: T) {}
+  static async *o /* a */ <T>(a: T) {}
+}`,
+			`class A {
+  m</* c */ T>(a: T) {}
+  n<
+    // c
+    T,
+  >(a: T) {}
+  static async *o/* a */ <T>(a: T) {}
+}
+`,
+		);
+	});
+});
+
 describe('parse errors', () => {
 	test('unclosed or mismatched tags are errors, not guessed markup', async () => {
 		await expect(format('const x = 1;\nconst y = <div>\n')).rejects.toThrow(/Unclosed tag '<div>'/);
@@ -1034,6 +1182,41 @@ describe('parse errors', () => {
 				'abstract function f() {}',
 				"'abstract' modifier can only appear on a class, method, or property declaration. (1:1)",
 			],
+			// #719: modifiers the tree has no place for, which TypeScript reports from
+			// its checker, and which the output would leave out.
+			[
+				'public class A {}',
+				"'public' modifier cannot appear on a module or namespace element. (1:1)",
+			],
+			[
+				'export static let x = 1;',
+				"'static' modifier cannot appear on a module or namespace element. (1:8)",
+			],
+			[
+				'readonly function f() {}',
+				"'readonly' modifier can only appear on a property declaration or index signature. (1:1)",
+			],
+			[
+				'accessor class A {}',
+				"'accessor' modifier can only appear on a property declaration. (1:1)",
+			],
+			['async class A {}', "'async' modifier cannot be used here. (1:1)"],
+			['declare declare class A {}', "'declare' modifier already seen. (1:9)"],
+			[
+				`function f() {
+  public class A {}
+}`,
+				'Modifiers cannot appear here. (2:3)',
+			],
+			[
+				'declare import x from "m";',
+				"A 'declare' modifier cannot be used with an import declaration. (1:1)",
+			],
+			['declare using x = y;', "'declare' modifier cannot appear on a 'using' declaration. (1:1)"],
+			[
+				'abstract export public class A {}',
+				"'public' modifier cannot appear on a module or namespace element. (1:17)",
+			],
 		]) {
 			const error = await format(source).catch((/** @type {any} */ e) => e);
 			expect(error, source).toBeInstanceOf(SyntaxError);
@@ -1122,9 +1305,37 @@ I {}`,
 		['type satisfies<T> = T;', 'type satisfies<T> = T;\n'],
 		['export global {}', 'export global {}\n'],
 		['export declare global {}', 'export declare global {}\n'],
+		// #716, #717, #718 and #720.
+		[
+			'type Uppercase<S extends string> = intrinsic;',
+			'type Uppercase<S extends string> = intrinsic;\n',
+		],
+		[
+			'let x: import("m", { with: { "resolution-mode": "import" } }).X;',
+			'let x: import("m", { with: { "resolution-mode": "import" } }).X;\n',
+		],
+		['import \\u0074ype { a } from "m";', 'import type { a } from "m";\n'],
+		['import { \\u0074ype a } from "m";', 'import { type a } from "m";\n'],
+		[
+			'export default @dec declare abstract class A {}',
+			`export default
+@dec
+declare abstract class A {}
+`,
+		],
 	])('formats %j like Prettier', async (input, expected) => {
 		await expectFormat(input, expected);
 		expect(expected).toBe(await prettier.format(input, { parser: 'typescript' }));
+	});
+
+	// #719: modifiers out of order that the tree keeps print in order. Prettier's
+	// `typescript` parser leaves out the `export` of the first two.
+	test.each([
+		['abstract export class A {}', 'export abstract class A {}\n'],
+		['async export function f() {}', 'export async function f() {}\n'],
+		['declare export const x: number;', 'export declare const x: number;\n'],
+	])('keeps the modifiers of %j', async (input, expected) => {
+		await expectFormat(input, expected);
 	});
 });
 
