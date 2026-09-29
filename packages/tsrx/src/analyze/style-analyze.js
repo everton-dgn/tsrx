@@ -1,11 +1,13 @@
 /**
  * Module-level analysis of `<style>` blocks: which blocks are standalone
  * (scoped to the template scope they sit in) and which are assigned
- * (`const theme = <style>…</style>`), what every `apply` attribute resolves to,
- * and whether an assigned block is a theme (exported or applied, D5) or a
- * class map. Results are stamped on the style nodes' `metadata` so the target
- * transforms — which clone nodes but share metadata — read one shape, and are
- * summarized on `program.metadata.styles` for consumer compilers.
+ * (`const theme = <style>…</style>`), and what every `apply` attribute resolves
+ * to. Every assigned block is a theme: its `$class` is an ordinary value that
+ * reaches elements through any JavaScript path, and `apply` stamps it on scopes
+ * in other modules, so no selector of an assigned block is ever pruned.
+ * Results are stamped on the style nodes' `metadata` so the target transforms —
+ * which clone nodes but share metadata — read one shape, and are summarized on
+ * `program.metadata.styles` for consumer compilers.
  *
  * Declared-before-use (D13 layer 1) is enforced here by source position and
  * lexical visibility: same-module CSS is emitted in lexical order, so a theme
@@ -14,25 +16,15 @@
  * @import * as AST from 'estree'
  * @import * as ESTreeJSX from 'estree-jsx'
  * @import { Binding, ScopeInterface, StyleApplyResolution, StyleAnalysis, TSRXAnalysisState, Visitors } from '../../types/index'
+ * @import { Diagnostic } from '../diagnostics.js'
  */
 
 import { walk } from 'zimmerframe';
-import { DIAGNOSTIC_CODES } from '../diagnostics.js';
+import { TSRX_ERRORS } from '../diagnostics.js';
+import { css_node_source_position } from '../parse/style.js';
 import { get_style_class_map_names, get_style_element_stylesheet } from '../transform/style-ref.js';
 import { is_function_node, is_template_directive } from '../utils/ast.js';
-import {
-	TSRX_STYLE_APPLY_DUPLICATE_ERROR,
-	TSRX_STYLE_APPLY_UNSUPPORTED_HOST_ERROR,
-	TSRX_STYLE_APPLY_VALUE_ERROR,
-	TSRX_STYLE_RESERVED_CLASS_KEY_ERROR,
-	TSRX_STYLE_STANDALONE_AT_MODULE_SCOPE_ERROR,
-	TSRX_STYLE_STANDALONE_NEEDS_FRAGMENT_ERROR,
-	TSRX_STYLE_STANDALONE_OUTSIDE_TEMPLATE_ERROR,
-	tsrx_style_apply_before_declaration_error,
-	tsrx_style_apply_target_error,
-	tsrx_style_unknown_attribute_error,
-	validate_style,
-} from './validation.js';
+import { validate_style } from './validation.js';
 
 /**
  * `container_depth` counts the enclosing TSRX containers — `@{ … }` bodies
@@ -56,30 +48,6 @@ function nearest_scope(path, scopes) {
 		if (scope) return scope;
 	}
 	return null;
-}
-
-/**
- * Names exported through `export { a, b as c }` and `export default a`.
- *
- * @param {AST.Program} ast
- * @returns {Set<string>}
- */
-function collect_exported_names(ast) {
-	/** @type {Set<string>} */
-	const names = new Set();
-	for (const statement of ast.body) {
-		if (statement.type === 'ExportNamedDeclaration' && !statement.declaration) {
-			for (const specifier of statement.specifiers) {
-				if (specifier.local.type === 'Identifier') names.add(specifier.local.name);
-			}
-		} else if (
-			statement.type === 'ExportDefaultDeclaration' &&
-			statement.declaration.type === 'Identifier'
-		) {
-			names.add(statement.declaration.name);
-		}
-	}
-	return names;
 }
 
 /**
@@ -187,24 +155,6 @@ function resolve_local_member(binding, expression) {
 }
 
 /**
- * Whether any reference to the binding reads its `$class` property.
- *
- * @param {Binding | null} binding
- * @returns {boolean}
- */
-function is_class_read(binding) {
-	if (!binding) return false;
-	return binding.references.some(({ node, path }) => {
-		const parent = path.at(-1);
-		if (parent?.type !== 'MemberExpression' || parent.object !== node) return false;
-		if (parent.computed) {
-			return parent.property.type === 'Literal' && parent.property.value === '$class';
-		}
-		return parent.property.type === 'Identifier' && parent.property.name === '$class';
-	});
-}
-
-/**
  * Run the module-level style analysis. `scopes` comes from `create_scopes`
  * over the same program so target resolution uses real bindings.
  *
@@ -214,7 +164,6 @@ function is_class_read(binding) {
  * @returns {StyleAnalysis}
  */
 export function analyze_styles(ast, scopes, state) {
-	const exported_names = collect_exported_names(ast);
 	const errors = state.collect ? state.errors : undefined;
 	/** @type {AST.JSXStyleElement[]} */
 	const assigned = [];
@@ -222,12 +171,11 @@ export function analyze_styles(ast, scopes, state) {
 	const standalone = [];
 
 	/**
-	 * @param {string} message
-	 * @param {string} code
+	 * @param {Diagnostic} diagnostic
 	 * @param {AST.Node} node
 	 */
-	const report = (message, code, node) => {
-		validate_style(message, code, node, state.filename, errors, state.comments);
+	const report = (diagnostic, node) => {
+		validate_style(diagnostic, node, state.filename, errors, state.comments);
 	};
 
 	/**
@@ -239,11 +187,7 @@ export function analyze_styles(ast, scopes, state) {
 		if (expression.type === 'ArrayExpression') {
 			for (const element of expression.elements) {
 				if (!element || element.type === 'SpreadElement') {
-					report(
-						tsrx_style_apply_target_error('apply entry'),
-						DIAGNOSTIC_CODES.STYLE_APPLY_TARGET,
-						element ?? expression,
-					);
+					report(TSRX_ERRORS.STYLE_APPLY_TARGET('apply entry'), element ?? expression);
 					continue;
 				}
 				resolve_apply_entry(element, scope, resolutions);
@@ -255,7 +199,7 @@ export function analyze_styles(ast, scopes, state) {
 		const name = describe_target(expression);
 		const binding = root && scope ? scope.get(root.name) : null;
 		if (!root || !binding) {
-			report(tsrx_style_apply_target_error(name), DIAGNOSTIC_CODES.STYLE_APPLY_TARGET, expression);
+			report(TSRX_ERRORS.STYLE_APPLY_TARGET(name), expression);
 			return;
 		}
 
@@ -273,16 +217,12 @@ export function analyze_styles(ast, scopes, state) {
 		}
 
 		if (!target) {
-			report(tsrx_style_apply_target_error(name), DIAGNOSTIC_CODES.STYLE_APPLY_TARGET, expression);
+			report(TSRX_ERRORS.STYLE_APPLY_TARGET(name), expression);
 			return;
 		}
 
 		if (/** @type {number} */ (binding.node.start) > /** @type {number} */ (root.start)) {
-			report(
-				tsrx_style_apply_before_declaration_error(name),
-				DIAGNOSTIC_CODES.STYLE_APPLY_BEFORE_DECLARATION,
-				root,
-			);
+			report(TSRX_ERRORS.STYLE_APPLY_BEFORE_DECLARATION(name), root);
 			return;
 		}
 
@@ -336,11 +276,7 @@ export function analyze_styles(ast, scopes, state) {
 					if (attr.type !== 'JSXAttribute') continue;
 					if (is_named_attribute(attr, 'apply')) {
 						if (apply_attr) {
-							report(
-								TSRX_STYLE_APPLY_DUPLICATE_ERROR,
-								DIAGNOSTIC_CODES.STYLE_APPLY_DUPLICATE,
-								attr,
-							);
+							report(TSRX_ERRORS.STYLE_APPLY_DUPLICATE, attr);
 							continue;
 						}
 						apply_attr = attr;
@@ -351,11 +287,7 @@ export function analyze_styles(ast, scopes, state) {
 						attr.name.type === 'JSXIdentifier'
 							? attr.name.name
 							: `${attr.name.namespace.name}:${attr.name.name.name}`;
-					report(
-						tsrx_style_unknown_attribute_error(attr_name),
-						DIAGNOSTIC_CODES.STYLE_UNKNOWN_ATTRIBUTE,
-						attr,
-					);
+					report(TSRX_ERRORS.STYLE_UNKNOWN_ATTRIBUTE(attr_name), attr);
 				}
 
 				/** @type {StyleApplyResolution[]} */
@@ -363,18 +295,29 @@ export function analyze_styles(ast, scopes, state) {
 				if (apply_attr) {
 					const expression = attribute_expression(apply_attr);
 					if (!expression) {
-						report(TSRX_STYLE_APPLY_VALUE_ERROR, DIAGNOSTIC_CODES.STYLE_APPLY_VALUE, apply_attr);
+						report(TSRX_ERRORS.STYLE_APPLY_VALUE, apply_attr);
 					} else if (inside_head || is_resource) {
-						report(
-							TSRX_STYLE_APPLY_UNSUPPORTED_HOST_ERROR,
-							DIAGNOSTIC_CODES.STYLE_APPLY_UNSUPPORTED_HOST,
-							apply_attr,
-						);
+						report(TSRX_ERRORS.STYLE_APPLY_UNSUPPORTED_HOST, apply_attr);
 					} else {
 						resolve_apply_entry(expression, nearest_scope(path, scopes), resolutions);
 					}
 				}
 				node.metadata.styleApplies = resolutions;
+
+				const stylesheet = get_style_element_stylesheet(node);
+				if (stylesheet) {
+					// `@import` is only valid at the top level of a stylesheet. Scoping
+					// only rewrites the rules written in the block, so the rules it pulls
+					// in would apply to the whole page.
+					for (const rule of stylesheet.children) {
+						if (rule.type === 'Atrule' && rule.name.toLowerCase() === 'import') {
+							report(
+								TSRX_ERRORS.CSS_IMPORT,
+								/** @type {AST.Node} */ (css_node_source_position(stylesheet, rule)),
+							);
+						}
+					}
+				}
 
 				if (is_standalone) {
 					if (!inside_head && !is_resource) {
@@ -382,66 +325,30 @@ export function analyze_styles(ast, scopes, state) {
 						const in_children_list =
 							parent?.type === 'JSXElement' || parent?.type === 'JSXFragment';
 						if (walk_state.function_depth === 0 && walk_state.template_depth === 0) {
-							report(
-								TSRX_STYLE_STANDALONE_AT_MODULE_SCOPE_ERROR,
-								DIAGNOSTIC_CODES.STYLE_STANDALONE_AT_MODULE_SCOPE,
-								node,
-							);
+							report(TSRX_ERRORS.STYLE_STANDALONE_AT_MODULE_SCOPE, node);
 						} else if (!in_children_list) {
 							// A block is an output node: as the lone output of a `@{ … }` or
 							// control-flow body, or as a statement, it styles nothing. Beside
 							// another output it is already the parser's multiple-outputs error.
-							report(
-								TSRX_STYLE_STANDALONE_NEEDS_FRAGMENT_ERROR,
-								DIAGNOSTIC_CODES.STYLE_STANDALONE_NEEDS_FRAGMENT,
-								node,
-							);
+							report(TSRX_ERRORS.STYLE_STANDALONE_NEEDS_FRAGMENT, node);
 						} else if (walk_state.container_depth === 0 && !node.openingElement.selfClosing) {
 							// Raw CSS in `<style>` is TSRX template syntax: outside every
 							// `@{ … }` and control-flow body the file is plain TSX, where a
 							// `<style>` takes an expression child instead. A self-closing
 							// `<style apply={…} />` holds no CSS text and is ordinary JSX.
-							report(
-								TSRX_STYLE_STANDALONE_OUTSIDE_TEMPLATE_ERROR,
-								DIAGNOSTIC_CODES.STYLE_STANDALONE_OUTSIDE_TEMPLATE,
-								node,
-							);
+							report(TSRX_ERRORS.STYLE_STANDALONE_OUTSIDE_TEMPLATE, node);
 						}
 						standalone.push(node);
 					}
 				} else {
 					assigned.push(node);
-					const parent = path.at(-1);
-					const grandparent = path.at(-2);
-					/** @type {AST.VariableDeclarator | null} */
-					let declarator = null;
-					if (parent?.type === 'VariableDeclarator') {
-						declarator = parent;
-					} else if (parent?.type === 'Property' && grandparent?.type === 'ObjectExpression') {
-						const holder = path.at(-3);
-						if (holder?.type === 'VariableDeclarator') declarator = holder;
-					}
-					const declared_name = declarator?.id.type === 'Identifier' ? declarator.id.name : null;
-					const declaration_index = declarator ? path.indexOf(declarator) : -1;
-					const export_parent = declaration_index > 0 ? path[declaration_index - 2] : null;
-					node.metadata.styleExported =
-						parent?.type === 'ExportDefaultDeclaration' ||
-						export_parent?.type === 'ExportNamedDeclaration' ||
-						(declared_name !== null && exported_names.has(declared_name));
-					// Reading `theme.$class` opts an element (or a child component's
-					// element, through a prop) into the block's whole stylesheet, so
-					// such a block is a theme: every selector stays, like `apply`.
-					node.metadata.styleClassRead =
-						declared_name !== null &&
-						is_class_read(nearest_scope(path, scopes)?.get(declared_name) ?? null);
+					// No use of the block's value is tracked: `$class` is an ordinary
+					// string that destructuring, aliases, props, and return values carry
+					// anywhere, so whether an element receives it is not decidable here.
+					node.metadata.styleKind = 'theme';
 
-					const stylesheet = get_style_element_stylesheet(node);
 					if (stylesheet && get_style_class_map_names(stylesheet).includes('$class')) {
-						report(
-							TSRX_STYLE_RESERVED_CLASS_KEY_ERROR,
-							DIAGNOSTIC_CODES.STYLE_RESERVED_CLASS_KEY,
-							node,
-						);
+						report(TSRX_ERRORS.STYLE_RESERVED_CLASS_KEY, node);
 					}
 				}
 
@@ -449,13 +356,6 @@ export function analyze_styles(ast, scopes, state) {
 			},
 		}),
 	);
-
-	for (const node of assigned) {
-		node.metadata.styleKind =
-			node.metadata.styleExported || node.metadata.styleApplied || node.metadata.styleClassRead
-				? 'theme'
-				: 'class-map';
-	}
 
 	/** @type {StyleAnalysis} */
 	const styles = { assigned, standalone };

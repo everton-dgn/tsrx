@@ -6,14 +6,15 @@
  * @typedef {{ code: string, map: unknown }} TsrxPreactTransformResult
  * @typedef {{
  *   (code: string, id: `${string}.tsrx`): Promise<TsrxPreactTransformResult>,
+ *   (code: string, id: `${string}.tsrx?worker_file&type=${string}`): Promise<TsrxPreactTransformResult>,
  *   (code: string, id: string): Promise<TsrxPreactTransformResult | null>,
  * }} TsrxPreactTransform
  * @typedef {{
- *   (source: `${string}?tsrx-css&lang.css`): `\0${string}?tsrx-css&lang.css`,
+ *   (source: `${string}?tsrx-css&lang.css`): `${string}?tsrx-css&lang.css`,
  *   (source: string): string | null,
  * }} TsrxPreactResolveId
  * @typedef {{
- *   (id: `\0${string}?tsrx-css&lang.css`): string,
+ *   (id: `${string}?tsrx-css&lang.css`): string,
  *   (id: string): string | null,
  * }} TsrxPreactLoad
  * @typedef {() => {
@@ -38,8 +39,12 @@ import { compile } from '@tsrx/preact';
 import { mergePlatformDefinitions, validatePlatform } from '@tsrx/core';
 import { resolveBuildPlatform } from '@tsrx/core/config';
 import { createDepScanTransformPlugin } from '@tsrx/core/vite/dep-scan';
+import { createWorkerEntryMiddleware, stripWorkerEntryQuery } from '@tsrx/core/vite/worker';
 
 const TSRX_EXTENSION_PATTERN = /\.tsrx$/;
+// CSS ids stay the component path plus this query, with no `\0` prefix, so
+// Vite resolves relative `@import` and `url()` references in the extracted
+// CSS from the component's directory.
 const CSS_QUERY = '?tsrx-css&lang.css';
 
 /**
@@ -138,37 +143,45 @@ export function tsrxPreact(options = {}) {
 			};
 		},
 
+		configureServer(server) {
+			server.middlewares.use(
+				createWorkerEntryMiddleware((path) => TSRX_EXTENSION_PATTERN.test(path)),
+			);
+		},
+
 		resolveId(/** @type {string} */ source) {
 			if (!source.includes(CSS_QUERY)) return null;
-			if (source.startsWith('\0')) return source;
-			return '\0' + source;
+			return source;
 		},
 
 		load(/** @type {string} */ id) {
-			if (!id.startsWith('\0') || !id.includes(CSS_QUERY)) return null;
-			const key = id.slice(1).split('?')[0];
+			if (!id.includes(CSS_QUERY)) return null;
+			const key = id.split('?')[0];
 			const css = css_cache.get(key);
 			return css ?? '';
 		},
 
 		async transform(/** @type {string} */ code, /** @type {string} */ id) {
-			if (!TSRX_EXTENSION_PATTERN.test(id)) return null;
+			// A dev worker entry arrives as `<path>?worker_file&type=<type>`.
+			// Compile it under its file path, as a plain import would be.
+			const file = stripWorkerEntryQuery(id);
+			if (!TSRX_EXTENSION_PATTERN.test(file)) return null;
 
-			let { code: tsx_code, css, map } = compile(code, id, compile_options);
+			let { code: tsx_code, css, map } = compile(code, file, compile_options);
 
 			let source = tsx_code;
 			if (css) {
-				css_cache.set(id, css);
+				css_cache.set(file, css);
 				// After existing imports so dependency sheets (imported themes)
 				// evaluate first and this module's rules win at equal specificity.
-				source = `${tsx_code}\nimport ${JSON.stringify(id + CSS_QUERY)};\n`;
+				source = `${tsx_code}\nimport ${JSON.stringify(file + CSS_QUERY)};\n`;
 			} else {
-				css_cache.delete(id);
+				css_cache.delete(file);
 			}
 
 			const result = await transformWithOxc(
 				source,
-				id,
+				file,
 				{
 					lang: 'tsx',
 					sourcemap: true,
@@ -189,10 +202,12 @@ export function tsrxPreact(options = {}) {
 
 			update_css_cache(await ctx.read(), ctx.file);
 
-			const css_mod = ctx.server.moduleGraph.getModuleById('\0' + ctx.file + CSS_QUERY);
+			const css_mod = ctx.server.moduleGraph.getModuleById(ctx.file + CSS_QUERY);
 			if (!css_mod) return ctx.modules;
 
 			ctx.server.moduleGraph.invalidateModule(css_mod);
+			// Vite usually lists the CSS module already, under the component's file.
+			if (ctx.modules.includes(css_mod)) return ctx.modules;
 			return [...ctx.modules, css_mod];
 		},
 	});

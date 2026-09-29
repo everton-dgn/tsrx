@@ -36,6 +36,8 @@ import {
 } from '../source-map-utils.js';
 import { should_preserve_jsx_tooling_comment, format_comment } from '../comment-utils.js';
 import { has_location } from '../utils/ast.js';
+import { regex_whitespaces_strict } from '../utils/patterns.js';
+import { regex_jsx_text_escaped } from './jsx/helpers.js';
 
 const RETURN_KEYWORD = 'return';
 const EXPORT_KEYWORD = 'export';
@@ -57,17 +59,24 @@ function get_style_region_id(hash, fallback) {
 }
 
 /**
- * Extract CSS source regions from style elements in the AST
+ * Extract CSS source regions from style elements in the AST, and record the
+ * author's calls and parenthesized expressions, each keyed by its type and span
+ * and mapped to the same key for its callee or wrapped expression.
  * @param {AST.Node} ast - The parsed AST
  * @param {number[]} src_line_offsets
  * @param {{
  * 	regions: CssSourceRegion[],
  * 	css_element_info: CssElementInfo,
  * 	script_regions: ScriptSourceRegion[],
+ * 	authored_span_nodes: Map<string, string>,
  * }} param2
  * @returns {void}
  */
-function visit_source_ast(ast, src_line_offsets, { regions, css_element_info, script_regions }) {
+function visit_source_ast(
+	ast,
+	src_line_offsets,
+	{ regions, css_element_info, script_regions, authored_span_nodes },
+) {
 	let region_id = 0;
 	let script_region_id = 0;
 	walk(ast, null, {
@@ -134,14 +143,33 @@ function visit_source_ast(ast, src_line_offsets, { regions, css_element_info, sc
 				const css = element.metadata.css;
 				const { line, column } = node.value?.loc?.start ?? {};
 
-				if (line === undefined || column === undefined) {
-					return;
+				if (line !== undefined && column !== undefined) {
+					css_element_info.set(`${line}:${column}`, css);
 				}
-
-				css_element_info.set(`${line}:${column}`, css);
 			}
+
+			context.next();
+		},
+		CallExpression(node, context) {
+			if (has_location(node) && has_location(node.callee)) {
+				authored_span_nodes.set(span_key(node), span_key(node.callee));
+			}
+			context.next();
+		},
+		ParenthesizedExpression(node, context) {
+			if (has_location(node) && has_location(node.expression)) {
+				authored_span_nodes.set(span_key(node), span_key(node.expression));
+			}
+			context.next();
 		},
 	});
+}
+
+/**
+ * @param {AST.Node & AST.NodeWithLocation} node
+ */
+function span_key(node) {
+	return `${node.type}:${node.start}:${node.end}`;
 }
 
 /**
@@ -176,8 +204,8 @@ function extract_classes(node, src_to_gen_map, gen_line_offsets, src_line_offset
 				textOffset = 1;
 			}
 
-			// Split by whitespace
-			const classNames = text.split(/\s+/).filter((c) => c.length > 0);
+			// Split on ASCII whitespace only, as HTML does for class tokens
+			const classNames = text.split(regex_whitespaces_strict).filter((c) => c.length > 0);
 			const nodeSrcStart = /** @type {AST.Position} */ (node.loc?.start);
 
 			let currentPos = 0;
@@ -338,12 +366,42 @@ export function convert_source_map_to_mappings(
 	const css_element_info = new Map();
 	/** @type {ScriptSourceRegion[]} */
 	const script_regions = [];
+	/** @type {Map<string, string>} */
+	const authored_span_nodes = new Map();
 
 	visit_source_ast(ast_from_source, src_line_offsets, {
 		regions: css_regions,
 		css_element_info,
 		script_regions,
+		authored_span_nodes,
 	});
+
+	/**
+	 * TypeScript reports some errors on a whole call or parenthesized expression
+	 * (TS2349 on a callee, TS2488 on a spread argument, TS1345 on a `void`
+	 * condition), and Volar drops a diagnostic whose end no mapping covers.
+	 * Only the author's nodes get this mapping: the compiler also generates
+	 * calls and parentheses with source locations (Vue's `defineVaporComponent`
+	 * wrapper, the parentheses around a compiled `@if`), and errors in those
+	 * would otherwise be reported on the author's code. A node counts as the
+	 * author's when the source has one of the same type and span, and its
+	 * callee or wrapped expression matches too.
+	 * @param {AST.Node} node
+	 * @param {AST.Node} inner the callee or the wrapped expression
+	 */
+	function push_authored_span_mapping(node, inner) {
+		if (
+			!has_location(node) ||
+			!has_location(inner) ||
+			authored_span_nodes.get(span_key(node)) !== span_key(inner) ||
+			!has_source_map_boundaries(node, src_to_gen_map)
+		) {
+			return;
+		}
+		mappings.push(
+			get_mapping_from_node(node, src_to_gen_map, gen_line_offsets, mapping_data_verify_only),
+		);
+	}
 
 	/** @type {Map<string, number>} */
 	const generated_position_indexes = new Map();
@@ -416,12 +474,15 @@ export function convert_source_map_to_mappings(
 		}
 	}
 
-	/** @param {AST.ExportNamedDeclaration | AST.ExportDefaultDeclaration | AST.ExportAllDeclaration} node */
+	/** @param {AST.ExportNamedDeclaration | AST.ExportDefaultDeclaration | AST.ExportAllDeclaration | AST.TSImportEqualsDeclaration} node */
 	function add_export_mapping(node) {
 		if (!has_location(node)) return;
 		const mapping = declaration_mapping(node, EXPORT_KEYWORD);
 		if (mapping) {
-			const declaration = node.type === 'ExportAllDeclaration' ? null : node.declaration;
+			const declaration =
+				node.type === 'ExportNamedDeclaration' || node.type === 'ExportDefaultDeclaration'
+					? node.declaration
+					: null;
 			const end = mapping.generatedOffsets[0] + mapping.generatedLengths[0];
 			// A semicolon-free source declaration shares its end with its last
 			// expression. The first map entry then precedes the statement's emitted
@@ -461,7 +522,7 @@ export function convert_source_map_to_mappings(
 
 	/**
 	 * Needed for a mapping that includes the computed brackets for diagnostics
-	 * @param {AST.MethodDefinition | AST.Property} node
+	 * @param {AST.MethodDefinition | AST.PropertyDefinition | AST.Property} node
 	 * @param {CodeMapping[]} mappings
 	 * @returns {void}
 	 */
@@ -564,6 +625,46 @@ export function convert_source_map_to_mappings(
 				generatedLoc: generated_node.loc,
 				metadata: {},
 				sourceLength: source_node.end - source_node.start,
+			});
+		}
+	}
+
+	/**
+	 * TypeScript reports private-name diagnostics (e.g. TS2322 on an
+	 * incompatible initializer, TS2564 on a missing one) on the whole `#name`.
+	 * Extra sources (a dynamic tag's closing `</{this.#Tag}>`) share that range.
+	 *
+	 * Workaround: esrap (2.3.10 and main) writes the `#` without a location and
+	 * anchors the node's source start on the name after it, so the source `#`
+	 * maps one character late. Once esrap maps the `#` itself
+	 * (sveltejs/esrap#198), replace this with an ordinary `#name` token in the
+	 * Identifier branch: https://github.com/tsrx-org/tsrx/issues/208
+	 * @param {AST.PrivateIdentifier} node
+	 * @returns {void}
+	 */
+	function add_private_identifier_mappings(node) {
+		if (!has_location(node)) return;
+
+		const text = `#${node.name}`;
+		let generated_start = generated_offset_for_text(node.loc.start, text);
+		// esrap's anchor sits after the `#`; step back over it (#208).
+		if (generated_start === undefined) {
+			const name_start = generated_offset_for_text(node.loc.start, node.name);
+			if (name_start !== undefined && generated_code[name_start - 1] === '#') {
+				generated_start = name_start - 1;
+			}
+		}
+		if (generated_start === undefined) return;
+
+		const source_nodes = [node, ...(node.metadata?.extra_source_mappings ?? [])];
+		for (const source_node of source_nodes) {
+			if (!has_location(source_node)) continue;
+			mappings.push({
+				sourceOffsets: [source_node.start],
+				lengths: [source_node.end - source_node.start],
+				generatedOffsets: [generated_start],
+				generatedLengths: [text.length],
+				data: { ...mapping_data, customData: {} },
 			});
 		}
 	}
@@ -851,7 +952,7 @@ export function convert_source_map_to_mappings(
 					visit(node.argument);
 				}
 				return;
-			} else if (node.type === 'JSXExpressionContainer') {
+			} else if (node.type === 'JSXExpressionContainer' || node.type === 'JSXSpreadChild') {
 				if (has_location(node)) {
 					mappings.push(
 						get_mapping_from_node(node, src_to_gen_map, gen_line_offsets, mapping_data_verify_only),
@@ -873,12 +974,17 @@ export function convert_source_map_to_mappings(
 				// text itself — and get_mapping_from_node just takes the first, so its generated length
 				// spans the wrong region and the editor can't map a completion's edit back to source
 				// (it then drops the item). The token resolves to the position whose generated text
-				// matches the node's value, giving a well-formed same-length mapping. TSRX keeps text
-				// verbatim in to_ts, so `source` and `generated` are identical. Other text stays unmapped.
-				if (node.loc && typeof node.value === 'string' && node.value.trimStart().startsWith('@')) {
+				// matches the node's text as written, giving a well-formed same-length mapping. TSRX
+				// prints that text verbatim in to_ts, except for the characters JSX text can't hold,
+				// which it writes as character references (`escape_jsx_text`), so the token stops
+				// before the first of them. Other text stays unmapped.
+				const text = node.raw ?? node.value;
+				if (node.loc && typeof text === 'string' && text.trimStart().startsWith('@')) {
+					const escaped_at = text.search(regex_jsx_text_escaped);
+					const verbatim = escaped_at === -1 ? text : text.slice(0, escaped_at);
 					tokens.push({
-						source: node.value,
-						generated: node.value,
+						source: verbatim,
+						generated: verbatim,
 						loc: node.loc,
 						metadata: {},
 						mappingData: mapping_data_completion_only,
@@ -1003,21 +1109,24 @@ export function convert_source_map_to_mappings(
 					// node-start-anchored arithmetic when tokens were not collected.
 					const keyword_bound =
 						node_fn.id?.start ?? node_fn.params?.[0]?.start ?? node_fn.body?.start ?? node_fn.end;
-					const lexer_tokens = ast_from_source.tsrx_keyword_tokens ?? [];
+					const lexer_tokens = ast_from_source.tsrx_keyword_tokens;
 					/**
 					 * @param {'async' | 'function'} keyword
 					 * @param {number} from
 					 * @returns {AST.SourceLocation | null}
 					 */
 					const keyword_loc = (keyword, from) => {
-						const token = lexer_tokens.find(
-							(candidate) =>
-								candidate.value === keyword &&
-								candidate.start >= from &&
-								candidate.start < keyword_bound,
-						);
-						if (token) return token.loc;
-						if (lexer_tokens.length > 0) return null;
+						// An empty collected list means the file has no such keyword,
+						// not that tokens were skipped: a method value starts at `(`.
+						if (lexer_tokens) {
+							const token = lexer_tokens.find(
+								(candidate) =>
+									candidate.value === keyword &&
+									candidate.start >= from &&
+									candidate.start < keyword_bound,
+							);
+							return token?.loc ?? null;
+						}
 						// Arithmetic fallback (callers that do not collect tokens):
 						// assumes the historical `async` + one-space + `function`
 						// single-line layout.
@@ -1025,6 +1134,7 @@ export function convert_source_map_to_mappings(
 							keyword === 'function' && node_fn.async
 								? node_fn.start + 'async '.length
 								: node_fn.start;
+						if (!source.startsWith(keyword, offset)) return null;
 						const start_pos = offset_to_line_col(offset, src_line_offsets);
 						const end_pos = offset_to_line_col(offset + keyword.length, src_line_offsets);
 						return { start: start_pos, end: end_pos };
@@ -1340,6 +1450,10 @@ export function convert_source_map_to_mappings(
 				if (node.callee) {
 					visit(node.callee);
 				}
+
+				if (node.type === 'CallExpression') {
+					push_authored_span_mapping(node, node.callee);
+				}
 				return;
 			} else if (node.type === 'LogicalExpression' || node.type === 'BinaryExpression') {
 				// Visit in source order: left, right
@@ -1582,12 +1696,49 @@ export function convert_source_map_to_mappings(
 					});
 				}
 
-				// Visit in source order: id, superClass, body
+				// Visit in source order: decorators, id, typeParameters, superClass,
+				// superTypeParameters, implements, body
+				if (node.decorators) {
+					for (const decorator of node.decorators) {
+						visit(decorator);
+					}
+				}
 				if (node.id) {
 					visit(node.id);
 				}
+				if (node.typeParameters) {
+					visit(node.typeParameters);
+				}
 				if (node.superClass) {
 					visit(node.superClass);
+
+					// TypeScript reports base-class errors (TS2507 on a value that is
+					// not a constructor, TS2509, TS2510) on the whole superclass
+					// expression, and Volar drops a diagnostic whose end it cannot map.
+					// Identifiers, member expressions, calls and parenthesized
+					// expressions map their whole span, but an array literal doesn't.
+					if (
+						node.superClass.type === 'ArrayExpression' &&
+						has_location(node.superClass) &&
+						has_source_map_boundaries(node.superClass, src_to_gen_map)
+					) {
+						mappings.push(
+							get_mapping_from_node(
+								node.superClass,
+								src_to_gen_map,
+								gen_line_offsets,
+								mapping_data_verify_only,
+							),
+						);
+					}
+				}
+				if (node.superTypeParameters) {
+					visit(node.superTypeParameters);
+				}
+				if (node.implements) {
+					for (const heritage of node.implements) {
+						visit(heritage);
+					}
 				}
 				if (node.body) {
 					visit(node.body);
@@ -1602,6 +1753,12 @@ export function convert_source_map_to_mappings(
 				}
 				return;
 			} else if (node.type === 'MethodDefinition') {
+				if (node.decorators) {
+					for (const decorator of node.decorators) {
+						visit(decorator);
+					}
+				}
+
 				if (node.computed) {
 					set_bracket_computed_mapping(node, mappings);
 				}
@@ -1610,6 +1767,12 @@ export function convert_source_map_to_mappings(
 					handle_literal(node.key);
 				} else {
 					visit(node.key);
+				}
+
+				// The parser stores a class method's type parameters on the
+				// MethodDefinition, not on its FunctionExpression / TSDeclareMethod value.
+				if (node.typeParameters) {
+					visit(node.typeParameters);
 				}
 
 				if (node.value) {
@@ -1646,7 +1809,9 @@ export function convert_source_map_to_mappings(
 					visit(node.argument);
 				}
 
-				if (node.type === 'AwaitExpression') {
+				// An `await` the compiler added around a generated closure has no
+				// authored keyword to map.
+				if (node.type === 'AwaitExpression' && node.loc) {
 					const max_len = 'await'.length;
 					// We need a mapping for diagnostics but only on the 'await' keyword
 					const mapping = get_mapping_from_node(
@@ -1668,7 +1833,13 @@ export function convert_source_map_to_mappings(
 				}
 				return;
 			} else if (node.type === 'Super' || node.type === 'ThisExpression') {
-				// Leaf nodes, no children
+				// Leaf nodes, no children. TypeScript reports on the bare keyword
+				// (e.g. TS2683 implicit `this`, TS17009 `this` before `super()`),
+				// so map it like an identifier.
+				if (has_location(node)) {
+					const keyword = source.slice(node.start, node.end);
+					tokens.push({ source: keyword, generated: keyword, loc: node.loc, metadata: {} });
+				}
 				return;
 			} else if (node.type === 'MetaProperty') {
 				// Visit meta and property (e.g., new.target, import.meta)
@@ -1742,16 +1913,31 @@ export function convert_source_map_to_mappings(
 				// Leaf node, no children to visit
 				return;
 			} else if (node.type === 'PrivateIdentifier') {
-				// Leaf node
-				return;
+				add_private_identifier_mappings(node);
+				return; // Leaf node, don't traverse further
 			} else if (node.type === 'PropertyDefinition') {
-				// Visit key and value
+				// Visit in source order: decorators, key, typeAnnotation, value
+				if (node.decorators) {
+					for (const decorator of node.decorators) {
+						visit(decorator);
+					}
+				}
+				if (node.computed) {
+					set_bracket_computed_mapping(node, mappings);
+				}
 				if (node.key) {
 					visit(node.key);
+				}
+				if (node.typeAnnotation) {
+					visit(node.typeAnnotation);
 				}
 				if (node.value) {
 					visit(node.value);
 				}
+				return;
+			} else if (node.type === 'Decorator') {
+				// `@expr` on a class or class member
+				visit(node.expression);
 				return;
 			} else if (node.type === 'StaticBlock') {
 				// Visit body
@@ -1775,6 +1961,8 @@ export function convert_source_map_to_mappings(
 						mapping.generatedLengths[0] = mapping.generatedLengths[0] - 2; // Skip both parentheses
 					}
 					mappings.push(mapping);
+				} else {
+					push_authored_span_mapping(node, node.expression);
 				}
 				// Visit the wrapped expression
 				if (node.expression) {
@@ -1825,13 +2013,7 @@ export function convert_source_map_to_mappings(
 				return;
 			} else if (node.type === 'TSTypeParameter') {
 				// Type parameter like T in <T> or key in mapped types
-				// Note: node.name is a string, not an Identifier node
-				if (node.name && node.loc && typeof node.name === 'string') {
-					tokens.push({ source: node.name, generated: node.name, loc: node.loc, metadata: {} });
-				} else if (node.name && typeof node.name === 'object') {
-					// In some cases, name might be an Identifier node
-					visit(node.name);
-				}
+				visit(node.name);
 				if (node.constraint) {
 					visit(node.constraint);
 				}
@@ -2095,9 +2277,12 @@ export function convert_source_map_to_mappings(
 				}
 				return;
 			} else if (node.type === 'TSImportType') {
-				// Import type: import("module").Type
+				// Import type: import("module", { with: { … } }).Type
 				if (node.argument) {
 					visit(node.argument);
+				}
+				if (node.options) {
+					visit(node.options);
 				}
 				if (node.qualifier) {
 					visit(node.qualifier);
@@ -2157,10 +2342,8 @@ export function convert_source_map_to_mappings(
 				if (node.id) {
 					visit(node.id);
 				}
-				if (node.members) {
-					for (const member of node.members) {
-						visit(member);
-					}
+				for (const member of node.body.members) {
+					visit(member);
 				}
 				return;
 			} else if (node.type === 'TSEnumMember') {
@@ -2226,7 +2409,20 @@ export function convert_source_map_to_mappings(
 				node.type === 'TSThisType' ||
 				node.type === 'TSIntrinsicKeyword'
 			) {
-				// Primitive type keywords - leaf nodes, no children
+				// Primitive type keywords - leaf nodes, no children. TypeScript
+				// reports on the whole keyword (e.g. TS2355 on a `number` return
+				// type), so map it like an identifier.
+				//
+				// Workaround: esrap (2.3.10 and main) records no location at the
+				// boundaries of composite types (`number[]`, `{ a: number }`,
+				// `keyof T`), so only keyword return types map. Once esrap maps
+				// every node's start and end (sveltejs/esrap#198), replace this
+				// with a verify-only mapping over the whole return type:
+				// https://github.com/tsrx-org/tsrx/issues/216
+				if (has_location(node)) {
+					const keyword = source.slice(node.start, node.end);
+					tokens.push({ source: keyword, generated: keyword, loc: node.loc, metadata: {} });
+				}
 				return;
 			} else if (node.type === 'TSDeclareFunction') {
 				// TypeScript declare function: declare function foo(): void;
@@ -2267,6 +2463,9 @@ export function convert_source_map_to_mappings(
 			} else if (node.type === 'TSImportEqualsDeclaration') {
 				// TypeScript import alias: import foo = ns.bar;
 				// Visit in source order: id, then the referenced entity name
+				if (node.isExport) {
+					add_export_mapping(node);
+				}
 				if (node.id) {
 					visit(node.id);
 				}
@@ -2281,6 +2480,37 @@ export function convert_source_map_to_mappings(
 				}
 				if (node.typeArguments) {
 					visit(node.typeArguments);
+				}
+				return;
+			} else if (node.type === 'TSParameterProperty') {
+				// Constructor parameter property: `private readonly x: T` / `public y = 1`.
+				// The modifiers have no child nodes. The parameter is an Identifier
+				// (annotation on it) or an AssignmentPattern (which visits its own
+				// left-hand annotation).
+				const parameter = /** @type {AST.Pattern} */ (/** @type {unknown} */ (node.parameter));
+				visit(parameter);
+				if (parameter.type === 'Identifier' && parameter.typeAnnotation) {
+					visit(parameter.typeAnnotation);
+				}
+				return;
+			} else if (/** @type {string} */ (node.type) === 'TSDeclareMethod') {
+				// Bodyless class method value: an overload signature, `abstract m(): T;`,
+				// or optional `m?(): T;`. The key was visited by MethodDefinition.
+				// Visit in source order: typeParameters, params, returnType
+				const method = /** @type {AST.TSDeclareFunction} */ (/** @type {unknown} */ (node));
+				if (method.typeParameters) {
+					visit(method.typeParameters);
+				}
+				for (const param of method.params) {
+					visit(param);
+					const annotation = /** @type {Exclude<AST.Parameter, AST.TSParameterProperty>} */ (param)
+						.typeAnnotation;
+					if (annotation) {
+						visit(annotation);
+					}
+				}
+				if (method.returnType) {
+					visit(method.returnType);
 				}
 				return;
 			} else if (node.type === 'TSTypePredicate') {
@@ -2563,6 +2793,18 @@ function add_diagnostic_mappings(
 function has_exact_source_map_position(error, src_to_gen_map) {
 	const loc = error.loc?.start;
 	return !!loc && src_to_gen_map.has(`${loc.line}:${loc.column}`);
+}
+
+/**
+ * @param {AST.NodeWithLocation} node
+ * @param {Map<string, Array<{ line: number, column: number }>>} src_to_gen_map
+ */
+function has_source_map_boundaries(node, src_to_gen_map) {
+	const { start, end } = node.loc;
+	return (
+		src_to_gen_map.has(`${start.line}:${start.column}`) &&
+		src_to_gen_map.has(`${end.line}:${end.column}`)
+	);
 }
 
 /**

@@ -49,7 +49,9 @@ function decode_hash(hash: string): { source: string; target: string } | null {
 		const json = new TextDecoder().decode(Uint8Array.from(atob(hash), (c) => c.charCodeAt(0)));
 		const parsed = JSON.parse(json);
 		if (
-			typeof parsed?.s === 'string' && typeof parsed?.t === 'string' && VALID_TARGETS.has(parsed.t)
+			typeof parsed?.s === 'string' &&
+			typeof parsed?.t === 'string' &&
+			VALID_TARGETS.has(parsed.t)
 		) {
 			return { source: parsed.s, target: parsed.t };
 		}
@@ -113,12 +115,13 @@ export function CompilerDemo() @{
 		};
 
 		(async () => {
-			const [{ EditorState, Compartment }, { oneDark }, {
-				history,
-				defaultKeymap,
-				historyKeymap,
-				indentWithTab,
-			}, view_mod, shiki_mod] = await Promise.all([
+			const [
+				{ EditorState, Compartment },
+				{ oneDark },
+				{ history, defaultKeymap, historyKeymap, indentWithTab },
+				view_mod,
+				shiki_mod,
+			] = await Promise.all([
 				import('@codemirror/state'),
 				import('@codemirror/theme-one-dark'),
 				import('@codemirror/commands'),
@@ -207,8 +210,7 @@ export function CompilerDemo() @{
 				}
 
 				if (source.length > MAX_SOURCE_LENGTH) {
-					error_message.value =
-						`Source is limited to ${MAX_SOURCE_LENGTH} characters for the live demo.`;
+					error_message.value = `Source is limited to ${MAX_SOURCE_LENGTH} characters for the live demo.`;
 					status.value = 'Source limit reached';
 					return;
 				}
@@ -474,7 +476,9 @@ export function CompilerDemo() @{
 					</div>
 					<div class="panel-body">
 						@if (error_message.value) {
-							<div class="panel-error" role="alert">{error_message.value}</div>
+							<div class="panel-error" role="alert">
+								{error_message.value}
+							</div>
 						}
 						<div class="editor-host" ref={bindNode(output_ref)} />
 					</div>
@@ -488,14 +492,18 @@ export function CompilerDemo() @{
 					onClick={() => {
 						active_mobile_panel.value = 'input';
 					}}
-				>input</button>
+				>
+					input
+				</button>
 				<button
 					type="button"
 					class={`pane-button${active_mobile_panel.value === 'output' ? ' is-active' : ''}`}
 					onClick={() => {
 						active_mobile_panel.value = 'output';
 					}}
-				>output</button>
+				>
+					output
+				</button>
 			</div>
 		</section>
 		<style>

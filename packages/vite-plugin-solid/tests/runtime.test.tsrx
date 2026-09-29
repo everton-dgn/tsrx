@@ -1,12 +1,12 @@
 import type { MockInstance } from 'vitest';
 import type { JSX } from '@solidjs/web';
 import { createSignal, lazy } from 'solid-js';
-import {
-	runSwitchFallthroughRuntimeTests,
-} from '@tsrx/core/test-harness/runtime/switch-fallthrough';
-import {
-	runTsxExpressionTsrxRuntimeTests,
-} from '@tsrx/core/test-harness/runtime/tsx-expression-tsrx';
+import { runSwitchFallthroughRuntimeTests } from '@tsrx/core/test-harness/runtime/switch-fallthrough';
+import { runTsxExpressionTsrxRuntimeTests } from '@tsrx/core/test-harness/runtime/tsx-expression-tsrx';
+import { runJsxTextWhitespaceRuntimeTests } from '@tsrx/core/test-harness/runtime/jsx-text-whitespace';
+import { runScriptBodyRuntimeTests } from '@tsrx/core/test-harness/runtime/script-body';
+import { runNullishSpreadRefRuntimeTests } from '@tsrx/core/test-harness/runtime/nullish-spread-ref';
+import { runExpressionSpreadRefRuntimeTests } from '@tsrx/core/test-harness/runtime/expression-spread-ref';
 
 const EXPECTED_ERROR_LOG_SNIPPETS = [
 	'sync boom',
@@ -19,10 +19,12 @@ const EXPECTED_ERROR_LOG_SNIPPETS = [
 let console_error_spy: MockInstance | undefined;
 
 function is_expected_error_log(args: unknown[]) {
-	const message = args.map((arg) => {
-		if (arg instanceof Error) return `${arg.name}: ${arg.message}`;
-		return String(arg);
-	}).join(' ');
+	const message = args
+		.map((arg) => {
+			if (arg instanceof Error) return `${arg.name}: ${arg.message}`;
+			return String(arg);
+		})
+		.join(' ');
 	return EXPECTED_ERROR_LOG_SNIPPETS.some((snippet) => message.includes(snippet));
 }
 
@@ -79,7 +81,9 @@ function DynamicSwitchApp() @{
 		<button
 			class="dynamic-switch-toggle"
 			onClick={() => setTag(tag() === 'section' ? 'article' : 'section')}
-		>{'toggle'}</button>
+		>
+			{'toggle'}
+		</button>
 	</>
 }
 
@@ -91,12 +95,8 @@ function ExplicitTextApp() @{
 	<>
 		<div class="explicit-text-markup">{String(markup)}</div>
 		<div class="explicit-text-boolean">{String(hidden)}</div>
-		<div class="explicit-text-null">
-			{empty == null ? '' : String(empty)}
-		</div>
-		<div class="explicit-text-undefined">
-			{missing == null ? '' : String(missing)}
-		</div>
+		<div class="explicit-text-null">{empty == null ? '' : String(empty)}</div>
+		<div class="explicit-text-undefined">{missing == null ? '' : String(missing)}</div>
 	</>
 }
 
@@ -109,7 +109,9 @@ function ExplicitHtmlApp() @{
 			onClick={() => {
 				setMarkup('<strong class="html-node">updated</strong>');
 			}}
-		>{'update'}</button>
+		>
+			{'update'}
+		</button>
 	</>
 }
 
@@ -125,13 +127,17 @@ function SpreadHtmlApp() @{
 			onClick={() => {
 				setSpreadProps({ innerHTML: '<i class="html-node">spread update</i>' });
 			}}
-		>{'spread'}</button>
+		>
+			{'spread'}
+		</button>
 		<button
 			class="spread-html-update-markup"
 			onClick={() => {
 				setMarkup('<strong class="html-node">updated</strong>');
 			}}
-		>{'markup'}</button>
+		>
+			{'markup'}
+		</button>
 	</>
 }
 
@@ -185,7 +191,9 @@ function CounterApp() @{
 	const [count, setCount] = createSignal(0);
 	<>
 		<p class="count">{count()}</p>
-		<button class="inc" onClick={() => setCount(count() + 1)}>{'+'}</button>
+		<button class="inc" onClick={() => setCount(count() + 1)}>
+			{'+'}
+		</button>
 	</>
 }
 
@@ -198,7 +206,9 @@ function ElementRefApp() @{
 	queueMicrotask(() => {
 		element_ref_captured = el ?? null;
 	});
-	<div ref={el} class="ref-target">{'ref test'}</div>
+	<div ref={el} class="ref-target">
+		{'ref test'}
+	</div>
 }
 
 // ── Ref callback via plain ref={callback} on elements ──
@@ -211,7 +221,9 @@ function ElementRefCallbackApp() @{
 			callback_ref_captured = node;
 		}}
 		class="ref-callback"
-	>ref callback</div>
+	>
+		ref callback
+	</div>
 }
 
 // ── Ref on composite components via prop forwarding ──
@@ -433,6 +445,42 @@ function MultiSpreadExplicitRefApp() @{
 	/>
 }
 
+// ── Conditional host spreads ──
+
+let conditional_spread_and_node: HTMLInputElement | null = null;
+let conditional_spread_null_node: HTMLInputElement | null = null;
+let conditional_spread_if_node: HTMLInputElement | null = null;
+
+function ConditionalSpreadApp(props: { enabled: boolean }) @{
+	<>
+		<input class="conditional-spread" {...(props.enabled && { disabled: true })} />
+		<input
+			class="conditional-spread"
+			ref={(node: HTMLInputElement | null) => {
+				conditional_spread_and_node = node;
+			}}
+			{...(props.enabled && { disabled: true })}
+		/>
+		<input
+			class="conditional-spread"
+			ref={(node: HTMLInputElement | null) => {
+				conditional_spread_null_node = node;
+			}}
+			{...(props.enabled ? { disabled: true } : null)}
+		/>
+		{/* Solid lowers a spread inside control flow through the plain normalizer. */}
+		@if (true) {
+			<input
+				class="conditional-spread"
+				ref={(node: HTMLInputElement | null) => {
+					conditional_spread_if_node = node;
+				}}
+				{...(props.enabled && { disabled: true })}
+			/>
+		}
+	</>
+}
+
 const named_ref_object: { value: HTMLInputElement | null } = { value: null };
 
 function NamedRefObjectApp() @{
@@ -454,7 +502,9 @@ function IfReactiveApp() @{
 		} @else {
 			<span class="hidden">{'hidden'}</span>
 		}
-		<button class="toggle" onClick={() => setShow(!show())}>{'toggle'}</button>
+		<button class="toggle" onClick={() => setShow(!show())}>
+			{'toggle'}
+		</button>
 	</>
 }
 
@@ -466,8 +516,12 @@ function ForReactiveApp() @{
 		@for (const item of items(); index i) {
 			<li class="item">{item()}</li>
 		}
-		<button class="add" onClick={() => setItems([...items(), 'd'])}>{'add'}</button>
-		<button class="remove" onClick={() => setItems(items().slice(1))}>{'remove'}</button>
+		<button class="add" onClick={() => setItems([...items(), 'd'])}>
+			{'add'}
+		</button>
+		<button class="remove" onClick={() => setItems(items().slice(1))}>
+			{'remove'}
+		</button>
 	</>
 }
 
@@ -509,19 +563,29 @@ function SwitchReactiveApp() @{
 				<div class="page">{'404'}</div>
 			}
 		}
-		<button class="go-about" onClick={() => setPage('about')}>{'about'}</button>
-		<button class="go-unknown" onClick={() => setPage('other')}>{'other'}</button>
+		<button class="go-about" onClick={() => setPage('about')}>
+			{'about'}
+		</button>
+		<button class="go-unknown" onClick={() => setPage('other')}>
+			{'other'}
+		</button>
 	</>
 }
 
 function GuardTrailingReturnApp() @{
 	const [kind, setKind] = createSignal('skip');
 	if (kind() === 'done') {
-		return <><p class="guard-result">{'done'}</p></>;
+		return (
+			<>
+				<p class="guard-result">{'done'}</p>
+			</>
+		);
 	}
 	<>
 		<p class="guard-rest">{'rest'}</p>
-		<button class="guard-done" onClick={() => setKind('done')}>{'done'}</button>
+		<button class="guard-done" onClick={() => setKind('done')}>
+			{'done'}
+		</button>
 	</>
 }
 
@@ -547,7 +611,9 @@ function IfChildrenApp() @{
 				<span class="inner-visible">{'inner shown'}</span>
 			}
 		</Wrapper>
-		<button class="toggle" onClick={() => setShow(!show())}>{'toggle'}</button>
+		<button class="toggle" onClick={() => setShow(!show())}>
+			{'toggle'}
+		</button>
 	</>
 }
 
@@ -602,10 +668,14 @@ function ErrorToggleApp() @{
 						setFail(false);
 						reset();
 					}}
-				>{'reset'}</button>
+				>
+					{'reset'}
+				</button>
 			</>
 		}
-		<button class="trigger-error" onClick={() => setFail(true)}>{'break'}</button>
+		<button class="trigger-error" onClick={() => setFail(true)}>
+			{'break'}
+		</button>
 	</>
 }
 
@@ -682,7 +752,9 @@ function IfInsideTryApp() @{
 		} @catch (err) {
 			<p class="caught">{'error'}</p>
 		}
-		<button class="toggle" onClick={() => setShow(!show())}>{'toggle'}</button>
+		<button class="toggle" onClick={() => setShow(!show())}>
+			{'toggle'}
+		</button>
 	</>
 }
 
@@ -698,7 +770,9 @@ function ForInsideTryApp() @{
 		} @catch (err) {
 			<p class="caught">{'error'}</p>
 		}
-		<button class="add" onClick={() => setItems([...items(), 'z'])}>{'add'}</button>
+		<button class="add" onClick={() => setItems([...items(), 'z'])}>
+			{'add'}
+		</button>
 	</>
 }
 
@@ -711,12 +785,16 @@ function SignalInIfApp() @{
 			const [count, setCount] = createSignal(0);
 			<>
 				<p class="sig-if-count">{count()}</p>
-				<button class="sig-if-inc" onClick={() => setCount(count() + 1)}>{'inc'}</button>
+				<button class="sig-if-inc" onClick={() => setCount(count() + 1)}>
+					{'inc'}
+				</button>
 			</>
 		} @else {
 			<p class="sig-if-hidden">{'hidden'}</p>
 		}
-		<button class="sig-if-toggle" onClick={() => setShow(!show())}>{'toggle'}</button>
+		<button class="sig-if-toggle" onClick={() => setShow(!show())}>
+			{'toggle'}
+		</button>
 	</>
 }
 
@@ -729,19 +807,22 @@ function SignalInBothBranchesApp() @{
 			const [x, setX] = createSignal(10);
 			<>
 				<p class="branch-val">{x()}</p>
-				<button class="branch-inc" onClick={() => setX(x() + 1)}>{'inc'}</button>
+				<button class="branch-inc" onClick={() => setX(x() + 1)}>
+					{'inc'}
+				</button>
 			</>
 		} @else {
 			const [y, setY] = createSignal(20);
 			<>
 				<p class="branch-val">{y()}</p>
-				<button class="branch-inc" onClick={() => setY(y() + 1)}>{'inc'}</button>
+				<button class="branch-inc" onClick={() => setY(y() + 1)}>
+					{'inc'}
+				</button>
 			</>
 		}
-		<button
-			class="branch-toggle"
-			onClick={() => setMode(mode() === 'a' ? 'b' : 'a')}
-		>{'toggle'}</button>
+		<button class="branch-toggle" onClick={() => setMode(mode() === 'a' ? 'b' : 'a')}>
+			{'toggle'}
+		</button>
 	</>
 }
 
@@ -754,13 +835,14 @@ function SignalClosingOverScopeApp() @{
 			const [base, setBase] = createSignal(5);
 			<>
 				<p class="scope-result">{base() * multiplier()}</p>
-				<button class="scope-inc-base" onClick={() => setBase(base() + 1)}>{'inc base'}</button>
+				<button class="scope-inc-base" onClick={() => setBase(base() + 1)}>
+					{'inc base'}
+				</button>
 			</>
 		}
-		<button
-			class="scope-inc-mult"
-			onClick={() => setMultiplier(multiplier() + 1)}
-		>{'inc multiplier'}</button>
+		<button class="scope-inc-mult" onClick={() => setMultiplier(multiplier() + 1)}>
+			{'inc multiplier'}
+		</button>
 	</>
 }
 
@@ -776,13 +858,14 @@ function SignalInForApp() @{
 			const [clicked, setClicked] = createSignal(false);
 			<div class="sig-for-item">
 				<span>{item_value + (clicked() ? '!' : '')}</span>
-				<button
-					class={'sig-for-click-' + item_value}
-					onClick={() => setClicked(true)}
-				>{'click'}</button>
+				<button class={'sig-for-click-' + item_value} onClick={() => setClicked(true)}>
+					{'click'}
+				</button>
 			</div>
 		}
-		<button class="sig-for-add" onClick={() => setItems([...items(), 'c'])}>{'add'}</button>
+		<button class="sig-for-add" onClick={() => setItems([...items(), 'c'])}>
+			{'add'}
+		</button>
 	</>
 }
 
@@ -796,17 +879,18 @@ function SignalInSwitchApp() @{
 				const [homeCount, setHomeCount] = createSignal(0);
 				<>
 					<p class="sig-switch-val">{homeCount()}</p>
-					<button
-						class="sig-switch-inc"
-						onClick={() => setHomeCount(homeCount() + 1)}
-					>{'inc'}</button>
+					<button class="sig-switch-inc" onClick={() => setHomeCount(homeCount() + 1)}>
+						{'inc'}
+					</button>
 				</>
 			}
 			@case 'about': {
 				<p class="sig-switch-val">{'about page'}</p>
 			}
 		}
-		<button class="sig-switch-go" onClick={() => setPage('about')}>{'about'}</button>
+		<button class="sig-switch-go" onClick={() => setPage('about')}>
+			{'about'}
+		</button>
 	</>
 }
 
@@ -829,15 +913,21 @@ function GuardReturnWithSignalsApp() @{
 				setCount(count() + 1);
 				setDoubled((count() + 1) * 2);
 			}}
-		>{'inc'}</button>
-		<button class="early-skip" onClick={() => setSkip(true)}>{'skip'}</button>
+		>
+			{'inc'}
+		</button>
+		<button class="early-skip" onClick={() => setSkip(true)}>
+			{'skip'}
+		</button>
 	</>
 }
 
 function ConditionalBranchTemplateApp() @{
 	const [guard, setGuard] = createSignal(false);
 	<>
-		<button class="template-return-toggle" onClick={() => setGuard(!guard())}>{'toggle'}</button>
+		<button class="template-return-toggle" onClick={() => setGuard(!guard())}>
+			{'toggle'}
+		</button>
 		@if (!guard()) {
 			<p class="template-return-rest">{'rest'}</p>
 		} @else {
@@ -856,7 +946,9 @@ function StaticInBranchApp() @{
 				<span>{'Always the same'}</span>
 			</div>
 		}
-		<button class="static-toggle" onClick={() => setShow(!show())}>{'toggle'}</button>
+		<button class="static-toggle" onClick={() => setShow(!show())}>
+			{'toggle'}
+		</button>
 	</>
 }
 
@@ -870,7 +962,9 @@ function MixedStaticDynamicApp() @{
 		</header>
 		<p class="dynamic-count">{count()}</p>
 		<footer class="static-footer">{'Static Footer'}</footer>
-		<button class="mixed-inc" onClick={() => setCount(count() + 1)}>{'inc'}</button>
+		<button class="mixed-inc" onClick={() => setCount(count() + 1)}>
+			{'inc'}
+		</button>
 	</>
 }
 
@@ -900,7 +994,9 @@ function MidTemplateLocalsApp() @{
 				<span class="mid-template-item">{item()}</span>
 			}
 			<p class="mid-template-count">{count()}</p>
-			<button class="mid-template-inc" onClick={() => setCount(count() + 1)}>{'inc'}</button>
+			<button class="mid-template-inc" onClick={() => setCount(count() + 1)}>
+				{'inc'}
+			</button>
 			<div class="mid-template-side"></div>
 		</>
 	}</div>
@@ -1063,15 +1159,12 @@ describe('tsrx-solid runtime', () => {
 		expect(composite_ref_captured!.type).toBe('text');
 	});
 
-	it(
-		'ref={expr} on a composite component forwards through {...props} to the DOM element',
-		async () => {
-			spread_ref_captured = null;
-			await render(SpreadRefApp);
-			expect(spread_ref_captured).toBeInstanceOf(HTMLInputElement);
-			expect(spread_ref_captured!.type).toBe('text');
-		},
-	);
+	it('ref={expr} on a composite component forwards through {...props} to the DOM element', async () => {
+		spread_ref_captured = null;
+		await render(SpreadRefApp);
+		expect(spread_ref_captured).toBeInstanceOf(HTMLInputElement);
+		expect(spread_ref_captured!.type).toBe('text');
+	});
 
 	it('supports multiple ref={...} on the same DOM element', async () => {
 		multi_dom_a = null;
@@ -1156,6 +1249,22 @@ describe('tsrx-solid runtime', () => {
 		expect(container.querySelector('.multi-spread-explicit-ref')!.hasAttribute('ref')).toBe(false);
 	});
 
+	for (const enabled of [false, true]) {
+		it(`renders conditional host spreads when the condition is ${enabled}`, async () => {
+			conditional_spread_and_node = null;
+			conditional_spread_null_node = null;
+			conditional_spread_if_node = null;
+			await render(ConditionalSpreadApp, { enabled });
+			const inputs = Array.from(
+				container.querySelectorAll('.conditional-spread'),
+			) as HTMLInputElement[];
+			expect(inputs.map((input) => input.disabled)).toEqual([enabled, enabled, enabled, enabled]);
+			expect(conditional_spread_and_node).toBe(inputs[1]);
+			expect(conditional_spread_null_node).toBe(inputs[2]);
+			expect(conditional_spread_if_node).toBe(inputs[3]);
+		});
+	}
+
 	it('assigns explicitly adapted named ref props backed by value-like objects', async () => {
 		named_ref_object.value = null;
 		await render(NamedRefObjectApp);
@@ -1199,27 +1308,17 @@ describe('tsrx-solid runtime', () => {
 		await render(ForFilteredApp);
 		expect(
 			Array.from(container.querySelectorAll('.continue-item'), (item) => item.textContent),
-		).toEqual([
-			'a',
-			'c',
-		]);
+		).toEqual(['a', 'c']);
 	});
 
 	it('keeps prior JSX children when conditional output skips a for-of continuation', async () => {
 		await render(ForContinueAfterPriorJsxApp);
 		expect(
 			Array.from(container.querySelectorAll('.continue-before'), (item) => item.textContent),
-		).toEqual([
-			'before-a',
-			'before-empty',
-			'before-c',
-		]);
+		).toEqual(['before-a', 'before-empty', 'before-c']);
 		expect(
 			Array.from(container.querySelectorAll('.continue-after'), (item) => item.textContent),
-		).toEqual([
-			'after-a',
-			'after-c',
-		]);
+		).toEqual(['after-a', 'after-c']);
 	});
 
 	// ── Reactive control flow: switch ──
@@ -1298,9 +1397,10 @@ describe('tsrx-solid runtime', () => {
 
 	it('shows pending fallback then resolves (<Loading> + lazy)', async () => {
 		let resolve_fn: (mod: { default: typeof ResolvedChild }) => void;
-		const loader = () => new Promise<{ default: typeof ResolvedChild }>((r) => {
-			resolve_fn = r;
-		});
+		const loader = () =>
+			new Promise<{ default: typeof ResolvedChild }>((r) => {
+				resolve_fn = r;
+			});
 
 		await render(SuspenseApp, { loader });
 		expect(text('.pending')).toBe('loading...');
@@ -1315,9 +1415,10 @@ describe('tsrx-solid runtime', () => {
 
 	it('renders nothing for an empty pending fallback then resolves (<Loading> + lazy)', async () => {
 		let resolve_fn: (mod: { default: typeof ResolvedChild }) => void;
-		const loader = () => new Promise<{ default: typeof ResolvedChild }>((r) => {
-			resolve_fn = r;
-		});
+		const loader = () =>
+			new Promise<{ default: typeof ResolvedChild }>((r) => {
+				resolve_fn = r;
+			});
 
 		await render(EmptyPendingSuspenseApp, { loader });
 		expect(container.innerHTML).toBe('');
@@ -1356,9 +1457,10 @@ describe('tsrx-solid runtime', () => {
 
 	it('resolves successfully through Loading + Errored', async () => {
 		let resolve_fn: (mod: { default: typeof ResolvedChild }) => void;
-		const loader = () => new Promise<{ default: typeof ResolvedChild }>((r) => {
-			resolve_fn = r;
-		});
+		const loader = () =>
+			new Promise<{ default: typeof ResolvedChild }>((r) => {
+				resolve_fn = r;
+			});
 
 		await render(SuspenseErrorApp, { loader });
 		expect(text('.pending')).toBe('loading...');
@@ -1467,25 +1569,22 @@ describe('tsrx-solid runtime', () => {
 		expect(text('.scope-result')).toBe('18');
 	});
 
-	it(
-		'keeps reactive expressions after a plain guard return, but the guard is setup-once',
-		async () => {
-			await render(GuardReturnWithSignalsApp);
-			expect(text('.early-count')).toBe('0');
-			expect(text('.early-doubled')).toBe('0');
+	it('keeps reactive expressions after a plain guard return, but the guard is setup-once', async () => {
+		await render(GuardReturnWithSignalsApp);
+		expect(text('.early-count')).toBe('0');
+		expect(text('.early-doubled')).toBe('0');
 
-			// Reactive JSX expressions in the trailing output still update...
-			await click('.early-inc');
-			expect(text('.early-count')).toBe('1');
-			expect(text('.early-doubled')).toBe('2');
+		// Reactive JSX expressions in the trailing output still update...
+		await click('.early-inc');
+		expect(text('.early-count')).toBe('1');
+		expect(text('.early-doubled')).toBe('2');
 
-			// ...but `if (skip()) return null` ran once at setup, so flipping `skip`
-			// does not unmount the early output.
-			await click('.early-skip');
-			expect(text('.early-count')).toBe('1');
-			expect(text('.early-doubled')).toBe('2');
-		},
-	);
+		// ...but `if (skip()) return null` ran once at setup, so flipping `skip`
+		// does not unmount the early output.
+		await click('.early-skip');
+		expect(text('.early-count')).toBe('1');
+		expect(text('.early-doubled')).toBe('2');
+	});
 
 	it('conditional branch template updates reactively', async () => {
 		await render(ConditionalBranchTemplateApp);
@@ -1577,3 +1676,7 @@ describe('tsrx-solid runtime', () => {
 
 runSwitchFallthroughRuntimeTests();
 runTsxExpressionTsrxRuntimeTests();
+runJsxTextWhitespaceRuntimeTests({ nbsp: 'trimmed' });
+runScriptBodyRuntimeTests();
+runNullishSpreadRefRuntimeTests();
+runExpressionSpreadRefRuntimeTests();

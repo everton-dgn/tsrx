@@ -431,3 +431,94 @@ process.exit(Number(process.env.TSRX_TEST_EXIT ?? 0));
 		});
 	});
 });
+
+it('reports unresolved class field and heritage types in .tsrx files', () => {
+	const line =
+		'export class Model<T extends MissingBound> implements MissingShape { value!: MissingType; }';
+	fs.appendFileSync(path.join(workspace, 'layout.tsrx'), `${line}\n`);
+	const result = run_cli('native');
+	expect(result.status).toBe(2);
+	for (const name of ['MissingBound', 'MissingShape', 'MissingType']) {
+		expect(result.output).toContain(
+			`layout.tsrx(4,${line.indexOf(name) + 1}): error TS2304: Cannot find name '${name}'.`,
+		);
+	}
+});
+
+it('reports errors on private class fields in .tsrx files', () => {
+	const line = 'export class Model { #value: number = "bad"; #missing: number; }';
+	fs.appendFileSync(path.join(workspace, 'layout.tsrx'), `${line}\n`);
+	const result = run_cli('native');
+	expect(result.status).toBe(2);
+	expect(result.output).toContain(
+		`layout.tsrx(4,${line.indexOf('#value') + 1}): error TS2322: Type 'string' is not assignable to type 'number'.`,
+	);
+	expect(result.output).toContain(
+		`layout.tsrx(4,${line.indexOf('#missing') + 1}): error TS2564: Property '#missing' has no initializer and is not definitely assigned in the constructor.`,
+	);
+});
+
+it('reports a missing return on a primitive return type in .tsrx files', () => {
+	const line = 'export class Model { value(): number {} }';
+	fs.appendFileSync(path.join(workspace, 'layout.tsrx'), `${line}\n`);
+	const result = run_cli('native');
+	expect(result.status).toBe(2);
+	expect(result.output).toContain(
+		`layout.tsrx(4,${line.indexOf('number') + 1}): error TS2355: A function whose declared type is neither 'undefined', 'void', nor 'any' must return a value.`,
+	);
+});
+
+it('reports a superclass expression that is not a constructor in .tsrx files', () => {
+	const line =
+		'function createBase() { return {}; } export class Model extends createBase() {} export class Cast extends (Model as unknown as {}) {}';
+	fs.appendFileSync(path.join(workspace, 'layout.tsrx'), `${line}\n`);
+	const result = run_cli('native');
+	expect(result.status).toBe(2);
+	for (const base of ['createBase()', '(Model as unknown as {})']) {
+		expect(result.output).toContain(
+			`layout.tsrx(4,${line.lastIndexOf(base) + 1}): error TS2507: Type '{}' is not a constructor function type.`,
+		);
+	}
+});
+
+it('reports errors on a whole call or parenthesized expression in .tsrx files', () => {
+	const line =
+		'declare const plain: {}; declare function createBase(): {}; declare function createVoid(): void; export function run() { const items = [...createBase()]; createBase()(); (plain)(); if (createVoid()) {} return [items, createBase() as const]; }';
+	fs.appendFileSync(path.join(workspace, 'layout.tsrx'), `${line}\n`);
+	const result = run_cli('native');
+	expect(result.status).toBe(2);
+	/** @type {Array<[string, string]>} */
+	const expected = [
+		[
+			'createBase()]',
+			`error TS2488: Type '{}' must have a '[Symbol.iterator]()' method that returns an iterator.`,
+		],
+		['createBase()();', 'error TS2349: This expression is not callable.'],
+		['(plain)();', 'error TS2349: This expression is not callable.'],
+		[
+			'createVoid()) {}',
+			`error TS1345: An expression of type 'void' cannot be tested for truthiness.`,
+		],
+		[
+			'createBase() as const',
+			`error TS1355: A 'const' assertions can only be applied to references to enum members, or string, number, boolean, array, or object literals.`,
+		],
+	];
+	for (const [anchor, message] of expected) {
+		expect(result.output).toContain(`layout.tsrx(4,${line.indexOf(anchor) + 1}): ${message}`);
+	}
+});
+
+it('reports errors on a bare this in .tsrx files', () => {
+	const line =
+		'export function readValue() { return this; } class Base {} export class Derived extends Base { constructor() { this; super(); } }';
+	fs.appendFileSync(path.join(workspace, 'layout.tsrx'), `${line}\n`);
+	const result = run_cli('native');
+	expect(result.status).toBe(2);
+	expect(result.output).toContain(
+		`layout.tsrx(4,${line.indexOf('this') + 1}): error TS2683: 'this' implicitly has type 'any' because it does not have a type annotation.`,
+	);
+	expect(result.output).toContain(
+		`layout.tsrx(4,${line.lastIndexOf('this') + 1}): error TS17009: 'super' must be called before accessing 'this' in the constructor of a derived class.`,
+	);
+});

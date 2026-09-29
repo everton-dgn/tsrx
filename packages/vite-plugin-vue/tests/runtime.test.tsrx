@@ -1,12 +1,12 @@
 import type { MockInstance } from 'vitest';
 import { defineVaporAsyncComponent, inject, provide, reactive, ref, watch, watchEffect } from 'vue';
 import { mergeRefs } from '@tsrx/vue/ref';
-import {
-	runSwitchFallthroughRuntimeTests,
-} from '@tsrx/core/test-harness/runtime/switch-fallthrough';
-import {
-	runTsxExpressionTsrxRuntimeTests,
-} from '@tsrx/core/test-harness/runtime/tsx-expression-tsrx';
+import { runSwitchFallthroughRuntimeTests } from '@tsrx/core/test-harness/runtime/switch-fallthrough';
+import { runTsxExpressionTsrxRuntimeTests } from '@tsrx/core/test-harness/runtime/tsx-expression-tsrx';
+import { runJsxTextWhitespaceRuntimeTests } from '@tsrx/core/test-harness/runtime/jsx-text-whitespace';
+import { runScriptBodyRuntimeTests } from '@tsrx/core/test-harness/runtime/script-body';
+import { runNullishSpreadRefRuntimeTests } from '@tsrx/core/test-harness/runtime/nullish-spread-ref';
+import { runExpressionSpreadRefRuntimeTests } from '@tsrx/core/test-harness/runtime/expression-spread-ref';
 
 const EXPECTED_ERROR_LOG_SNIPPETS = [
 	'sync boom',
@@ -21,12 +21,14 @@ let console_error_spy: MockInstance | undefined;
 let console_warn_spy: MockInstance | undefined;
 
 function is_expected_error_log(args: unknown[]) {
-	const message = args.map((arg) => {
-		if (arg instanceof Error) {
-			return `${arg.name}: ${arg.message}`;
-		}
-		return String(arg);
-	}).join(' ');
+	const message = args
+		.map((arg) => {
+			if (arg instanceof Error) {
+				return `${arg.name}: ${arg.message}`;
+			}
+			return String(arg);
+		})
+		.join(' ');
 
 	return EXPECTED_ERROR_LOG_SNIPPETS.some((snippet) => message.includes(snippet));
 }
@@ -82,7 +84,9 @@ function DynamicSwitchApp() @{
 			onClick={() => {
 				tag.value = tag.value === 'section' ? 'article' : 'section';
 			}}
-		>{'toggle'}</button>
+		>
+			{'toggle'}
+		</button>
 	</>
 }
 
@@ -94,12 +98,8 @@ function ExplicitTextApp() @{
 	<>
 		<div class="explicit-text-markup">{String(markup)}</div>
 		<div class="explicit-text-boolean">{String(hidden)}</div>
-		<div class="explicit-text-null">
-			{empty == null ? '' : String(empty)}
-		</div>
-		<div class="explicit-text-undefined">
-			{missing == null ? '' : String(missing)}
-		</div>
+		<div class="explicit-text-null">{empty == null ? '' : String(empty)}</div>
+		<div class="explicit-text-undefined">{missing == null ? '' : String(missing)}</div>
 	</>
 }
 
@@ -112,7 +112,9 @@ function ExplicitHtmlApp() @{
 			onClick={() => {
 				markup.value = '<strong class="html-node">updated</strong>';
 			}}
-		>update</button>
+		>
+			update
+		</button>
 	</>
 }
 
@@ -128,13 +130,17 @@ function SpreadHtmlApp() @{
 			onClick={() => {
 				spreadProps.value = { innerHTML: '<i class="html-node">spread update</i>' };
 			}}
-		>spread</button>
+		>
+			spread
+		</button>
 		<button
 			class="spread-html-update-markup"
 			onClick={() => {
 				markup.value = '<strong class="html-node">updated</strong>';
 			}}
-		>markup</button>
+		>
+			markup
+		</button>
 	</>
 }
 
@@ -152,14 +158,18 @@ function ElementRefApp() @{
 			element_ref_captured = node;
 		}}
 		class="ref-target"
-	>ref test</div>
+	>
+		ref test
+	</div>
 }
 
 function KeywordRefCallbackApp() @{
 	function capture(node: HTMLDivElement | null) {
 		keyword_ref_callback_captured = node;
 	}
-	<div ref={capture} class="keyword-ref-target">{'keyword ref'}</div>
+	<div ref={capture} class="keyword-ref-target">
+		{'keyword ref'}
+	</div>
 }
 
 function MultiDomRefApp() @{
@@ -313,6 +323,31 @@ function MultiSpreadExplicitRefApp() @{
 	/>
 }
 
+// ── Conditional host spreads ──
+
+let conditional_spread_and_node: HTMLInputElement | null = null;
+let conditional_spread_null_node: HTMLInputElement | null = null;
+
+function ConditionalSpreadApp(props: { enabled: boolean }) @{
+	<>
+		<input class="conditional-spread" {...(props.enabled && { disabled: true })} />
+		<input
+			class="conditional-spread"
+			ref={(node: HTMLInputElement | null) => {
+				conditional_spread_and_node = node;
+			}}
+			{...(props.enabled && { disabled: true })}
+		/>
+		<input
+			class="conditional-spread"
+			ref={(node: HTMLInputElement | null) => {
+				conditional_spread_null_node = node;
+			}}
+			{...(props.enabled ? { disabled: true } : null)}
+		/>
+	</>
+}
+
 const named_vue_ref_object = ref<HTMLInputElement | null>(null);
 
 function NamedRefObjectApp() {
@@ -323,7 +358,9 @@ function CounterApp() @{
 	const count = ref(0);
 	<>
 		<p class="count">{count.value}</p>
-		<button class="inc" onClick={() => count.value++}>{'+'}</button>
+		<button class="inc" onClick={() => count.value++}>
+			{'+'}
+		</button>
 	</>
 }
 
@@ -336,7 +373,9 @@ function ReactiveStateToDestructuredParamApp() @{
 	<>
 		<p class="reactive-local-count">{state.count}</p>
 		<DestructuredParamChild count={state.count} />
-		<button class="reactive-inc" onClick={() => state.count++}>{'+'}</button>
+		<button class="reactive-inc" onClick={() => state.count++}>
+			{'+'}
+		</button>
 	</>
 }
 
@@ -344,14 +383,20 @@ function ConditionalRefsApp() @{
 	const count = ref(0);
 	const skip = ref(false);
 	<>
-		<button class="early-skip" onClick={() => (skip.value = !skip.value)}>{'skip'}</button>
+		<button class="early-skip" onClick={() => (skip.value = !skip.value)}>
+			{'skip'}
+		</button>
 		@if (!skip.value) {
 			const doubled = ref(0);
 			<>
 				<p class="early-count">{count.value}</p>
 				<p class="early-doubled">{doubled.value}</p>
-				<button class="early-inc" onClick={() => count.value++}>{'inc'}</button>
-				<button class="early-double" onClick={() => doubled.value++}>{'double'}</button>
+				<button class="early-inc" onClick={() => count.value++}>
+					{'inc'}
+				</button>
+				<button class="early-double" onClick={() => doubled.value++}>
+					{'double'}
+				</button>
 			</>
 		}
 	</>
@@ -367,7 +412,9 @@ function ProvideChild() @{
 function BareJsxConditionalApp() @{
 	const skip = ref(true);
 	<>
-		<button class="bare-toggle" onClick={() => (skip.value = !skip.value)}>{'toggle'}</button>
+		<button class="bare-toggle" onClick={() => (skip.value = !skip.value)}>
+			{'toggle'}
+		</button>
 		@if (!skip.value) {
 			<p class="bare-continuation">{'visible'}</p>
 		}
@@ -377,7 +424,9 @@ function BareJsxConditionalApp() @{
 function ProvideConditionalApp() @{
 	const skip = ref(true);
 	<>
-		<button class="provide-toggle" onClick={() => (skip.value = !skip.value)}>{'toggle'}</button>
+		<button class="provide-toggle" onClick={() => (skip.value = !skip.value)}>
+			{'toggle'}
+		</button>
 		@if (!skip.value) {
 			provide('provide-test-key', 'dark');
 			<ProvideChild />
@@ -389,8 +438,12 @@ function WatchConditionalApp() @{
 	const skip = ref(true);
 	const value = ref(0);
 	<>
-		<button class="watch-toggle" onClick={() => (skip.value = !skip.value)}>{'toggle'}</button>
-		<button class="watch-inc" onClick={() => value.value++}>{'inc'}</button>
+		<button class="watch-toggle" onClick={() => (skip.value = !skip.value)}>
+			{'toggle'}
+		</button>
+		<button class="watch-inc" onClick={() => value.value++}>
+			{'inc'}
+		</button>
 		@if (!skip.value) {
 			watch(value, () => {
 				watch_fire_count++;
@@ -404,11 +457,12 @@ function WatchEffectConditionalApp() @{
 	const skip = ref(true);
 	const value = ref(0);
 	<>
-		<button
-			class="watch-effect-toggle"
-			onClick={() => (skip.value = !skip.value)}
-		>{'toggle'}</button>
-		<button class="watch-effect-inc" onClick={() => value.value++}>{'inc'}</button>
+		<button class="watch-effect-toggle" onClick={() => (skip.value = !skip.value)}>
+			{'toggle'}
+		</button>
+		<button class="watch-effect-inc" onClick={() => value.value++}>
+			{'inc'}
+		</button>
 		@if (!skip.value) {
 			watchEffect(() => {
 				void value.value;
@@ -427,7 +481,9 @@ function IfReactiveApp() @{
 		} @else {
 			<span class="hidden">{'hidden'}</span>
 		}
-		<button class="toggle" onClick={() => (show.value = !show.value)}>{'toggle'}</button>
+		<button class="toggle" onClick={() => (show.value = !show.value)}>
+			{'toggle'}
+		</button>
 	</>
 }
 
@@ -481,10 +537,16 @@ function ForReactiveApp() @{
 	const items = ref(['a', 'b', 'c']);
 	<>
 		@for (const item of items.value) {
-			<li class="item" key={item}>{item}</li>
+			<li class="item" key={item}>
+				{item}
+			</li>
 		}
-		<button class="add" onClick={() => (items.value = [...items.value, 'd'])}>{'add'}</button>
-		<button class="remove" onClick={() => (items.value = items.value.slice(1))}>{'remove'}</button>
+		<button class="add" onClick={() => (items.value = [...items.value, 'd'])}>
+			{'add'}
+		</button>
+		<button class="remove" onClick={() => (items.value = items.value.slice(1))}>
+			{'remove'}
+		</button>
 	</>
 }
 
@@ -492,7 +554,9 @@ function ForFilteredApp() @{
 	const items = ref(['a', '', 'c']);
 	const visibleItems = () => items.value.filter(Boolean);
 	@for (const item of visibleItems()) {
-		<li class="continue-item" key={item}>{item}</li>
+		<li class="continue-item" key={item}>
+			{item}
+		</li>
 	}
 }
 
@@ -502,18 +566,18 @@ function ForIndexReactiveApp() @{
 		@for (const item of items.value; index i) {
 			<li class="indexed-item">{`${i}:${item}`}</li>
 		}
-		<button
-			class="prepend"
-			onClick={() => (items.value = ['z', ...items.value])}
-		>{'prepend'}</button>
+		<button class="prepend" onClick={() => (items.value = ['z', ...items.value])}>
+			{'prepend'}
+		</button>
 		<button
 			class="drop-middle"
 			onClick={() => (items.value = [items.value[0], ...items.value.slice(2)])}
-		>{'drop middle'}</button>
-		<button
-			class="reverse"
-			onClick={() => (items.value = [...items.value].reverse())}
-		>{'reverse'}</button>
+		>
+			{'drop middle'}
+		</button>
+		<button class="reverse" onClick={() => (items.value = [...items.value].reverse())}>
+			{'reverse'}
+		</button>
 	</>
 }
 
@@ -535,16 +599,19 @@ function ForKeyedStateApp() @{
 		@for (const item of items.value; key item.id) {
 			<KeyedRow {item} />
 		}
-		<button
-			class="reverse-keyed"
-			onClick={() => (items.value = [...items.value].reverse())}
-		>{'reverse'}</button>
+		<button class="reverse-keyed" onClick={() => (items.value = [...items.value].reverse())}>
+			{'reverse'}
+		</button>
 		<button
 			class="rename-beta"
-			onClick={() => (items.value = items.value.map(
-				(item) => item.id === 'b' ? { ...item, label: 'Bravo' } : item,
-			))}
-		>{'rename'}</button>
+			onClick={() =>
+				(items.value = items.value.map((item) =>
+					item.id === 'b' ? { ...item, label: 'Bravo' } : item,
+				))
+			}
+		>
+			{'rename'}
+		</button>
 	</>
 }
 
@@ -558,16 +625,19 @@ function ForJsxKeyedStateApp() @{
 		@for (const item of items.value) {
 			<KeyedRow key={item.id} {item} />
 		}
-		<button
-			class="reverse-jsx-keyed"
-			onClick={() => (items.value = [...items.value].reverse())}
-		>{'reverse'}</button>
+		<button class="reverse-jsx-keyed" onClick={() => (items.value = [...items.value].reverse())}>
+			{'reverse'}
+		</button>
 		<button
 			class="rename-jsx-keyed-beta"
-			onClick={() => (items.value = items.value.map(
-				(item) => item.id === 'b' ? { ...item, label: 'Bravo' } : item,
-			))}
-		>{'rename'}</button>
+			onClick={() =>
+				(items.value = items.value.map((item) =>
+					item.id === 'b' ? { ...item, label: 'Bravo' } : item,
+				))
+			}
+		>
+			{'rename'}
+		</button>
 	</>
 }
 
@@ -581,10 +651,9 @@ function ForIndexKeyedStateApp() @{
 		@for (const item of items.value; index i; key item.id) {
 			<p class={`indexed-keyed-row row-${item.id}`}>{`${i}:${item.label}`}</p>
 		}
-		<button
-			class="reverse-index-keyed"
-			onClick={() => (items.value = [...items.value].reverse())}
-		>{'reverse'}</button>
+		<button class="reverse-index-keyed" onClick={() => (items.value = [...items.value].reverse())}>
+			{'reverse'}
+		</button>
 	</>
 }
 
@@ -601,7 +670,9 @@ function ForJsxIndexKeyedApp() @{
 		<button
 			class="reverse-jsx-index-keyed"
 			onClick={() => (items.value = [...items.value].reverse())}
-		>{'reverse'}</button>
+		>
+			{'reverse'}
+		</button>
 	</>
 }
 
@@ -622,13 +693,19 @@ function ForNestedIndexKeyedApp() @{
 		<button
 			class="reverse-nested-index-keyed"
 			onClick={() => (items.value = [...items.value].reverse())}
-		>{'reverse'}</button>
+		>
+			{'reverse'}
+		</button>
 		<button
 			class="rename-nested-index-keyed-beta"
-			onClick={() => (items.value = items.value.map(
-				(item) => item.id === 'b' ? { ...item, label: 'Bravo' } : item,
-			))}
-		>{'rename'}</button>
+			onClick={() =>
+				(items.value = items.value.map((item) =>
+					item.id === 'b' ? { ...item, label: 'Bravo' } : item,
+				))
+			}
+		>
+			{'rename'}
+		</button>
 	</>
 }
 
@@ -644,7 +721,9 @@ function ForImplicitIndexKeyFragmentApp() @{
 		<button
 			class="reverse-fragment-index"
 			onClick={() => (items.value = [...items.value].reverse())}
-		>{'reverse'}</button>
+		>
+			{'reverse'}
+		</button>
 	</>
 }
 
@@ -669,13 +748,19 @@ function ForDestructuredKeyedStateApp() @{
 		<button
 			class="reverse-destructured-keyed"
 			onClick={() => (items.value = [...items.value].reverse())}
-		>{'reverse'}</button>
+		>
+			{'reverse'}
+		</button>
 		<button
 			class="rename-destructured-keyed-beta"
-			onClick={() => (items.value = items.value.map(
-				(item) => item.id === 'b' ? { ...item, label: 'Bravo' } : item,
-			))}
-		>{'rename'}</button>
+			onClick={() =>
+				(items.value = items.value.map((item) =>
+					item.id === 'b' ? { ...item, label: 'Bravo' } : item,
+				))
+			}
+		>
+			{'rename'}
+		</button>
 	</>
 }
 
@@ -693,8 +778,12 @@ function SwitchReactiveApp() @{
 				<div class="page">{'404'}</div>
 			}
 		}
-		<button class="go-about" onClick={() => (page.value = 'about')}>{'about'}</button>
-		<button class="go-unknown" onClick={() => (page.value = 'other')}>{'other'}</button>
+		<button class="go-about" onClick={() => (page.value = 'about')}>
+			{'about'}
+		</button>
+		<button class="go-unknown" onClick={() => (page.value = 'other')}>
+			{'other'}
+		</button>
 	</>
 }
 
@@ -743,10 +832,14 @@ function ErrorToggleApp() @{
 						fail.value = false;
 						reset();
 					}}
-				>{'reset'}</button>
+				>
+					{'reset'}
+				</button>
 			</>
 		}
-		<button class="trigger-error" onClick={() => (fail.value = true)}>{'break'}</button>
+		<button class="trigger-error" onClick={() => (fail.value = true)}>
+			{'break'}
+		</button>
 	</>
 }
 
@@ -781,7 +874,9 @@ function IfInsideTryApp() @{
 		} @catch (err) {
 			<p class="caught">{'error'}</p>
 		}
-		<button class="toggle" onClick={() => (show.value = !show.value)}>{'toggle'}</button>
+		<button class="toggle" onClick={() => (show.value = !show.value)}>
+			{'toggle'}
+		</button>
 	</>
 }
 
@@ -790,12 +885,16 @@ function ForInsideTryApp() @{
 	<>
 		@try {
 			@for (const item of items.value) {
-				<span class="try-item" key={item}>{item}</span>
+				<span class="try-item" key={item}>
+					{item}
+				</span>
 			}
 		} @catch (err) {
 			<p class="caught">{'error'}</p>
 		}
-		<button class="add" onClick={() => (items.value = [...items.value, 'z'])}>{'add'}</button>
+		<button class="add" onClick={() => (items.value = [...items.value, 'z'])}>
+			{'add'}
+		</button>
 	</>
 }
 
@@ -817,8 +916,12 @@ function SwitchInsideTryApp() @{
 		} @catch (err) {
 			<p class="caught">{'error'}</p>
 		}
-		<button class="go-about" onClick={() => (page.value = 'about')}>{'about'}</button>
-		<button class="go-unknown" onClick={() => (page.value = 'other')}>{'other'}</button>
+		<button class="go-about" onClick={() => (page.value = 'about')}>
+			{'about'}
+		</button>
+		<button class="go-unknown" onClick={() => (page.value = 'other')}>
+			{'other'}
+		</button>
 	</>
 }
 
@@ -1057,6 +1160,20 @@ describe('tsrx-vue runtime', () => {
 		expect(container.querySelector('.multi-spread-explicit-ref')!.hasAttribute('ref')).toBe(false);
 	});
 
+	for (const enabled of [false, true]) {
+		it(`renders conditional host spreads when the condition is ${enabled}`, async () => {
+			conditional_spread_and_node = null;
+			conditional_spread_null_node = null;
+			await render(ConditionalSpreadApp, { enabled });
+			const inputs = Array.from(
+				container.querySelectorAll('.conditional-spread'),
+			) as HTMLInputElement[];
+			expect(inputs.map((input) => input.disabled)).toEqual([enabled, enabled, enabled]);
+			expect(conditional_spread_and_node).toBe(inputs[1]);
+			expect(conditional_spread_null_node).toBe(inputs[2]);
+		});
+	}
+
 	it('assigns named ref props backed by Vue ref objects', async () => {
 		named_vue_ref_object.value = null;
 		await render(NamedRefObjectApp);
@@ -1222,52 +1339,27 @@ describe('tsrx-vue runtime', () => {
 
 	it('updates for-of index bindings after insertions, removals, and reorders', async () => {
 		await render(ForIndexReactiveApp);
-		expect(texts('.indexed-item')).toEqual([
-			'0:a',
-			'1:b',
-			'2:c',
-		]);
+		expect(texts('.indexed-item')).toEqual(['0:a', '1:b', '2:c']);
 
 		await click('.prepend');
-		expect(texts('.indexed-item')).toEqual([
-			'0:z',
-			'1:a',
-			'2:b',
-			'3:c',
-		]);
+		expect(texts('.indexed-item')).toEqual(['0:z', '1:a', '2:b', '3:c']);
 
 		await click('.drop-middle');
-		expect(texts('.indexed-item')).toEqual([
-			'0:z',
-			'1:b',
-			'2:c',
-		]);
+		expect(texts('.indexed-item')).toEqual(['0:z', '1:b', '2:c']);
 
 		await click('.reverse');
-		expect(texts('.indexed-item')).toEqual([
-			'0:c',
-			'1:b',
-			'2:z',
-		]);
+		expect(texts('.indexed-item')).toEqual(['0:c', '1:b', '2:z']);
 	});
 
 	it('preserves keyed loop component state across reorders and prop updates', async () => {
 		await render(ForKeyedStateApp);
-		expect(texts('.keyed-row')).toEqual([
-			'Alpha:0',
-			'Beta:0',
-			'Gamma:0',
-		]);
+		expect(texts('.keyed-row')).toEqual(['Alpha:0', 'Beta:0', 'Gamma:0']);
 
 		await click('.row-b');
 		expect(text('.row-b')).toBe('Beta:1');
 
 		await click('.reverse-keyed');
-		expect(texts('.keyed-row')).toEqual([
-			'Gamma:0',
-			'Beta:1',
-			'Alpha:0',
-		]);
+		expect(texts('.keyed-row')).toEqual(['Gamma:0', 'Beta:1', 'Alpha:0']);
 
 		await click('.rename-beta');
 		expect(text('.row-b')).toBe('Bravo:1');
@@ -1275,21 +1367,13 @@ describe('tsrx-vue runtime', () => {
 
 	it('preserves component state when keys come from JSX key attributes', async () => {
 		await render(ForJsxKeyedStateApp);
-		expect(texts('.keyed-row')).toEqual([
-			'Alpha:0',
-			'Beta:0',
-			'Gamma:0',
-		]);
+		expect(texts('.keyed-row')).toEqual(['Alpha:0', 'Beta:0', 'Gamma:0']);
 
 		await click('.row-b');
 		expect(text('.row-b')).toBe('Beta:1');
 
 		await click('.reverse-jsx-keyed');
-		expect(texts('.keyed-row')).toEqual([
-			'Gamma:0',
-			'Beta:1',
-			'Alpha:0',
-		]);
+		expect(texts('.keyed-row')).toEqual(['Gamma:0', 'Beta:1', 'Alpha:0']);
 
 		await click('.rename-jsx-keyed-beta');
 		expect(text('.row-b')).toBe('Bravo:1');
@@ -1297,50 +1381,26 @@ describe('tsrx-vue runtime', () => {
 
 	it('updates index bindings in keyed for-of loops after reorders', async () => {
 		await render(ForIndexKeyedStateApp);
-		expect(texts('.indexed-keyed-row')).toEqual([
-			'0:Alpha',
-			'1:Beta',
-			'2:Gamma',
-		]);
+		expect(texts('.indexed-keyed-row')).toEqual(['0:Alpha', '1:Beta', '2:Gamma']);
 
 		await click('.reverse-index-keyed');
-		expect(texts('.indexed-keyed-row')).toEqual([
-			'0:Gamma',
-			'1:Beta',
-			'2:Alpha',
-		]);
+		expect(texts('.indexed-keyed-row')).toEqual(['0:Gamma', '1:Beta', '2:Alpha']);
 	});
 
 	it('updates index bindings when JSX key attributes drive keyed for-of loops', async () => {
 		await render(ForJsxIndexKeyedApp);
-		expect(texts('.jsx-index-keyed-row')).toEqual([
-			'0:Alpha',
-			'1:Beta',
-			'2:Gamma',
-		]);
+		expect(texts('.jsx-index-keyed-row')).toEqual(['0:Alpha', '1:Beta', '2:Gamma']);
 
 		await click('.reverse-jsx-index-keyed');
-		expect(texts('.jsx-index-keyed-row')).toEqual([
-			'0:Gamma',
-			'1:Beta',
-			'2:Alpha',
-		]);
+		expect(texts('.jsx-index-keyed-row')).toEqual(['0:Gamma', '1:Beta', '2:Alpha']);
 	});
 
 	it('updates keyed item and index reads inside nested loop output', async () => {
 		await render(ForNestedIndexKeyedApp);
-		expect(texts('.nested-index-keyed-row')).toEqual([
-			'0:Alpha',
-			'1:Beta',
-			'2:Gamma',
-		]);
+		expect(texts('.nested-index-keyed-row')).toEqual(['0:Alpha', '1:Beta', '2:Gamma']);
 
 		await click('.reverse-nested-index-keyed');
-		expect(texts('.nested-index-keyed-row')).toEqual([
-			'0:Gamma',
-			'1:Beta',
-			'2:Alpha',
-		]);
+		expect(texts('.nested-index-keyed-row')).toEqual(['0:Gamma', '1:Beta', '2:Alpha']);
 
 		await click('.rename-nested-index-keyed-beta');
 		expect(text('.row-b')).toBe('1:Bravo');
@@ -1348,39 +1408,23 @@ describe('tsrx-vue runtime', () => {
 
 	it('updates implicit index-keyed fragments after reorders', async () => {
 		await render(ForImplicitIndexKeyFragmentApp);
-		expect(texts('.fragment-index-item')).toEqual([
-			'0:a',
-			'1:b',
-			'2:c',
-		]);
+		expect(texts('.fragment-index-item')).toEqual(['0:a', '1:b', '2:c']);
 		expect(texts('.fragment-value-item')).toEqual(['a', 'b', 'c']);
 
 		await click('.reverse-fragment-index');
-		expect(texts('.fragment-index-item')).toEqual([
-			'0:c',
-			'1:b',
-			'2:a',
-		]);
+		expect(texts('.fragment-index-item')).toEqual(['0:c', '1:b', '2:a']);
 		expect(texts('.fragment-value-item')).toEqual(['c', 'b', 'a']);
 	});
 
 	it('preserves keyed component state for destructured for-of loop params', async () => {
 		await render(ForDestructuredKeyedStateApp);
-		expect(texts('.destructured-keyed-row')).toEqual([
-			'Alpha:0',
-			'Beta:0',
-			'Gamma:0',
-		]);
+		expect(texts('.destructured-keyed-row')).toEqual(['Alpha:0', 'Beta:0', 'Gamma:0']);
 
 		await click('.row-b');
 		expect(text('.row-b')).toBe('Beta:1');
 
 		await click('.reverse-destructured-keyed');
-		expect(texts('.destructured-keyed-row')).toEqual([
-			'Gamma:0',
-			'Beta:1',
-			'Alpha:0',
-		]);
+		expect(texts('.destructured-keyed-row')).toEqual(['Gamma:0', 'Beta:1', 'Alpha:0']);
 
 		await click('.rename-destructured-keyed-beta');
 		expect(text('.row-b')).toBe('Bravo:1');
@@ -1527,3 +1571,7 @@ describe('tsrx-vue runtime', () => {
 
 runSwitchFallthroughRuntimeTests();
 runTsxExpressionTsrxRuntimeTests();
+runJsxTextWhitespaceRuntimeTests({ nbsp: 'kept' });
+runScriptBodyRuntimeTests();
+runNullishSpreadRefRuntimeTests();
+runExpressionSpreadRefRuntimeTests();

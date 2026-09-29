@@ -18,10 +18,11 @@ statements, dynamic tags, sibling-scoped styles, themes, and error boundaries.
 Hono handles rendering, hooks, context, and Suspense through its own runtime APIs.
 Authored `class` attributes are preserved.
 
-Server components may be async and use top-level `await`. DOM components must be
-synchronous; use Hono's `use(promise)` with a pending boundary for asynchronous
-work. `@catch (error)` is supported, but Hono does not provide the reset callback
-used by some other targets.
+Server components may be async and use `await` in setup code and in `@for`,
+`@empty`, `@switch`, and `@if` bodies; a loop body finishes one item before it
+starts the next. DOM components must be synchronous; use Hono's `use(promise)`
+with a pending boundary for asynchronous work. `@catch (error)` is supported, but
+Hono does not provide the reset callback used by some other targets.
 
 ```tsx
 import { use } from 'hono/jsx';
@@ -46,6 +47,16 @@ The DOM validator diagnoses explicit async component references that it can
 resolve statically within the module. It does not infer arbitrary Promise returns,
 inter-module values, or object members that may have been overwritten by unknown
 spreads or computed properties.
+
+## Scripts
+
+A `<script>` body is raw text, written into the output as it is in the source:
+comments, `<`, `&amp;`, and line breaks stay, and `{code}` is text, not an
+expression. Both modes output it as `dangerouslySetInnerHTML`, because Hono's
+server renderer escapes a string child like text. Server HTML runs the script when
+the browser reads the page. The DOM renderer runs a script when it inserts it, as
+it does for the same TSX. For a body computed at runtime, write
+`<script dangerouslySetInnerHTML={{ __html: code }} />`.
 
 ## Build integrations
 

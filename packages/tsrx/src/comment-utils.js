@@ -105,6 +105,21 @@ export function should_preserve_jsx_tooling_comment(comment) {
 }
 
 /**
+ * A comment between JSX children that the editor's TypeScript keeps, in its
+ * `{}` (see `#addTemplateText` in `plugin.js`): a tooling comment, or a
+ * `@ts-expect-error` or `@ts-ignore` block comment, JSDoc-style too, which
+ * TypeScript also reads there, as in TSX's `{/* @ts-expect-error *\/}`.
+ * @param {AST.CommentWithLocation} comment
+ * @returns {boolean}
+ */
+export function is_jsx_child_tooling_comment(comment) {
+	return (
+		should_preserve_jsx_tooling_comment(comment) ||
+		(comment.type === 'Block' && /^[\s*]*@ts-(?:expect-error|ignore)\b/.test(comment.value))
+	);
+}
+
+/**
  * Only file-wide directives may move ahead of generated imports or hoists.
  * In particular, @ts-ignore/@ts-expect-error and declaration JSDoc must stay
  * with the statement they describe.
@@ -117,6 +132,20 @@ export function is_file_level_pragma(comment) {
 		is_triple_slash_directive(comment) ||
 		(comment.type === 'Line' && /^\s*@ts-(?:no)?check\b/.test(comment.value))
 	);
+}
+
+/**
+ * The hashbang line (`#!…`) that starts `source`, without its line break.
+ * The parser reports a hashbang to `onComment` as a `Line` comment at offset 0
+ * whose value is the text after `#!`, so a printer that writes line comments as
+ * `//…` has to print this line itself.
+ * @param {string} source
+ * @returns {string | null}
+ */
+export function get_hashbang(source) {
+	if (!source.startsWith('#!')) return null;
+	// Acorn ends the hashbang at the first line terminator, like a line comment.
+	return /^#![^\n\r\u2028\u2029]*/.exec(source)?.[0] ?? null;
 }
 
 /**

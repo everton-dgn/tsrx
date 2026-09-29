@@ -1,5 +1,58 @@
 # @tsrx/typescript-plugin
 
+## 0.4.12
+
+### Patch Changes
+
+- Updated dependencies
+  [[`baaad3d`](https://github.com/tsrx-org/tsrx/commit/baaad3db8a5ec9add8c584351c2d2040bdee6f49)]:
+  - @tsrx/solid@0.2.9
+  - @tsrx/preact@0.2.9
+  - @tsrx/react@0.3.9
+  - @tsrx/vue@0.2.9
+
+## 0.4.11
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @tsrx/preact@0.2.8
+  - @tsrx/react@0.3.8
+  - @tsrx/solid@0.2.8
+  - @tsrx/vue@0.2.8
+
+## 0.4.10
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @tsrx/preact@0.2.7
+  - @tsrx/react@0.3.7
+  - @tsrx/solid@0.2.7
+  - @tsrx/vue@0.2.7
+
+## 0.4.9
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @tsrx/preact@0.2.6
+  - @tsrx/react@0.3.6
+  - @tsrx/solid@0.2.6
+  - @tsrx/vue@0.2.6
+
+## 0.4.8
+
+### Patch Changes
+
+- Updated dependencies
+  [[`8916c70`](https://github.com/tsrx-org/tsrx/commit/8916c7091156023e716c0d75f0be4a8465c6d5c4),
+  [`69b5a33`](https://github.com/tsrx-org/tsrx/commit/69b5a3359edc09ec90b16a721f2f00909f3e4f21)]:
+  - @tsrx/react@0.3.5
+  - @tsrx/preact@0.2.5
+  - @tsrx/solid@0.2.5
+  - @tsrx/vue@0.2.5
+
 ## 0.4.7
 
 No changes in this release.

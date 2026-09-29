@@ -5,6 +5,7 @@
 import {
 	builders as b,
 	createJsxTransform,
+	DIAGNOSTIC_CODES,
 	error,
 	findFirstTopLevelAwait,
 	findFirstTopLevelAwaitInTsrxFunctionBody,
@@ -52,6 +53,7 @@ function create_hono_platform(mode) {
 							await_node,
 							ctx.errors,
 							ctx.comments,
+							DIAGNOSTIC_CODES.TARGET_AWAIT_UNSUPPORTED,
 						);
 					},
 				}
@@ -80,6 +82,11 @@ function create_hono_platform(mode) {
 		jsx: {
 			rewriteClassAttr: false,
 			multiRefStrategy: 'merge-refs',
+			hostSpreadRefBinding: 'in-place',
+			// Hono's server renderer escapes a string child of `<script>` like
+			// text; `dangerouslySetInnerHTML` renders the body as written in both
+			// modes.
+			scriptBody: 'dangerouslySetInnerHTML',
 		},
 		validation: {
 			// Server JSX supports async function components. The DOM renderer is
@@ -111,6 +118,7 @@ function create_hono_error_boundary(try_content, fallback_fn, ctx, node) {
 			reset_param,
 			ctx.errors,
 			ctx.comments,
+			DIAGNOSTIC_CODES.TARGET_CATCH_RESET_UNSUPPORTED,
 		);
 	}
 
@@ -162,6 +170,7 @@ export function validate_hono_dom_components(ast, filename, context) {
 		component,
 		context.errors,
 		context.comments,
+		DIAGNOSTIC_CODES.TARGET_AWAIT_UNSUPPORTED,
 	);
 }
 

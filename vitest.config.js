@@ -380,8 +380,21 @@ export default defineConfig({
 			{
 				test: {
 					name: 'prettier-plugin',
-					include: ['packages/prettier-plugin/src/*.test.js'],
-					environment: 'jsdom',
+					include: ['packages/prettier-plugin/tests/*.test.js'],
+					environment: 'node',
+				},
+				plugins: [],
+			},
+			{
+				test: {
+					name: 'prettier-plugin-3.6',
+					include: ['packages/prettier-plugin/tests/import-types.test.js'],
+					environment: 'node',
+				},
+				// Use the older formatter and its printer, parsers, and document helpers
+				// throughout the plugin. Only the import-type compatibility tests run here.
+				resolve: {
+					alias: [{ find: /^prettier(?=\/|$)/u, replacement: 'prettier-3-6' }],
 				},
 				plugins: [],
 			},

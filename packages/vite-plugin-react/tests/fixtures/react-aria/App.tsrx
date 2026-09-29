@@ -18,8 +18,7 @@ export function ReactAriaFixture() @{
 	const [entries, setEntries] = useState<ActionLogEntry[]>([]);
 	const lastEntry = entries.at(-1);
 	function recordAction(id: ActionId, pointerType: ActionPointerType) {
-		const action =
-			id === saveAction.id ? saveAction : deleteAction;
+		const action = id === saveAction.id ? saveAction : deleteAction;
 		setEntries((prev) => [...prev, { id, label: action.label, pointerType }]);
 	}
 
@@ -30,12 +29,8 @@ export function ReactAriaFixture() @{
 			onAction={recordAction}
 		/>
 		<AriaActionButton action={deleteAction} isDisabled={true} onAction={recordAction} />
-		<output className="last-action">
-			{lastEntry ? lastEntry.id : 'none'}
-		</output>
-		<output className="last-pointer">
-			{lastEntry ? lastEntry.pointerType : 'none'}
-		</output>
+		<output className="last-action">{lastEntry ? lastEntry.id : 'none'}</output>
+		<output className="last-pointer">{lastEntry ? lastEntry.pointerType : 'none'}</output>
 		<output className="action-count">{entries.length}</output>
 	</section>
 }

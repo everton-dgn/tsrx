@@ -12,6 +12,7 @@ import {
 import {
 	TSRX_CSS_GLOBAL_MIDDLE_PLACEMENT_ERROR,
 	TSRX_CSS_GLOBAL_NESTED_IN_PSEUDOCLASS_ERROR,
+	TSRX_CSS_IMPORT_ERROR,
 	TSRX_STYLE_APPLY_DUPLICATE_ERROR,
 	TSRX_STYLE_APPLY_UNSUPPORTED_HOST_ERROR,
 	TSRX_STYLE_APPLY_VALUE_ERROR,
@@ -49,6 +50,13 @@ function analyze(source, options = { collect: true }) {
 	return analyzeTsrx(ast, filename, { ...options, comments });
 }
 
+/** The codes of the style diagnostics (`DIAGNOSTIC_CODES.STYLE_*`). */
+const STYLE_CODES = new Set(
+	Object.entries(DIAGNOSTIC_CODES)
+		.filter(([name]) => name.startsWith('STYLE_'))
+		.map(([, code]) => code),
+);
+
 /**
  * Style diagnostics only, so unrelated analysis output never leaks into the
  * assertions of this file.
@@ -56,7 +64,7 @@ function analyze(source, options = { collect: true }) {
  * @param {ReturnType<typeof analyze>} result
  */
 function style_errors(result) {
-	return result.errors.filter((error) => error.code?.startsWith('tsrx-style-'));
+	return result.errors.filter((error) => STYLE_CODES.has(/** @type {string} */ (error.code)));
 }
 
 /**
@@ -155,7 +163,7 @@ describe('scoped style analysis', () => {
 				loc_of(source, 'apply>'),
 			);
 			expect(first_apply(result)).toEqual([]);
-			expect(result.styles.assigned[0].metadata.styleKind).toBe('class-map');
+			expect(result.styles.assigned[0].metadata.styleApplied).toBeFalsy();
 		});
 
 		it('accepts an expression value', () => {
@@ -286,7 +294,7 @@ describe('scoped style analysis', () => {
 			);
 			expect(first_apply(result)).toEqual([]);
 			// The unresolved entry does not mark the block as applied.
-			expect(result.styles.assigned[0].metadata.styleKind).toBe('class-map');
+			expect(result.styles.assigned[0].metadata.styleApplied).toBeFalsy();
 		});
 
 		it('reports a member applied before its object declaration', () => {
@@ -304,6 +312,26 @@ describe('scoped style analysis', () => {
 			const result = analyze(`${theme}\nfunction App() @{ <><style apply={t} /><div /></> }`);
 
 			expect(style_errors(result)).toEqual([]);
+		});
+
+		it('resolves a name reused across @switch cases to its own case', () => {
+			const result = analyze(`function App({ kind }) @{
+	@switch (kind) {
+		@case 'a': {
+			const t = <style>.a { color: red; }</style>;
+			<><style apply={t} /><div /></>
+		}
+		@case 'b': {
+			const t = <style>.b { color: blue; }</style>;
+			<><style apply={t} /><div /></>
+		}
+	}
+}`);
+
+			expect(style_errors(result)).toEqual([]);
+			const [a, b] = result.styles.standalone;
+			expect(a.metadata.styleApplies?.[0].target).toBe(result.styles.assigned[0]);
+			expect(b.metadata.styleApplies?.[0].target).toBe(result.styles.assigned[1]);
 		});
 	});
 
@@ -344,7 +372,7 @@ describe('scoped style analysis', () => {
 			);
 			// Head styles are neither standalone nor assigned.
 			expect(result.styles.standalone).toEqual([]);
-			expect(result.styles.assigned[0].metadata.styleKind).toBe('class-map');
+			expect(result.styles.assigned[0].metadata.styleApplied).toBeFalsy();
 		});
 
 		it('reports apply on a resource style', () => {
@@ -400,6 +428,50 @@ describe('scoped style analysis', () => {
 				'const t = <style>.class { color: red; }</style>;',
 			]) {
 				expect(style_errors(analyze(source)), source).toEqual([]);
+			}
+		});
+	});
+
+	describe('css @import', () => {
+		it('reports an @import rule at its position', () => {
+			const source =
+				"function App() @{\n\t<>\n\t\t<style>@import './a.css'; p {}</style>\n\t\t<p />\n\t</>\n}";
+			const errors = errors_with_code(analyze(source), DIAGNOSTIC_CODES.CSS_IMPORT);
+
+			expect(errors).toHaveLength(1);
+			expect(errors[0].message).toBe(TSRX_CSS_IMPORT_ERROR);
+			expect(errors[0].type).toBe('usage');
+			expect(errors[0].loc?.start).toEqual(loc_of(source, '@import'));
+		});
+
+		it('reports every style block kind and @import form', () => {
+			for (const source of [
+				"function App() @{ <><style>@import url('./a.css');</style><div /></> }",
+				"function App() @{ <><style>@IMPORT './a.css' print;</style><div /></> }",
+				"function App() @{ <html><head><style>@import './a.css';</style></head></html> }",
+				"const t = <style>@import 'pkg/theme.css'; .a {}</style>;",
+				"export default <style>@import './a.css';</style>;",
+			]) {
+				const errors = errors_with_code(analyze(source), DIAGNOSTIC_CODES.CSS_IMPORT);
+
+				expect(errors, source).toHaveLength(1);
+				expect(errors[0].message, source).toBe(TSRX_CSS_IMPORT_ERROR);
+			}
+		});
+
+		it('reports each @import rule in a block', () => {
+			const source = "const t = <style>@import './a.css'; @import './b.css';</style>;";
+
+			expect(errors_with_code(analyze(source), DIAGNOSTIC_CODES.CSS_IMPORT)).toHaveLength(2);
+		});
+
+		it('does not report other at-rules or plain TSX style children', () => {
+			for (const source of [
+				'function App() @{ <><style>@media print { p { color: red; } }</style><p /></> }',
+				"function App() @{ <><style>@font-face { src: url('./a.woff2'); }</style><p /></> }",
+				'function App() { return <style>{\'@import "./a.css";\'}</style>; }',
+			]) {
+				expect(errors_with_code(analyze(source), DIAGNOSTIC_CODES.CSS_IMPORT), source).toEqual([]);
 			}
 		});
 	});
@@ -875,82 +947,53 @@ describe('scoped style analysis', () => {
 		});
 	});
 
-	describe('theme and class-map classification', () => {
-		it('marks a block exported through every export form as a theme', () => {
+	describe('assigned blocks are themes', () => {
+		it('marks an assigned block in every position as a theme', () => {
 			for (const source of [
+				'const t = <style>.a {}</style>;',
 				'export const t = <style>.a {}</style>;',
-				'export let t = <style>.a {}</style>;',
-				'const t = <style>.a {}</style>;\nexport { t };',
 				'const t = <style>.a {}</style>;\nexport { t as theme };',
-				'const t = <style>.a {}</style>;\nexport default t;',
 				'export default <style>.a {}</style>;',
-				'export const themes = { dark: <style>.a {}</style> };',
+				'const themes = { dark: <style>.a {}</style> };',
+				'const themes = [<style>.a {}</style>];',
+				'use({ theme: <style>.a {}</style> });',
+				'function helper() { return <style>.a {}</style>; }',
+				'function App() @{ const t = <style>.a {}</style>; <div class={t.a} /> }',
 			]) {
 				const result = analyze(source);
 				const [block] = result.styles.assigned;
 
 				expect(style_errors(result), source).toEqual([]);
 				expect(block.metadata.styleKind, source).toBe('theme');
-				expect(block.metadata.styleExported, source).toBe(true);
-				expect(block.metadata.styleApplied, source).toBeFalsy();
 			}
 		});
 
-		it('marks a locally applied block as a theme', () => {
-			const result = analyze(`${theme}\nfunction App() @{ <><style apply={t} /><div /></> }`);
-			const [block] = result.styles.assigned;
-
-			expect(block.metadata.styleKind).toBe('theme');
-			expect(block.metadata.styleExported).toBe(false);
-			expect(block.metadata.styleApplied).toBe(true);
-		});
-
-		it('marks every block applied through an array as a theme', () => {
+		it('marks only applied blocks as applied', () => {
 			const result = analyze(
 				'const a = <style>.a {}</style>;\nconst b = <style>.b {}</style>;\nconst c = <style>.c {}</style>;\nfunction App() @{ <><style apply={[a, b]} /><div /></> }',
 			);
 			const [a, b, c] = result.styles.assigned;
 
-			expect([a, b].map((block) => block.metadata.styleKind)).toEqual(['theme', 'theme']);
-			expect([a, b].map((block) => block.metadata.styleApplied)).toEqual([true, true]);
-			expect(c.metadata.styleKind).toBe('class-map');
+			expect([a, b, c].map((block) => block.metadata.styleApplied)).toEqual([
+				true,
+				true,
+				undefined,
+			]);
+			expect([a, b, c].map((block) => block.metadata.styleKind)).toEqual([
+				'theme',
+				'theme',
+				'theme',
+			]);
 		});
 
-		it('marks an exported and applied block as a theme once', () => {
-			const result = analyze(
-				'export const t = <style>.a {}</style>;\nfunction App() @{ <><style apply={t} /><div /></> }',
-			);
-			const [block] = result.styles.assigned;
-
-			expect(block.metadata.styleKind).toBe('theme');
-			expect(block.metadata.styleExported).toBe(true);
-			expect(block.metadata.styleApplied).toBe(true);
-		});
-
-		it('marks an unexported, unapplied block as a class map', () => {
-			for (const source of [
-				'const t = <style>.a {}</style>;',
-				'function App() @{ const t = <style>.a {}</style>; <div class={t.a} /> }',
-				'use({ theme: <style>.a {}</style> });',
-				`${theme}\nfunction App() @{ <div class={t.a} /> }`,
-			]) {
-				const result = analyze(source);
-				const [block] = result.styles.assigned;
-
-				expect(block.metadata.styleKind, source).toBe('class-map');
-				expect(block.metadata.styleExported, source).toBe(false);
-				expect(block.metadata.styleApplied, source).toBeFalsy();
-			}
-		});
-
-		it('classifies object literal property blocks individually', () => {
+		it('resolves apply to the object literal property block it names', () => {
 			const result = analyze(
 				"const themes = { dark: <style>.a {}</style>, 'light': <style>.b {}</style> };\nfunction App() @{ <><style apply={themes.light} /><div /></> }",
 			);
 			const [dark, light] = result.styles.assigned;
 
-			expect(dark.metadata.styleKind).toBe('class-map');
-			expect(light.metadata.styleKind).toBe('theme');
+			expect(dark.metadata.styleApplied).toBeFalsy();
+			expect(light.metadata.styleApplied).toBe(true);
 			expect(first_apply(result)[0].target).toBe(light);
 		});
 
@@ -961,7 +1004,6 @@ describe('scoped style analysis', () => {
 			const [standalone] = result.styles.standalone;
 
 			expect(standalone.metadata.styleKind).toBeUndefined();
-			expect(standalone.metadata.styleExported).toBeUndefined();
 			expect(standalone.metadata.styleApplied).toBeUndefined();
 		});
 	});
@@ -1251,7 +1293,7 @@ describe('scoped style analysis', () => {
 				expect(block.metadata.styleKind).toBe('theme');
 				expect(block.metadata.styleApplied).toBe(true);
 				for (const other of result.styles.assigned) {
-					if (other !== block) expect(other.metadata.styleKind).toBe('class-map');
+					if (other !== block) expect(other.metadata.styleApplied).toBeFalsy();
 				}
 			},
 		);
@@ -1367,6 +1409,7 @@ describe('scoped style analysis', () => {
 					DIAGNOSTIC_CODES.STYLE_APPLY_UNSUPPORTED_HOST,
 				],
 				['const t = <style>.\\$class {}</style>;', DIAGNOSTIC_CODES.STYLE_RESERVED_CLASS_KEY],
+				["const t = <style>@import './a.css';</style>;", DIAGNOSTIC_CODES.CSS_IMPORT],
 				['<style>.a {}</style>;', DIAGNOSTIC_CODES.STYLE_STANDALONE_AT_MODULE_SCOPE],
 				[
 					'function App() { return <><style>.a {}</style><div /></>; }',
@@ -1416,28 +1459,21 @@ describe('scoped style analysis', () => {
 	});
 
 	describe('$class reads', () => {
-		it('classifies a local block whose $class is read as a theme', () => {
-			const result = analyze(
-				`function App() @{
-					const theme = <style>div {} .card {}</style>;
-					<><div class={theme.$class} /><Child cls={theme['$class']} /></>
-				}`,
-			);
-			const [theme] = result.styles.assigned;
-			expect(theme.metadata.styleClassRead).toBe(true);
-			expect(theme.metadata.styleKind).toBe('theme');
-		});
-
-		it('keeps a local block a class map when only class entries are read', () => {
-			const result = analyze(
-				`function App() @{
-					const styles = <style>div {} .card {}</style>;
-					<div class={styles.card} />
-				}`,
-			);
-			const [styles] = result.styles.assigned;
-			expect(styles.metadata.styleClassRead).toBe(false);
-			expect(styles.metadata.styleKind).toBe('class-map');
+		it('keeps a block a theme however its $class or class entries are read', () => {
+			const block = 'const theme = <style>div {} .card {}</style>;';
+			for (const use of [
+				'const cls = theme.$class;',
+				'const { $class: cls } = theme;',
+				'const alias = theme;',
+				'const cls = theme.card;',
+				'const { card } = theme;',
+				'function Card(props) { return props.theme.$class; }\nCard({ theme });',
+				'const cls = (theme as { $class: string }).$class;',
+			]) {
+				const source = `${block}\n${use}`;
+				const [theme] = analyze(source).styles.assigned;
+				expect(theme.metadata.styleKind, source).toBe('theme');
+			}
 		});
 	});
 

@@ -78,16 +78,17 @@ here and keeps package docs focused on the core parser API.
   `STYLE_STANDALONE_NEEDS_FRAGMENT`. Raw CSS is TSRX template syntax, so a block
   with CSS in it outside every `@{ … }`/control-flow body is
   `STYLE_STANDALONE_OUTSIDE_TEMPLATE`; plain-TSX `<style>{css}</style>` is an
-  ordinary element. Assigned blocks (`const theme = <style>…</style>`) are
-  classified as `theme` (exported, applied, or `$class` read) or `class-map`, and
-  `apply` targets are resolved through real bindings, declared before use. Results
-  ride on each block's `metadata` (`styleKind`, `styleApplies`, `styleApplied`,
-  `styleExported`) and on `program.metadata.styles`, and the analysis result
-  exposes `scopes`. Target compilers use `prepareStylesheetForRender(sheet, mode)`
-  with `mode: 'scope' | 'class-map' | 'theme'` (a boolean still means
-  `class-map`/`scope`) and `createStyleClassMapFromStylesheet(sheet, options)`,
-  whose object starts with `$class` and accepts `{ applied }` for composed themes.
-  Style diagnostics use the `STYLE_*` and `CSS_GLOBAL_PLACEMENT` codes in
+  ordinary element. Assigned blocks (`const theme = <style>…</style>`) are always
+  themes (`styleKind: 'theme'`) and keep every selector, and `apply` targets are
+  resolved through real bindings, declared before use. Results ride on each
+  block's `metadata` (`styleKind`, `styleApplies`, `styleApplied`) and on
+  `program.metadata.styles`, and the analysis result exposes `scopes`. Target
+  compilers use `prepareStylesheetForRender(sheet, mode)` with
+  `mode: 'scope' | 'theme'` (`'class-map'` and a boolean are still accepted, and
+  no mode prunes an assigned block) and
+  `createStyleClassMapFromStylesheet(sheet, options)`, whose object starts with
+  `$class` and accepts `{ applied }` for composed themes. Style diagnostics use
+  the `STYLE_*`, `CSS_GLOBAL_PLACEMENT`, and `CSS_IMPORT` codes in
   `DIAGNOSTIC_CODES`.
 - **HTML helpers** — `isVoidElement`, `isBooleanAttribute`, `isDomProperty`,
   `validateNesting`.
@@ -99,6 +100,13 @@ here and keeps package docs focused on the core parser API.
   these checks when choosing safe lowering behavior without a known namespace.
 - **Event helpers** — delegated-event utilities, event-name normalization.
 - **Source maps** — `convertSourceMapToMappings`.
+- **Errors** — `TSRX_ERRORS` and `TS_ERRORS` define each error `@tsrx/core`
+  reports once, with its code: TSRX's own (`DIAGNOSTIC_CODES`), or TypeScript's
+  for a mistake TypeScript also reports. An entry is `{ code, message }`, or a
+  function of the values its message takes that gives one
+  (`TS_ERRORS.MODIFIER_MUST_PRECEDE('export', 'abstract')`).
+  `error(entry, filename, node, errors?, comments?)` records an error in `errors`,
+  or throws it; it also takes a message and a code.
 
 See `src/index.js` for the full exported surface.
 

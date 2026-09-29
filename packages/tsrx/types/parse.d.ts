@@ -34,6 +34,9 @@ declare module 'acorn' {
 
 	interface Parser {
 		readToken(...args: Parameters<ReadToken>): ReturnType<ReadToken>;
+		parseDynamicImport(
+			...args: Parameters<Parse.Parser['parseDynamicImport']>
+		): ReturnType<Parse.Parser['parseDynamicImport']>;
 	}
 
 	interface Token {
@@ -204,14 +207,16 @@ export namespace Parse {
 			end: number,
 			start_loc: AST.Position,
 			end_loc: AST.Position,
-			metadata?: CommentMetaData | null,
 		): void;
 	}
 
-	export interface CommentMetaData {
-		containerId: number;
-		childIndex: number;
-		beforeMeaningfulChild: boolean;
+	/**
+	 * `Options` as passed to the static `parse`, which takes any `ecmaVersion`
+	 * acorn accepts (such as `'latest'`); acorn normalizes it to the number that
+	 * the parser then reads from `options`.
+	 */
+	export interface ParseInputOptions extends Omit<Options, 'ecmaVersion'> {
+		ecmaVersion: acorn.Options['ecmaVersion'];
 	}
 
 	/**
@@ -450,6 +455,12 @@ export namespace Parse {
 		tokContexts: AcornTypeScriptTokContexts;
 		/** Whether a token type can start/continue an identifier (incl. TS soft keywords) */
 		tokenIsIdentifier(token: TokenType): boolean;
+		/** Whether a token type can be a literal property name: a name, a keyword, a string or a number */
+		tokenIsLiteralPropertyName(token: TokenType): boolean;
+		/** Whether a token type is a name or a keyword (incl. TS soft keywords) */
+		tokenIsKeywordOrIdentifier(token: TokenType): boolean;
+		/** Whether a token type is a type operator: `keyof`, `readonly` or `unique` */
+		tokenIsTSTypeOperator(token: TokenType): boolean;
 	}
 
 	export interface AcornTypeScriptFunctionBodyConfig {
@@ -487,6 +498,15 @@ export namespace Parse {
 		var: string[];
 		lexical: string[];
 		functions: string[];
+		/** acorn-typescript: the type aliases and interfaces declared in the scope. */
+		types: string[];
+		/** acorn-typescript: the enums declared in the scope. */
+		enums: string[];
+		/**
+		 * acorn-typescript: names that can merge with a value of the same name,
+		 * such as namespaces and top-level ambient functions.
+		 */
+		exportOnlyBindings: string[];
 	}
 
 	type Exports = Record<string, boolean>;
@@ -551,6 +571,32 @@ export namespace Parse {
 		inFunction: boolean;
 		/** Whether @sveltejs/acorn-typescript is currently parsing a TypeScript type */
 		inType: boolean;
+		/** Whether @sveltejs/acorn-typescript is parsing an ambient (`declare`) context */
+		isAmbientContext: boolean;
+		/**
+		 * Whether @sveltejs/acorn-typescript is reading a list that can be an arrow
+		 * function's parameters: a parenthesized expression or a call's arguments
+		 */
+		maybeInArrowParameters: boolean;
+		/**
+		 * @sveltejs/acorn-typescript's record of the state a speculative parse
+		 * changes, undone when the parse is abandoned
+		 */
+		parseEffects?: {
+			/** Record `target`'s length, to restore if the current speculative parse is abandoned */
+			willAppend(target: unknown[]): void;
+			/** Record `target[key]`, to restore if the current speculative parse is abandoned */
+			willSet(target: object, key: string): void;
+			/** Pop `target`'s last entry, recording it to restore if the current speculative parse is abandoned */
+			pop<T>(target: T[]): T | undefined;
+			/** Shorten `target` to `length`, recording what it removes to restore if the current speculative parse is abandoned */
+			truncate(target: unknown[], length: number): void;
+		};
+		/**
+		 * The decorators read and not yet taken by a class, one list per nesting
+		 * level (@sveltejs/acorn-typescript)
+		 */
+		decoratorStack: AST.Decorator[][];
 		/**
 		 * `value`/`type` kind of the import or export declaration currently being
 		 * parsed (@sveltejs/acorn-typescript). `undefined` when not inside one.
@@ -559,7 +605,7 @@ export namespace Parse {
 		/** Stack of label names for break/continue statements */
 		labels: Array<{ kind: string | null; name?: string; statementStart?: number }>;
 		/** Current scope flags stack */
-		scopeStack: Array<{ flags: number; var: string[]; lexical: string[]; functions: string[] }>;
+		scopeStack: Scope[];
 		/** Regular expression validation state */
 		regexpState: RegExpValidationState | null;
 		/** Whether we can use await keyword */
@@ -658,8 +704,11 @@ export namespace Parse {
 		/** Read and return the next token */
 		nextToken(): void;
 
-		/** Advance to next token (wrapper around nextToken) */
-		next(): void;
+		/**
+		 * Advance to next token (wrapper around nextToken). Passing `true` lets
+		 * the next token be a keyword written with escapes.
+		 */
+		next(ignoreEscapeSequenceInKeyword?: boolean): void;
 
 		/**
 		 * Get token from character code
@@ -845,6 +894,12 @@ export namespace Parse {
 		canInsertSemicolon(): boolean;
 
 		/**
+		 * Whether a line break separates the current token from the previous one
+		 * (@sveltejs/acorn-typescript)
+		 */
+		hasPrecedingLineBreak(): boolean;
+
+		/**
 		 * Insert a semicolon if allowed by ASI rules
 		 * returns true if semicolon was inserted
 		 */
@@ -964,6 +1019,18 @@ export namespace Parse {
 		): AST.Expression;
 
 		/**
+		 * Finish a conditional expression (`test ? a : b`) whose test is already
+		 * parsed, or return the test when no `?` follows (acorn-typescript)
+		 */
+		parseConditional(
+			expr: AST.Expression,
+			startPos: number,
+			startLoc: AST.Position,
+			forInit?: ForInit,
+			refDestructuringErrors?: DestructuringErrors,
+		): AST.Expression;
+
+		/**
 		 * Parse expression with operators (handles precedence)
 		 */
 		parseExprOps(forInit?: ForInit, refDestructuringErrors?: DestructuringErrors): AST.Expression;
@@ -978,6 +1045,18 @@ export namespace Parse {
 			minPrec: number,
 			forInit?: ForInit,
 		): AST.Expression;
+
+		/**
+		 * Finish a binary or logical expression from its parsed operands
+		 */
+		buildBinary(
+			startPos: number,
+			startLoc: AST.Position,
+			left: AST.Expression,
+			right: AST.Expression,
+			op: string,
+			logical: boolean,
+		): AST.BinaryExpression | AST.LogicalExpression;
 
 		/**
 		 * Parse maybe-unary expression (prefix operators)
@@ -1005,8 +1084,6 @@ export namespace Parse {
 			startPos: number,
 			startLoc: AST.Position,
 			noCalls?: boolean,
-			maybeAsyncArrow?: boolean,
-			optionalChained?: boolean,
 			forInit?: ForInit,
 		): AST.Expression;
 
@@ -1067,6 +1144,35 @@ export namespace Parse {
 		 * Check if arrow should be parsed
 		 */
 		shouldParseArrow(exprList: AST.Node[]): boolean;
+
+		/**
+		 * Parse an arrow function whose parameters are the items of a
+		 * parenthesized expression, after its `=>`
+		 */
+		parseParenArrowList(
+			startPos: number,
+			startLoc: AST.Position,
+			exprList: AST.Node[],
+			forInit?: ForInit,
+		): AST.ArrowFunctionExpression;
+
+		/**
+		 * Parse an async arrow function whose parameters are the arguments of
+		 * `async (…)`, after its `=>` (@sveltejs/acorn-typescript)
+		 */
+		parseSubscriptAsyncArrow(
+			startPos: number,
+			startLoc: AST.Position,
+			exprList: AST.Node[],
+			forInit?: ForInit,
+		): AST.ArrowFunctionExpression;
+
+		/**
+		 * Raise the errors recorded for an expression that becomes a pattern
+		 * @param refDestructuringErrors Error collector
+		 * @param isAssign Whether the pattern is an assignment target
+		 */
+		checkPatternErrors(refDestructuringErrors: DestructuringErrors | null, isAssign: boolean): void;
 
 		/**
 		 * Parse spread element (...expr)
@@ -1186,6 +1292,12 @@ export namespace Parse {
 		parsePropertyName(prop: AST.Node): AST.Expression | AST.PrivateIdentifier;
 
 		/**
+		 * Consume the optional `?` after a class member name (acorn-typescript)
+		 * @param methodOrProp Class member node to mark optional
+		 */
+		parsePostMemberNameModifiers(methodOrProp: AST.Node): void;
+
+		/**
 		 * Parse property value
 		 * @param prop Property node
 		 * @param isPattern Whether parsing pattern
@@ -1211,6 +1323,46 @@ export namespace Parse {
 			parseModifiers?: (node: AST.Node) => void | null,
 		): AST.TSTypeParameterDeclaration;
 
+		/**
+		 * Parse type parameters, the current token being their `<`
+		 * (@sveltejs/acorn-typescript)
+		 */
+		tsParseTypeParameters(
+			parseModifiers?: (node: AST.Node) => void | null,
+		): AST.TSTypeParameterDeclaration;
+
+		/**
+		 * Parse the parameters of a function or constructor type, or of a method,
+		 * call, or construct signature, after their `(` (@sveltejs/acorn-typescript)
+		 */
+		tsParseBindingListForSignature(): AST.Pattern[];
+
+		/**
+		 * Skip the start of a parameter, for the lookahead that tells a function
+		 * type from a parenthesized type; whether one was there
+		 * (@sveltejs/acorn-typescript)
+		 */
+		tsSkipParameterStart(): boolean;
+
+		/**
+		 * Run a parser callback and restore the tokenizer and parser state
+		 * afterwards (@sveltejs/acorn-typescript)
+		 */
+		tsLookAhead<T>(fn: () => T): T;
+
+		/**
+		 * The expression of a `TSTypeCastExpression` in an arrow function's
+		 * parameters, with the cast's type annotation (@sveltejs/acorn-typescript)
+		 */
+		typeCastToParameter(node: AST.Node): AST.Node;
+
+		/**
+		 * Read a type parameter's `const` modifier, reporting `in` and `out`: the
+		 * modifier parser acorn-typescript gives `tsTryParseTypeParameters` for
+		 * functions, methods and classes (@sveltejs/acorn-typescript)
+		 */
+		tsParseConstModifier: (node: AST.Node) => void;
+
 		tsCheckTypeAnnotationForReadOnly(node: AST.TSTypeOperator): void;
 
 		/**
@@ -1223,7 +1375,28 @@ export namespace Parse {
 		 */
 		tsParseTypeOrTypePredicateAnnotation(returnToken: TokenType): AST.TSTypeAnnotation;
 
-		tsParseTypeArguments(): AST.Node;
+		/**
+		 * Parse a type annotation, from its `:`
+		 */
+		tsParseTypeAnnotation(): AST.TSTypeAnnotation;
+
+		tsParseTypeArguments(): AST.TSTypeParameterInstantiation;
+
+		/**
+		 * Parse an import type, `import('mod', { with: { … } }).Name<T>`
+		 * (@sveltejs/acorn-typescript)
+		 */
+		tsParseImportType(): AST.TSImportType;
+
+		/**
+		 * Parse a type name, dotted or not (`A`, `A.B.C`) (@sveltejs/acorn-typescript)
+		 */
+		tsParseEntityName(allowReservedWords?: boolean): AST.Identifier | AST.TSQualifiedName;
+
+		/**
+		 * Whether the current token is a `<` (@sveltejs/acorn-typescript)
+		 */
+		tsMatchLeftRelational(): boolean;
 
 		/**
 		 * Parse type arguments in an expression position, rescanning the `<` that was
@@ -1233,12 +1406,196 @@ export namespace Parse {
 		tsParseTypeArgumentsInExpression(): AST.TSTypeParameterInstantiation | undefined;
 
 		/**
+		 * Parse the list of types after a class's `implements`, the current token
+		 * being the first of them (@sveltejs/acorn-typescript)
+		 */
+		tsParseHeritageClause(token: 'implements'): AST.TSClassImplements[];
+
+		/**
 		 * Run a parser callback, restoring the tokenizer and returning `undefined`
 		 * when it aborts or throws (@sveltejs/acorn-typescript).
 		 */
 		tsTryParseAndCatch<T>(fn: () => T): T | undefined;
 
+		/**
+		 * Run a parser callback, keeping what it read when it returns something
+		 * other than `undefined` or `false`, and restoring the tokenizer otherwise
+		 * (@sveltejs/acorn-typescript).
+		 */
+		tsTryParse<T>(fn: () => T | undefined | false): T | undefined;
+
 		tsTryParseTypeAnnotation(): AST.TSTypeAnnotation;
+
+		/**
+		 * Read TypeScript modifiers (`static`, `readonly`, `public`, …) into
+		 * `options.modified` (@sveltejs/acorn-typescript).
+		 */
+		tsParseModifiers(options: {
+			modified: Record<string, unknown>;
+			allowedModifiers: readonly string[];
+			disallowedModifiers?: readonly string[];
+			stopOnStartOfClassStaticBlock?: boolean;
+			errorTemplate?: unknown;
+		}): Record<string, unknown>;
+
+		/**
+		 * Read one modifier named in `allowedModifiers`, or return `undefined`
+		 * when the current token isn't one (@sveltejs/acorn-typescript).
+		 */
+		tsParseModifier(
+			allowedModifiers: readonly string[],
+			stopOnStartOfClassStaticBlock?: boolean,
+		): string | undefined;
+
+		/** Whether the current token is `static` followed by `{` (@sveltejs/acorn-typescript). */
+		tsIsStartOfStaticBlocks(): boolean;
+
+		/** Whether the current token can be a literal property name (@sveltejs/acorn-typescript). */
+		isLiteralPropertyName(): boolean;
+
+		/** Parse an interface's `{ … }` and return its members (@sveltejs/acorn-typescript). */
+		tsParseInterfaceBody(): AST.Node[];
+
+		/** Parse list elements until the `kind` list ends (@sveltejs/acorn-typescript). */
+		tsParseList<T>(kind: string, parseElement: () => T): T[];
+
+		/** Parse one interface or type literal member (@sveltejs/acorn-typescript). */
+		tsParseTypeMember(): AST.Node;
+
+		/** Parse one enum member (@sveltejs/acorn-typescript). */
+		tsParseEnumMember(): AST.TSEnumMember;
+
+		/** Parse one decorator, `@expression` (@sveltejs/acorn-typescript). */
+		parseDecorator(): AST.Decorator;
+
+		/**
+		 * Parse the decorators before a class or a class declaration's `export`,
+		 * which the class they decorate takes (@sveltejs/acorn-typescript).
+		 * @param allowExport Whether `export` may follow them
+		 */
+		parseDecorators(allowExport?: boolean): void;
+
+		/** Whether the current token is `abstract` before `class` (@sveltejs/acorn-typescript). */
+		isAbstractClass(): boolean;
+
+		/**
+		 * Whether the current token is `declare` before `class` or `abstract class`
+		 * (@sveltejs/acorn-typescript).
+		 */
+		isDeclareClass(): boolean;
+
+		/**
+		 * Whether the current token can start what decorators before a statement
+		 * decorate: a class, with its modifiers (@sveltejs/acorn-typescript).
+		 */
+		canHaveLeadingDecorator(): boolean;
+
+		/**
+		 * Whether a line break comes between the current token and the next one
+		 * (@sveltejs/acorn-typescript).
+		 */
+		hasFollowingLineBreak(): boolean;
+
+		/**
+		 * Whether a declaration can follow the TypeScript word just checked: with
+		 * `next`, read the current token and require the next one on the same line;
+		 * without it, require no line terminator here, eating a `;`
+		 * (@sveltejs/acorn-typescript).
+		 */
+		tsCheckLineTerminator(next: boolean): boolean;
+
+		/**
+		 * Parse the declaration that `value` (`abstract`, `module`, `namespace` or
+		 * `type`) starts, into `node`, or return `undefined` when it starts none.
+		 * With `next`, `value` is the current token; without it, it was just read
+		 * as the statement's expression (@sveltejs/acorn-typescript).
+		 */
+		tsParseDeclaration(node: AST.Node, value: string, next: boolean): AST.Node | undefined;
+
+		/**
+		 * Parse the class or interface after `abstract`, which has been read
+		 * (@sveltejs/acorn-typescript).
+		 */
+		tsParseAbstractDeclaration(node: AST.Node): AST.Node | undefined;
+
+		/**
+		 * Parse the ambient declaration after `declare`, which has been read, into
+		 * `node`, or return `undefined` when none follows
+		 * (@sveltejs/acorn-typescript).
+		 */
+		tsTryParseDeclare(node: AST.Node): AST.Node | undefined;
+
+		/** Parse a type alias after `type`, which has been read (@sveltejs/acorn-typescript). */
+		tsParseTypeAliasDeclaration(node: AST.Node): AST.TSTypeAliasDeclaration;
+
+		/**
+		 * Parse the declaration that the name `expr`, read as the expression of
+		 * the statement `node`, starts (`declare`, `global`, `abstract`,
+		 * `module`, `namespace` or `type`), or return `undefined`
+		 * (@sveltejs/acorn-typescript).
+		 */
+		tsParseExpressionStatement(node: AST.Node, expr: AST.Identifier): AST.Node | undefined;
+
+		/** Run a parser callback in an ambient context (@sveltejs/acorn-typescript). */
+		tsInAmbientContext<T>(cb: () => T): T;
+
+		/** Parse a type (@sveltejs/acorn-typescript). */
+		tsParseType(): AST.TypeNode;
+
+		/**
+		 * Read the `in` and `out` modifiers of a type parameter: the modifier
+		 * parser acorn-typescript gives `tsTryParseTypeParameters` for a type
+		 * alias (@sveltejs/acorn-typescript)
+		 */
+		tsParseInOutModifiers: (node: AST.Node) => void;
+
+		/**
+		 * Mark `name` as defined in `scope` for the check of exported names
+		 * (@sveltejs/acorn-typescript).
+		 */
+		maybeExportDefined(scope: Scope, name: string): void;
+
+		/**
+		 * Parse a namespace or module with a name after `namespace` or `module`,
+		 * which has been read, or the rest of a dotted name after its `.`
+		 * (`nested`) (@sveltejs/acorn-typescript).
+		 */
+		tsParseModuleOrNamespaceDeclaration(node: AST.Node, nested?: boolean): AST.TSModuleDeclaration;
+
+		/**
+		 * Parse a global augmentation from `global`, or a module named by the
+		 * string after `module`, which has been read (@sveltejs/acorn-typescript).
+		 */
+		tsParseAmbientExternalModuleDeclaration(node: AST.Node): AST.TSModuleDeclaration;
+
+		/** Parse a type operator (`keyof`, `unique`, `readonly`), `infer`, or what they apply to (@sveltejs/acorn-typescript). */
+		tsParseTypeOperatorOrHigher(): AST.TypeNode;
+
+		/** Parse a type that isn't an array or indexed access type (@sveltejs/acorn-typescript). */
+		tsParseNonArrayType(): AST.TypeNode;
+
+		/**
+		 * Read a type predicate's name and the `is` after it, or return
+		 * `undefined` when no `is` follows (@sveltejs/acorn-typescript).
+		 */
+		tsParseTypePredicatePrefix(): AST.Identifier | undefined;
+
+		/** Parse `this` in a type, or a `this is T` predicate (@sveltejs/acorn-typescript). */
+		tsParseThisTypeOrThisTypePredicate(): AST.TSThisType | AST.TSTypePredicate;
+
+		/** Parse a mapped type's `K in T` (@sveltejs/acorn-typescript). */
+		tsParseMappedTypeParameter(): AST.TSTypeParameter;
+		tsParseTypeParameterName(): AST.Identifier;
+		tsParseEnumDeclaration(
+			node: AST.TSEnumDeclaration,
+			properties?: { const?: boolean; declare?: boolean },
+		): AST.TSEnumDeclaration;
+
+		/** Whether the current token is `abstract` before `new` in a type (@sveltejs/acorn-typescript). */
+		isAbstractConstructorSignature(): boolean;
+
+		/** Whether the current token is `require` before `(` (@sveltejs/acorn-typescript). */
+		tsIsExternalModuleReference(): boolean;
 
 		/**
 		 * Get property kind from name
@@ -1281,6 +1638,15 @@ export namespace Parse {
 		 * @returns Pattern node
 		 */
 		parseBindingAtom(): AST.Pattern;
+
+		/**
+		 * Parse a binding list element, with its default value
+		 * @param allowModifiers Whether modifiers allowed (TS parameter properties)
+		 */
+		parseAssignableListItem(allowModifiers?: boolean): AST.Pattern;
+
+		/** Finish a binding list element: TypeScript's `?` and type annotation */
+		parseBindingListItem(param: AST.Pattern): AST.Pattern;
 
 		// ============================================================
 		// Statement Parsing
@@ -1412,16 +1778,26 @@ export namespace Parse {
 		// Variable Declaration Parsing
 		// ============================================================
 		/** Parse variable statement (var, let, const) */
-		parseVarStatement(node: AST.Node, kind: string): AST.VariableDeclaration;
+		parseVarStatement(
+			node: AST.Node,
+			kind: string,
+			allowMissingInitializer?: boolean,
+		): AST.VariableDeclaration;
 
 		/**
 		 * Parse variable declarations
 		 * @param node Declaration node
 		 * @param isFor Whether in for-loop initializer
 		 * @param kind "var", "let", "const", "using", or "await using"
+		 * @param allowMissingInitializer Whether declarators may omit the initializer
 		 * @returns VariableDeclaration node
 		 */
-		parseVar(node: AST.Node, isFor: boolean, kind: string): AST.VariableDeclaration;
+		parseVar(
+			node: AST.Node,
+			isFor: boolean,
+			kind: string,
+			allowMissingInitializer?: boolean,
+		): AST.VariableDeclaration;
 
 		/**
 		 * Parse variable ID (identifier or pattern)
@@ -1570,6 +1946,12 @@ export namespace Parse {
 		/** Parse an optional import-attributes clause (`with { … }` / `assert { … }`) */
 		parseMaybeImportAttributes(node: AST.Node): void;
 
+		/**
+		 * Parse the entries between the braces of an import-attributes clause
+		 * (@sveltejs/acorn-typescript)
+		 */
+		parseWithEntries(): AST.ImportAttribute[];
+
 		/** Parse import specifiers */
 		parseImportSpecifiers(): AST.ImportSpecifier[];
 
@@ -1587,6 +1969,9 @@ export namespace Parse {
 
 		/** Parse export specifiers */
 		parseExportSpecifiers(exports?: Exports): AST.ExportSpecifier[];
+
+		/** Parse single export specifier */
+		parseExportSpecifier(exports?: Exports): AST.ExportSpecifier;
 
 		/** Parse export default declaration */
 		parseExportDefaultDeclaration(): AST.Declaration | AST.Expression;
@@ -1878,7 +2263,7 @@ export namespace Parse {
 		/** TypeScript extensions when using acorn-typescript */
 		acornTypeScript: AcornTypeScriptExtensions;
 		/** Static parse method that returns TSRX's extended Program type */
-		parse(input: string, options: Options): AST.Program;
+		parse(input: string, options: ParseInputOptions): AST.Program;
 		/** Static parseExpressionAt method */
 		parseExpressionAt(input: string, pos: number, options: Options): AST.Expression;
 		/** Extend with plugins */

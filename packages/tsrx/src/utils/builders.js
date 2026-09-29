@@ -105,6 +105,15 @@ function await_builder(argument) {
 }
 
 /**
+ * @param {AST.Expression | null} argument
+ * @param {boolean} [delegate]
+ * @returns {AST.YieldExpression}
+ */
+function yield_builder(argument, delegate = false) {
+	return { type: 'YieldExpression', argument, delegate, metadata: { path: [] } };
+}
+
+/**
  * @param {AST.BinaryOperator} operator
  * @param {AST.Expression} left
  * @param {AST.Expression} right
@@ -408,6 +417,19 @@ export function member(object, property, computed = false, optional = false, loc
 	};
 
 	return set_location(node, loc_info);
+}
+
+/**
+ * @param {AST.Expression} object
+ * @param {string | AST.Identifier} property
+ * @returns {AST.ChainExpression}
+ */
+export function maybe_member(object, property) {
+	return {
+		type: 'ChainExpression',
+		expression: member(object, property, false, true),
+		metadata: { path: [] },
+	};
 }
 
 /**
@@ -1472,6 +1494,7 @@ export const continue_statement = {
 
 export {
 	await_builder as await,
+	yield_builder as yield,
 	let_builder as let,
 	const_builder as const,
 	var_builder as var,

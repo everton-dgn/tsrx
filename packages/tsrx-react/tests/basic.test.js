@@ -1,3 +1,4 @@
+import { TS_ERRORS } from '@tsrx/core';
 import { describe, expect, it } from 'vitest';
 import {
 	runSharedCodeBlockChildrenTests,
@@ -1275,7 +1276,7 @@ describe('@tsrx/react basic', () => {
 				}`,
 				'App.tsrx',
 			),
-		).toThrow(/Unexpected token/);
+		).toThrow(expect.objectContaining({ code: TS_ERRORS.UNEXPECTED_TOKEN.code }));
 	});
 
 	it('transforms try with use() inside for Suspense triggering', () => {
@@ -1735,21 +1736,44 @@ describe('destructuring', () => {
 				'App.tsrx',
 			);
 
+			expect(code).toContain('let App__spread_props1;');
+			expect(code).toContain('let App__spread_props2;');
 			expect(code).toContain(
-				'let App__spread_props1 = __normalize_spread_props_for_ref_attr(first);',
+				'{...(App__spread_props1 = __normalize_spread_props_for_ref_attr(first))}',
 			);
 			expect(code).toContain(
-				'let App__spread_props2 = __normalize_spread_props_for_ref_attr(second);',
+				'{...(App__spread_props2 = __normalize_spread_props_for_ref_attr(second))}',
 			);
-			expect(code).toContain('{...App__spread_props1}');
-			expect(code).toContain('{...App__spread_props2}');
 			expect(code).toContain(
-				'ref={__mergeRefs(App__spread_props1.ref, App__spread_props2.ref, cb)}',
+				'ref={__mergeRefs(App__spread_props1?.ref, App__spread_props2?.ref, cb)}',
 			);
 			expect(code.match(/__normalize_spread_props_for_ref_attr\(/g)).toHaveLength(2);
 			expect(code).not.toContain('create_ref_prop');
 			expect(code).not.toContain('__normalize_spread_props(first, cb)');
 			expect(code).not.toContain('__normalize_spread_props(second, cb)');
+		});
+
+		it('binds a host spread beside a ref in place so attributes keep their order', () => {
+			const source = `export function App() @{
+					let count = 0;
+					const next = () => String(++count);
+					function cb(_node) {}
+					<div data-first={next()} {...{ 'data-second': next() }} ref={cb} />
+				}`;
+			const { code } = compile(source, 'App.tsrx');
+
+			expect(code).toContain('let App__spread_props1;');
+			expect(code).toContain(
+				"<div data-first={next()} {...(App__spread_props1 = __normalize_spread_props_for_ref_attr({ 'data-second': next() }))} ref={__mergeRefs(App__spread_props1?.ref, cb)} />",
+			);
+
+			// Evaluation order does not affect types, so the type-only print keeps
+			// the initialized declaration.
+			const { code: type_only } = compile_to_volar_mappings(source, 'App.tsrx');
+			expect(type_only).toContain(
+				"let App__spread_props1 = __normalize_spread_props_for_ref_attr({ 'data-second': next() });",
+			);
+			expect(type_only).toContain('{...App__spread_props1}');
 		});
 
 		it('rejects multiple ref={expr} attributes on the same element', () => {

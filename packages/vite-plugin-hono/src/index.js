@@ -8,8 +8,12 @@ import { compile as compileServer } from '@tsrx/hono';
 import { compile as compileDom } from '@tsrx/hono/dom';
 import { resolveBuildPlatform } from '@tsrx/core/config';
 import { createDepScanTransformPlugin } from '@tsrx/core/vite/dep-scan';
+import { createWorkerEntryMiddleware, stripWorkerEntryQuery } from '@tsrx/core/vite/worker';
 
 const TSRX_EXTENSION_PATTERN = /\.tsrx$/;
+// CSS ids stay the component path plus this query, with no `\0` prefix, so
+// Vite resolves relative `@import` and `url()` references in the extracted
+// CSS from the component's directory.
 const CSS_QUERY = '?tsrx-css&lang.css';
 
 /**
@@ -77,7 +81,7 @@ export function tsrxHono(options = {}) {
 	/** @param {Map<string, string>} css_cache @param {string} id */
 	function css_owner(css_cache, id) {
 		if (!id.endsWith(CSS_QUERY)) return null;
-		const owner = id.slice(id.startsWith('\0') ? 1 : 0, -CSS_QUERY.length);
+		const owner = id.slice(0, -CSS_QUERY.length);
 		return css_cache.has(owner) ? owner : null;
 	}
 
@@ -139,15 +143,19 @@ export function tsrxHono(options = {}) {
 			};
 		},
 
+		configureServer(server) {
+			server.middlewares.use(
+				createWorkerEntryMiddleware((path) => TSRX_EXTENSION_PATTERN.test(path)),
+			);
+		},
+
 		resolveId(source) {
 			const css_cache = css_cache_for(this);
 			if (css_owner(css_cache, source) === null) return null;
-			if (source.startsWith('\0')) return source;
-			return '\0' + source;
+			return source;
 		},
 
 		load(id) {
-			if (!id.startsWith('\0')) return null;
 			const css_cache = css_cache_for(this);
 			const owner = css_owner(css_cache, id);
 			return owner === null ? null : css_cache.get(owner);
@@ -162,14 +170,17 @@ export function tsrxHono(options = {}) {
 		},
 
 		async transform(code, id) {
-			if (!TSRX_EXTENSION_PATTERN.test(id)) return null;
+			// A dev worker entry arrives as `<path>?worker_file&type=<type>`.
+			// Compile it under its file path, as a plain import would be.
+			const file = stripWorkerEntryQuery(id);
+			if (!TSRX_EXTENSION_PATTERN.test(file)) return null;
 
-			const result = compile(code, id, compile_options);
-			const source = append_css_import(css_cache_for(this), result.code, id, result.css);
+			const result = compile(code, file, compile_options);
+			const source = append_css_import(css_cache_for(this), result.code, file, result.css);
 
 			const transformed = await transformWithOxc(
 				source,
-				id,
+				file,
 				{
 					lang: 'tsx',
 					sourcemap: true,
@@ -189,14 +200,14 @@ export function tsrxHono(options = {}) {
 			if (!TSRX_EXTENSION_PATTERN.test(options.file)) return;
 			// Deleted files cannot be read. watchChange already removed their CSS.
 			if (options.type === 'delete') return options.modules;
-			const css_module = this.environment.moduleGraph.getModuleById(
-				'\0' + options.file + CSS_QUERY,
-			);
+			const css_module = this.environment.moduleGraph.getModuleById(options.file + CSS_QUERY);
 			if (!css_module) return options.modules;
 
 			update_css_cache(css_cache_for(this), await options.read(), options.file);
 
 			this.environment.moduleGraph.invalidateModule(css_module);
+			// Vite usually lists the CSS module already, under the component's file.
+			if (options.modules.includes(css_module)) return options.modules;
 			return [...options.modules, css_module];
 		},
 	});

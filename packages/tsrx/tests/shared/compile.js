@@ -1,6 +1,7 @@
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
-import { DIAGNOSTIC_CODES } from '../../src/diagnostics.js';
+import { DIAGNOSTIC_CODES, TS_ERRORS, TSRX_ERRORS } from '../../src/diagnostics.js';
+import { error_with } from './errors.js';
 import { runSharedScopedStyleTests } from './scoped-styles.js';
 import { runSharedScopedStyleConformanceTests } from './scoped-styles-conformance.js';
 
@@ -71,9 +72,6 @@ function virtual_semantic_diagnostics(code) {
 	return program.getSemanticDiagnostics(source_file);
 }
 
-const TSRX_TEMPLATE_RETURN_ERROR =
-	'Return statements are not allowed inside TSRX templates. Move the return before the TSRX return value, or use conditional rendering instead.';
-
 /**
  * Shared compile/editor diagnostics. These do not assert source-map structure;
  * they only verify that editor-facing compile entry points collect diagnostics.
@@ -81,6 +79,127 @@ const TSRX_TEMPLATE_RETURN_ERROR =
  * @param {CompileDiagnosticsHarness} harness
  */
 export function runSharedCompileDiagnosticsTests({ compile_to_volar_mappings, name }) {
+	describe(`[${name}] virtual code for syntax newer than ES2022`, () => {
+		it('keeps a hashbang as the first line and maps the code after it', () => {
+			const source = `#!/usr/bin/env node
+/** Docs */
+export function App() @{
+	using handle: Disposable = open();
+	<div>{handle.name}</div>
+}
+`;
+			const { code, errors, mappings } = compile_to_volar_mappings(source, 'App.tsrx');
+
+			expect(errors).toEqual([]);
+			expect(code.startsWith('#!/usr/bin/env node\n')).toBe(true);
+			expect(count_substring(code, '/usr/bin/env node')).toBe(1);
+			expect(code).toContain('using handle: Disposable = open();');
+			expect(virtual_parse_diagnostics(code)).toEqual([]);
+
+			const handle = source.indexOf('handle');
+			const mapping = mappings.find((candidate) => candidate.sourceOffsets[0] === handle);
+			expect(mapping).toBeDefined();
+			const generated = /** @type {NonNullable<typeof mapping>} */ (mapping).generatedOffsets[0];
+			expect(code.slice(generated, generated + 'handle'.length)).toBe('handle');
+		});
+
+		it('keeps and maps the import attributes of import types', () => {
+			const source = `type Data = import('./data.json', { with: { type: 'json' } }).Data;
+export function App() @{
+	const mode: import('pkg', { with: { 'resolution-mode': 'require' } }).Mode = load();
+	<div>{String(mode)}</div>
+}
+`;
+			const { code, errors, mappings } = compile_to_volar_mappings(source, 'App.tsrx');
+
+			expect(errors).toEqual([]);
+			expect(code).toContain("import('./data.json', { with: { type: 'json' } }).Data");
+			expect(code).toContain("import('pkg', { with: { 'resolution-mode': 'require' } }).Mode");
+			expect(virtual_parse_diagnostics(code)).toEqual([]);
+
+			const attributes = source.indexOf('{ with');
+			for (const text of [
+				"{ with: { type: 'json' } }",
+				'with',
+				'type',
+				"'json'",
+				"'resolution-mode'",
+				"'require'",
+			]) {
+				const start = source.indexOf(text, attributes);
+				const mapping = mappings.find((candidate) => candidate.sourceOffsets[0] === start);
+				expect(mapping, text).toBeDefined();
+				const { generatedOffsets, generatedLengths, lengths } =
+					/** @type {NonNullable<typeof mapping>} */ (mapping);
+				const length = generatedLengths?.[0] ?? lengths[0];
+				expect(code.slice(generatedOffsets[0], generatedOffsets[0] + length)).toBe(text);
+			}
+		});
+	});
+
+	describe(`[${name}] JSX spread children in virtual code`, () => {
+		// Analysis reports spread children, but the editor still gets typed
+		// code that keeps the spread and maps its expression.
+		it('reports each spread child and keeps it in the virtual code', () => {
+			const source = `export function App({ items }: { items: any[] }) @{
+	<div>
+		{...items}
+		<>{...items}</>
+	</div>
+}`;
+			const { code, errors, mappings } = compile_to_volar_mappings(source, 'App.tsrx');
+
+			const first = source.indexOf('{...items}');
+			const second = source.indexOf('{...items}', first + 1);
+			expect(errors.map((error) => [error.code, error.pos, error.end])).toEqual([
+				[DIAGNOSTIC_CODES.JSX_SPREAD_CHILD, first, first + '{...items}'.length],
+				[DIAGNOSTIC_CODES.JSX_SPREAD_CHILD, second, second + '{...items}'.length],
+			]);
+			expect(code).toContain('<div>{...items}<>{...items}</></div>');
+			expect(virtual_parse_diagnostics(code), code).toEqual([]);
+
+			for (const spread of [first, second]) {
+				const items = source.indexOf('items', spread);
+				const mapping = mappings.find((candidate) => candidate.sourceOffsets[0] === items);
+				expect(mapping).toBeDefined();
+				const generated = /** @type {NonNullable<typeof mapping>} */ (mapping).generatedOffsets[0];
+				expect(code.slice(generated, generated + 'items'.length)).toBe('items');
+			}
+		});
+	});
+
+	describe(`[${name}] reported dynamic tags in virtual code`, () => {
+		// The parser reports a dynamic tag expression other than an identifier, a
+		// member access, or a string literal (#737), once for each element, and
+		// the editor still gets virtual code that keeps and maps the expression.
+		it('reports each dynamic tag and keeps it in the virtual code', () => {
+			const source = `export function App({ c, A, B, getTag }: any) @{
+	<main>
+		<{c ? A : B}>
+			<p>{c}</p>
+		</{c ? A : B}>
+		<{getTag()} />
+		<{c ? <b>&#123;x&#125; &amp;lt; &gt;</b> : 'i'} />
+	</main>
+}`;
+			const { code, errors, mappings } = compile_to_volar_mappings(source, 'App.tsrx');
+
+			const tags = ['c ? A : B', 'getTag()', "c ? <b>&#123;x&#125; &amp;lt; &gt;</b> : 'i'"];
+			expect(errors.map((error) => [error.code, source.slice(error.pos, error.end)])).toEqual(
+				tags.map((tag) => [DIAGNOSTIC_CODES.DYNAMIC_TAG_EXPRESSION, tag]),
+			);
+			expect(virtual_parse_diagnostics(code), code).toEqual([]);
+			// Text keeps its character references (#693).
+			expect(code).toContain('<b>&#123;x&#125; &amp;lt; &gt;</b>');
+
+			const call = source.indexOf('getTag');
+			const mapping = mappings.find((candidate) => candidate.sourceOffsets[0] === call);
+			expect(mapping).toBeDefined();
+			const generated = /** @type {NonNullable<typeof mapping>} */ (mapping).generatedOffsets[0];
+			expect(code.slice(generated, generated + 'getTag'.length)).toBe('getTag');
+		});
+	});
+
 	describe(`[${name}] platform flag virtual types`, () => {
 		it('types every retained flag with the selected boolean literal', () => {
 			const result = compile_to_volar_mappings(
@@ -93,6 +212,18 @@ export function runSharedCompileDiagnosticsTests({ compile_to_volar_mappings, na
 
 			expect(result.errors).toEqual([]);
 			expect(virtual_parse_diagnostics(result.code)).toEqual([]);
+			expect(virtual_semantic_diagnostics(result.code)).toEqual([]);
+		});
+
+		it('keeps var bindings hoisted from an inactive branch', () => {
+			const result = compile_to_volar_mappings(
+				`if (import.meta.env.platform.web) { var value = 'web'; }
+				export { value };`,
+				'App.tsrx',
+				{ platform: 'ios' },
+			);
+
+			expect(result.errors).toEqual([]);
 			expect(virtual_semantic_diagnostics(result.code)).toEqual([]);
 		});
 	});
@@ -138,12 +269,10 @@ export function runSharedCompileDiagnosticsTests({ compile_to_volar_mappings, na
 				}),
 			).toEqual([]);
 			expect(
-				result.errors
-					.map(function (error) {
-						return error.message;
-					})
-					.join('\n'),
-			).not.toContain('Expected identifier');
+				result.errors.map(function (error) {
+					return error.code;
+				}),
+			).not.toContain(DIAGNOSTIC_CODES.CSS_SYNTAX);
 			expect(result.mappings.length).toBeGreaterThan(1);
 
 			const whole_file = result.mappings.find(function (mapping) {
@@ -217,6 +346,27 @@ export function runSharedCompileDiagnosticsTests({ compile_to_volar_mappings, na
 			expect(result.errors).toEqual([]);
 			expect(result.code).toContain('pair: [value] = fallback');
 			expect(result.code).toContain('pair: [other] = fallback');
+			expect(virtual_parse_diagnostics(result.code), result.code).toEqual([]);
+		});
+
+		it('gives a `@for` loop with an empty declaration list no parameter', () => {
+			// Loose mode parses `const` with no name (TS1123), as while it is typed.
+			const result = compile_to_volar_mappings(
+				`export function App({ items }: { items: string[] }) @{
+					<ul>
+						@for (const of items) {
+							<li />
+						}
+					</ul>
+				}`,
+				'App.tsrx',
+				{ loose: true },
+			);
+
+			expect(result.errors.map((error) => error.code)).toEqual([
+				TS_ERRORS.VARIABLE_DECLARATION_LIST_EMPTY.code,
+			]);
+			expect(result.code).toContain('() =>');
 			expect(virtual_parse_diagnostics(result.code), result.code).toEqual([]);
 		});
 
@@ -302,6 +452,19 @@ export function runSharedCompileDiagnosticsTests({ compile_to_volar_mappings, na
 				name: 'a partially typed `@if`',
 				source: 'export function App() {\n\t<>\n\t\t@if\n\t</>\n}',
 			},
+			// The output writes a `>` or `<` in text as a character reference
+			{
+				name: 'a `@`-leading child with a `>`',
+				source: `export function App() {
+	<div>@if > x</div>
+}`,
+			},
+			{
+				name: 'a `@`-leading child with a `<`',
+				source: `export function App() {
+	<div>@if < x</div>
+}`,
+			},
 		]) {
 			it(`emits a well-formed completion-only mapping for ${name}`, () => {
 				const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
@@ -326,6 +489,39 @@ export function runSharedCompileDiagnosticsTests({ compile_to_volar_mappings, na
 				}
 			});
 		}
+
+		it('maps a `@`-leading child with a `>` after an `@switch` to its own text', () => {
+			// The text's start also maps into the `@switch`'s output, so the mapping is
+			// found by its text, which stops before the `>` that the output escapes.
+			const source = `export function App() {
+	<div>
+		@switch (k) {
+			@case 1: {
+				<b />
+			}
+		}
+		@if > x
+	</div>
+}`;
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			const cursor = source.indexOf('@if') + 1;
+
+			const covering = result.mappings.filter(
+				(m) =>
+					m.data?.completion &&
+					cursor >= m.sourceOffsets[0] &&
+					cursor <= m.sourceOffsets[0] + m.lengths[0],
+			);
+
+			expect(covering.length).toBeGreaterThan(0);
+			for (const m of covering) {
+				const mapped = source.slice(m.sourceOffsets[0], m.sourceOffsets[0] + m.lengths[0]);
+				expect(
+					result.code.slice(m.generatedOffsets[0], m.generatedOffsets[0] + m.generatedLengths[0]),
+				).toBe(mapped);
+				expect(mapped.trim()).toBe('@if');
+			}
+		});
 
 		it('does not map ordinary template text (no stray completions in plain text)', () => {
 			const source = 'export function App() {\n\t<div>hello world</div>\n}';
@@ -450,7 +646,9 @@ export function runSharedCompileDiagnosticsTests({ compile_to_volar_mappings, na
 			]) {
 				const result = compile_to_volar_mappings(source, 'App.tsrx');
 
-				expect(result.errors.map((error) => error.message)).toContain(TSRX_TEMPLATE_RETURN_ERROR);
+				expect(result.errors.map((error) => error.code)).toContain(
+					TSRX_ERRORS.TEMPLATE_RETURN_STATEMENT.code,
+				);
 			}
 		});
 
@@ -489,7 +687,9 @@ export function runSharedCompileDiagnosticsTests({ compile_to_volar_mappings, na
 			]) {
 				const result = compile_to_volar_mappings(source, 'App.tsrx');
 
-				expect(result.errors.map((error) => error.message)).toContain(TSRX_TEMPLATE_RETURN_ERROR);
+				expect(result.errors.map((error) => error.code)).toContain(
+					TSRX_ERRORS.TEMPLATE_RETURN_STATEMENT.code,
+				);
 			}
 		});
 
@@ -1014,6 +1214,34 @@ export function runSharedSwitchFallthroughTests({ compile, name }) {
 			}
 		});
 
+		it('keeps setup locals with the same name in separate case blocks', () => {
+			const { code } = compile(
+				`export function App({ kind }: { kind: string }) @{
+					@switch (kind) {
+						@case "a": {
+							const label = 'A';
+							<span>{label}</span>
+						}
+						@case "b": {
+							const label = 'B';
+							<span>{label}</span>
+						}
+						@default: {
+							const label = 'Other';
+							<span>{label}</span>
+						}
+					}
+				}`,
+				'App.tsrx',
+			);
+
+			expect(count_substring(code, 'const label')).toBe(3);
+			const redeclarations = virtual_semantic_diagnostics(code)
+				.filter((diagnostic) => diagnostic.code === 2451)
+				.map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'));
+			expect(redeclarations).toEqual([]);
+		});
+
 		it.runIf(['react', 'preact', 'vue'].includes(name))(
 			'treats stacked case labels as separate isolated cases',
 			() => {
@@ -1349,7 +1577,11 @@ export function runSharedComponentLoopControlFlowTests({ compile, name }) {
 		});
 
 		it('rejects direct loop exits inside for...of template loops', () => {
-			for (const statement of ['continue', 'break', 'return null']) {
+			for (const [statement, error] of [
+				['continue', TSRX_ERRORS.FOR_CONTINUE_STATEMENT],
+				['break', TSRX_ERRORS.FOR_BREAK_STATEMENT],
+				['return null', TSRX_ERRORS.FOR_RETURN_STATEMENT],
+			]) {
 				expect(() =>
 					compile(
 						`export function App({ items }: { items: string[] }) @{
@@ -1360,9 +1592,7 @@ export function runSharedComponentLoopControlFlowTests({ compile, name }) {
 						}`,
 						'App.tsrx',
 					),
-				).toThrow(
-					/(Continue|Break|Return) statements are not allowed inside TSRX template for\.\.\.of loops/,
-				);
+				).toThrow(error_with(error));
 			}
 		});
 
@@ -1377,14 +1607,14 @@ export function runSharedComponentLoopControlFlowTests({ compile, name }) {
 					}`,
 					'App.tsrx',
 				),
-			).toThrow(/Return statements are not allowed inside TSRX template @if blocks/);
+			).toThrow(error_with(TSRX_ERRORS.IF_RETURN_STATEMENT));
 		});
 
 		it('rejects nested exits inside @if template blocks', () => {
 			for (const [statement, expected] of [
-				['return null', /Return statements are not allowed inside TSRX template @if blocks/],
-				['break', /Break statements are not allowed inside TSRX template @if blocks/],
-				['continue', /Continue statements are not allowed inside TSRX template @if blocks/],
+				['return null', TSRX_ERRORS.IF_RETURN_STATEMENT],
+				['break', TSRX_ERRORS.IF_BREAK_STATEMENT],
+				['continue', TSRX_ERRORS.IF_CONTINUE_STATEMENT],
 			]) {
 				expect(() =>
 					compile(
@@ -1398,7 +1628,7 @@ export function runSharedComponentLoopControlFlowTests({ compile, name }) {
 						}`,
 						'App.tsrx',
 					),
-				).toThrow(expected);
+				).toThrow(error_with(expected));
 			}
 		});
 
@@ -1455,6 +1685,98 @@ export function runSharedComponentLoopControlFlowTests({ compile, name }) {
 				expect(code).toContain('</Fragment>');
 			},
 		);
+
+		// Targets that identify loop rows by the JSX `key` prop.
+		const keys_rows_by_prop = ['react', 'preact', 'hono', 'hono-dom'].includes(name);
+
+		it.runIf(keys_rows_by_prop)('keys each @if branch a keyed loop renders', () => {
+			const { code } = compile(
+				`export function App({ items }: { items: { id: string; kind: string }[] }) @{
+					@for (const item of items; key item.id) {
+						@if (item.kind === 'text') {
+							<p>{'static'}</p>
+						} @else if (item.kind === 'pair') {
+							<>
+								<b>{item.id}</b>
+								<i>{item.id}</i>
+							</>
+						} @else {
+							<Row />
+						}
+					}
+				}`,
+				'App.tsrx',
+			);
+
+			expect(code).toContain("<p key={item.id}>{'static'}</p>");
+			expect(code).toContain('<Fragment key={item.id}>');
+			expect(code).toContain('<Row key={item.id} />');
+			// A keyed branch element is per-row, so it is never hoisted as a static.
+			expect(code).not.toContain('__static');
+		});
+
+		it.runIf(keys_rows_by_prop)('keys each @switch case a keyed loop renders', () => {
+			const { code } = compile(
+				`export function App({ items }: { items: { id: string; kind: string }[] }) @{
+					@for (const item of items; key item.id) {
+						@switch (item.kind) {
+							@case 'text': {
+								const label = item.id.toUpperCase();
+								<p>{label}</p>
+							}
+							@default: {
+								@if (item.id) {
+									<span>{'nested'}</span>
+								}
+							}
+						}
+					}
+				}`,
+				'App.tsrx',
+			);
+
+			expect(code).toContain('<p key={item.id}>{label}</p>');
+			expect(code).toContain("<span key={item.id}>{'nested'}</span>");
+		});
+
+		it.runIf(keys_rows_by_prop)(
+			'keeps a key written inside a loop branch and keys the other branches',
+			() => {
+				const { code } = compile(
+					`export function App({ items }: { items: { id: string }[] }) @{
+						@for (const item of items; index i) {
+							@if (item.id) {
+								<li key={item.id}>{item.id}</li>
+							} @else {
+								<li>{i}</li>
+							}
+						}
+					}`,
+					'App.tsrx',
+				);
+
+				expect(code).toContain('<li key={item.id}>{item.id}</li>');
+				expect(code).toContain('<li key={i}>{i}</li>');
+			},
+		);
+
+		it.runIf(name === 'vue')('leaves keyed loop branches to the VaporFor row key', () => {
+			const { code } = compile(
+				`export function App({ items }: { items: { id: string; visible: boolean }[] }) @{
+					@for (const item of items; key item.id) {
+						@if (item.visible) {
+							<li>{item.id}</li>
+						} @else {
+							<li>{'hidden'}</li>
+						}
+					}
+				}`,
+				'App.tsrx',
+			);
+
+			expect(code).toContain('getKey={(item) => item.id}');
+			expect(code).not.toContain('key={');
+		});
 
 		it('allows ordinary function control flow inside for...of loops', () => {
 			const { code } = compile(
@@ -1737,6 +2059,214 @@ export function runSharedClassFunctionComponentTests({ compile, compile_to_volar
 }
 
 /**
+ * How each target outputs a raw-text `<script>` body: the form that renders it
+ * exactly on the client and from server HTML.
+ * @type {Record<string, 'children' | 'dangerouslySetInnerHTML' | 'innerHTML' | 'v-html'>}
+ */
+const SCRIPT_BODY_FORMS = {
+	react: 'children',
+	preact: 'dangerouslySetInnerHTML',
+	hono: 'dangerouslySetInnerHTML',
+	solid: 'innerHTML',
+	vue: 'v-html',
+};
+
+/**
+ * The `<script>` elements of compiled TSX, each with the form its body takes
+ * and the string it holds.
+ * @param {string} code
+ * @returns {Array<{ form: string | null, body: string | null, children: number }>}
+ */
+function compiled_scripts(code) {
+	const source_file = ts.createSourceFile(
+		'compiled.tsx',
+		code,
+		ts.ScriptTarget.Latest,
+		true,
+		ts.ScriptKind.TSX,
+	);
+	/** @type {Array<{ form: string | null, body: string | null, children: number }>} */
+	const scripts = [];
+	/** @param {ts.Expression | undefined} expression */
+	const string_of = (expression) =>
+		expression && ts.isStringLiteralLike(expression) ? expression.text : null;
+	/** @param {ts.Node} node */
+	const visit = (node) => {
+		const opening = ts.isJsxElement(node)
+			? node.openingElement
+			: ts.isJsxSelfClosingElement(node)
+				? node
+				: null;
+		if (opening && opening.tagName.getText(source_file) === 'script') {
+			const children = ts.isJsxElement(node)
+				? node.children.filter((child) => !ts.isJsxText(child) || child.text.trim() !== '')
+				: [];
+			/** @type {{ form: string | null, body: string | null, children: number }} */
+			const script = { form: null, body: null, children: children.length };
+			const only = children[0];
+			if (children.length === 1 && ts.isJsxExpression(only)) {
+				script.form = 'children';
+				script.body = string_of(only.expression);
+			}
+			for (const attribute of opening.attributes.properties) {
+				if (!ts.isJsxAttribute(attribute) || !attribute.initializer) continue;
+				const attribute_name = attribute.name.getText(source_file);
+				const value = ts.isJsxExpression(attribute.initializer)
+					? attribute.initializer.expression
+					: undefined;
+				if (attribute_name === 'innerHTML' || attribute_name === 'v-html') {
+					script.form = attribute_name;
+					script.body = string_of(value);
+				} else if (
+					attribute_name === 'dangerouslySetInnerHTML' &&
+					value &&
+					ts.isObjectLiteralExpression(value)
+				) {
+					const html = value.properties.find(
+						(property) =>
+							ts.isPropertyAssignment(property) && property.name.getText(source_file) === '__html',
+					);
+					script.form = 'dangerouslySetInnerHTML';
+					script.body = html && ts.isPropertyAssignment(html) ? string_of(html.initializer) : null;
+				}
+			}
+			scripts.push(script);
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(source_file);
+	return scripts;
+}
+
+/**
+ * A `<script>` element is raw text: its body is `content`, as written, with no
+ * comments, no character references, and no `{…}` expressions, and its line
+ * breaks stay. Each target outputs it in the form that renders it exactly
+ * (#708).
+ * @param {{ compile: CompileHarness['compile'], name: string }} options
+ */
+function runSharedScriptBodyTests({ compile, name }) {
+	const form = SCRIPT_BODY_FORMS[name];
+
+	describe(`[${name}] raw-text script bodies`, () => {
+		const code_body = `
+			// c
+			run();
+			if (a < b && b > c) x = "&amp;";
+			items.forEach((i) => { log(i); });
+		`;
+
+		/** @type {Array<[string, string, string]>} */
+		const cases = [
+			[
+				'a template',
+				`export function App() @{
+	<div>
+		<script>${code_body}</script>
+	</div>
+}`,
+				code_body,
+			],
+			[
+				'plain JSX',
+				`export function App() {
+	return <div><script>${code_body}</script></div>;
+}`,
+				code_body,
+			],
+			[
+				'a JSON body',
+				`export function App() @{
+	<script type="application/json" id="data">{"a": 1, "b": "<b>&amp;</b>"}</script>
+}`,
+				'{"a": 1, "b": "<b>&amp;</b>"}',
+			],
+			[
+				'an import map',
+				`export function App() @{
+	<script type="importmap">
+		{ "imports": { "x": "./x.js" } }
+	</script>
+}`,
+				`
+		{ "imports": { "x": "./x.js" } }
+	`,
+			],
+			[
+				'braces, as text',
+				`export function App() {
+	const code = 'window.__ran = 1;';
+	return <div><script>{code}</script></div>;
+}`,
+				'{code}',
+			],
+			[
+				'a closing tag with whitespace',
+				`export function App() @{
+	<div><script>a = 1;</script
+	></div>
+}`,
+				'a = 1;',
+			],
+			[
+				'an escaped end tag',
+				`export function App() @{
+	<script>const tag = "<\\/script>";</script>
+}`,
+				'const tag = "<\\/script>";',
+			],
+		];
+
+		it.each(cases)(`outputs the body in %s as written, as \`${form}\``, (_label, source, body) => {
+			const { code } = compile(source, 'App.tsrx');
+
+			expect(compiled_scripts(code)).toEqual([
+				{ form, body, children: form === 'children' ? 1 : 0 },
+			]);
+			expect(virtual_parse_diagnostics(code)).toEqual([]);
+		});
+
+		it('never reads braces in a body as an expression', () => {
+			const { code } = compile(
+				`export function App() {
+	return <div><script>{code}</script></div>;
+}`,
+				'App.tsrx',
+			);
+
+			expect(code).not.toMatch(/\{code\}(?!['"])/);
+		});
+
+		it('outputs a body of only whitespace as an empty script, as the formatter prints it', () => {
+			const { code } = compile(
+				`export function App() @{
+	<script src="/a.js">
+	</script>
+}`,
+				'App.tsrx',
+			);
+
+			expect(compiled_scripts(code)).toEqual([{ form: null, body: null, children: 0 }]);
+		});
+
+		it("keeps a self-closing script with the target's prop for a dynamic body", () => {
+			const dynamic =
+				form === 'innerHTML' || form === 'v-html' ? 'innerHTML' : 'dangerouslySetInnerHTML';
+			const { code } = compile(
+				`export function App() @{
+	const code = 'window.__ran = 1;';
+	<script type="module" ${dynamic}={${dynamic === 'dangerouslySetInnerHTML' ? '{ __html: code }' : 'code'}} />
+}`,
+				'App.tsrx',
+			);
+
+			expect(compiled_scripts(code)).toEqual([{ form: dynamic, body: null, children: 0 }]);
+			expect(code).toContain('type="module"');
+		});
+	});
+}
+
+/**
  * Shared compile-output regressions. These assert observable properties of
  * the generated code (not source-map structure) that every JSX target should
  * satisfy across whatever `transformElement` hook the platform wires in.
@@ -1780,6 +2310,69 @@ export function runSharedCompileTests({
 		});
 	});
 
+	describe(`[${name}] syntax newer than ES2022`, () => {
+		// The parser reports a hashbang as the `Line` comment at offset 0; the
+		// output keeps it as written, once, and ahead of any injected import.
+		it('keeps a hashbang as the first line', () => {
+			const source = `#!/usr/bin/env node
+// A comment after the hashbang
+import { value } from './value.js';
+
+export function App() @{
+	<div>{value}</div>
+}
+`;
+
+			for (const options of [undefined, { collect: true }]) {
+				const { code } = compile(source, 'App.tsrx', options);
+
+				expect(code.startsWith('#!/usr/bin/env node\n')).toBe(true);
+				expect(count_substring(code, '/usr/bin/env node')).toBe(1);
+				expect(virtual_parse_diagnostics(code)).toEqual([]);
+			}
+		});
+
+		it('keeps the hashbang of a file without statements', () => {
+			expect(compile('#!/usr/bin/env node\n', 'App.tsrx').code).toBe('#!/usr/bin/env node');
+		});
+
+		it('prints using and await using declarations unchanged', () => {
+			const { code } = compile(
+				`using module_handle = open();
+
+				export function App() @{
+					using handle: Disposable = open();
+					<div>{handle.name}</div>
+				}
+
+				export async function load(items: Iterable<Disposable>, stream: AsyncIterable<AsyncDisposable>) {
+					await using connection = await connect(), other = open();
+					for (using item of items) {}
+					for await (await using item of stream) {}
+				}`,
+				'App.tsrx',
+			);
+
+			expect(code).toContain('using module_handle = open();');
+			expect(code).toContain('using handle: Disposable = open();');
+			expect(code).toMatch(/await using connection = await connect\(\),\s+other = open\(\);/);
+			expect(code).toContain('for (using item of items) {}');
+			expect(code).toContain('for await (await using item of stream) {}');
+			expect(virtual_parse_diagnostics(code)).toEqual([]);
+		});
+
+		it('keeps regular expressions with the v flag and modifiers', () => {
+			const { code } = compile(
+				`export const set = /[\\p{L}--[a-z]]/v;
+				export const modified = /(?i:a)b/;`,
+				'App.tsrx',
+			);
+
+			expect(code).toContain('/[\\p{L}--[a-z]]/v');
+			expect(code).toContain('/(?i:a)b/');
+		});
+	});
+
 	describe(`[${name}] literal \`<\` in text`, () => {
 		// The TSRX parser reads a `<` that cannot start a tag as literal text
 		// (`<span><3</span>`), but the compiled output is re-parsed by a JSX
@@ -1793,15 +2386,132 @@ export function runSharedCompileTests({
 
 			expect(code).toContain('<span>&lt;3 and a &lt; b</span>');
 		});
+	});
 
-		it('escapes `<` in a raw-text script body', () => {
-			const { code } = compile(
-				`export function App() { return <div><script>if (a < b) x();</script></div>; }`,
-				'App.tsrx',
-			);
+	runSharedScriptBodyTests({ compile, name });
 
-			expect(code).toContain('<script>if (a &lt; b) x();</script>');
+	describe(`[${name}] characters that JSX text can't hold`, () => {
+		/**
+		 * @param {string} body
+		 * @param {string} [before]
+		 */
+		const component = (body, before = '') => `export function App() @{
+	${before}<main>${body}</main>
+}`;
+
+		// A `>` is text in a template, as a `<` that can't start a tag is. JSX
+		// rejects both in text (TS1382), so each is written as a character
+		// reference. In a `{…}` container, the text before a `>` was dropped
+		// when it followed a tag, and after a child container the `>` failed
+		// (#694).
+		/** @type {Array<[string, string, string]>} */
+		const greater_than = [
+			['a template', component('<b>a > b</b>'), '<b>a &gt; b</b>'],
+			['a template after a tag', component('<b><i />a > b</b>'), '<i />a &gt; b</b>'],
+			['a container', component('{c && <b>a > b</b>}'), '<b>a &gt; b</b>'],
+			['a container, first', component('{c && <b>> b</b>}'), '<b>&gt; b</b>'],
+			['a container, an arrow', component('{c && <b>a => b</b>}'), '<b>a =&gt; b</b>'],
+			['a container after a tag', component('{c && <b><i />a > b</b>}'), '<i />a &gt; b</b>'],
+			[
+				'a container after a child container',
+				component('{c && <b>{y} a > b</b>}'),
+				'{y} a &gt; b</b>',
+			],
+			['an attribute value', component('<div title={<b>a > b</b>} />'), '<b>a &gt; b</b>'],
+			['an unbraced attribute value', component('<div title=<b>a > b</b> />'), '<b>a &gt; b</b>'],
+			[
+				'an unbraced attribute value, first',
+				component('<div title=<b>> b</b> />'),
+				'<b>&gt; b</b>',
+			],
+			[
+				'an unbraced attribute value in a container',
+				component('{c && <div title=<b>a > b</b> />}'),
+				'<b>a &gt; b</b>',
+			],
+			[
+				"a spread attribute's argument",
+				component('<div {...{ title: <b>a > b</b> }} />'),
+				'<b>a &gt; b</b>',
+			],
+			['an @if body', component('@if (c) { <b>a > b</b> }'), '<b>a &gt; b</b>'],
+			[
+				'an @if body in a container',
+				component('{c && <p>@if (d) { <b>a > b</b> }</p>}'),
+				'<b>a &gt; b</b>',
+			],
+			[
+				'an @switch body',
+				component('@switch (c) { @case 1: { <b>a > b</b> } }'),
+				'<b>a &gt; b</b>',
+			],
+			['an @for body', component('@for (const i of c) { <b>a > b</b> }'), '<b>a &gt; b</b>'],
+			[
+				'a setup statement',
+				component(
+					'{v}',
+					`const v = <b>{y} a > b</b>;
+	`,
+				),
+				'{y} a &gt; b</b>',
+			],
+			[
+				'a function',
+				`export function App() {
+	return <main>{c && <b>a > b</b>}</main>;
+}`,
+				'<b>a &gt; b</b>',
+			],
+		];
+
+		it.each(greater_than)('writes a `>` in text in %s as `&gt;`', (_label, source, expected) => {
+			const { code } = compile(source, 'App.tsrx');
+
+			expect(code).toContain(expected);
+			expect(virtual_parse_diagnostics(code)).toEqual([]);
 		});
+
+		// Text is written as it is in the source, its `raw`, character references
+		// included. In an element that acorn-typescript's JSX parser read, in a
+		// spread attribute's argument or an unbraced attribute value in a
+		// container, the output printed the decoded `value`, so `&#123;x&#125;`
+		// compiled to the expression `{x}`, and `&gt;` to a bare `>` (#693).
+		// Since #656 those are template text, and that parser reads only an
+		// element in a dynamic tag name, which is reported (#737): see the virtual
+		// code of reported dynamic tags.
+		/** @type {Array<[string, string, string]>} */
+		const references = [
+			[
+				'a spread argument',
+				component('<div {...{ title: <b>&#123;x&#125; &amp;lt; &gt;</b> }} />'),
+				'<b>&#123;x&#125; &amp;lt; &gt;</b>',
+			],
+			[
+				'an unbraced attribute value in a container',
+				component('{c && <div title=<b>&#123;x&#125; &amp;lt; &gt;</b> />}'),
+				'<b>&#123;x&#125; &amp;lt; &gt;</b>',
+			],
+			[
+				'a template',
+				component('<b>&#123;x&#125; &amp;lt; &gt;</b>'),
+				'<b>&#123;x&#125; &amp;lt; &gt;</b>',
+			],
+			[
+				'an attribute value',
+				component('<div title={<b>&#123;x&#125; &amp;lt; &gt;</b>} />'),
+				'<b>&#123;x&#125; &amp;lt; &gt;</b>',
+			],
+		];
+
+		it.each(references)(
+			'keeps the character references in text in %s',
+			(_label, source, expected) => {
+				const { code } = compile(source, 'App.tsrx');
+
+				expect(code).toContain(expected);
+				expect(virtual_parse_diagnostics(code)).toEqual([]);
+			},
+		);
 	});
 
 	describe(`[${name}] fragment expression children`, () => {
@@ -1901,6 +2611,124 @@ export function runSharedCompileTests({
 
 			expect(code).toContain('let c = <></>;');
 			expect(code).not.toMatch(/let c = ;/);
+		});
+	});
+
+	describe(`[${name}] JSX spread children`, () => {
+		// Spread children parse, but analysis reports them on every target: a
+		// normal compile throws, and collect mode records the diagnostic and
+		// still produces code.
+		const cases = [
+			[
+				'a template child',
+				`export function App({ items }: { items: any[] }) @{
+	<div>
+		{...items}
+		<span />
+	</div>
+}`,
+			],
+			[
+				'the only child of a fragment',
+				`export function App({ items }: { items: any[] }) @{\n\t<>{...items}</>\n}`,
+			],
+			[
+				'a child in plain TSX',
+				`export function List({ items }: { items: any[] }) {\n\treturn <ul>{...items}</ul>;\n}`,
+			],
+			[
+				'a child of an element in an attribute value',
+				`export function App({ items }: { items: any[] }) @{\n\t<Card content={<i>{...items}</i>} />\n}`,
+			],
+		];
+
+		for (const [label, source] of cases) {
+			const start = source.indexOf('{...items}');
+			const end = start + '{...items}'.length;
+
+			it(`throws for ${label}`, () => {
+				expect(() => compile(source, 'App.tsrx')).toThrow(
+					expect.objectContaining({
+						code: TSRX_ERRORS.JSX_SPREAD_CHILD.code,
+						pos: start,
+						end,
+					}),
+				);
+			});
+
+			it(`records ${label} in collect mode`, () => {
+				const { code, errors } = compile(source, 'App.tsrx', { collect: true });
+
+				expect(errors.map((error) => [error.code, error.pos, error.end])).toEqual([
+					[TSRX_ERRORS.JSX_SPREAD_CHILD.code, start, end],
+				]);
+				expect(virtual_parse_diagnostics(code), code).toEqual([]);
+			});
+		}
+	});
+
+	describe(`[${name}] dynamic tag expressions (#737)`, () => {
+		// A dynamic tag expression is an identifier, a member access, or a string
+		// literal. The parser reports anything else on every target: a normal
+		// compile throws, and collect mode records the diagnostic, once for the
+		// opening and closing tag, and still produces code.
+		/** @type {Array<[string, string]>} */
+		const reported = [
+			['a conditional', 'c ? A : B'],
+			['a call', 'getTag()'],
+			['a concatenation', "'h' + level"],
+			['an arrow function', '() => <b>x</b>'],
+			['an element', "c ? <b>&#123;x&#125; &amp;lt; &gt;</b> : 'i'"],
+			['a parenthesized identifier', '(tag)'],
+			['a type assertion', 'tag as any'],
+		];
+
+		for (const [label, tag] of reported) {
+			const source = `export function App({ c, A, B, getTag, level, tag }: any) @{
+	<main>
+		<{${tag}} title="t">
+			<p>{c}</p>
+		</{${tag}}>
+	</main>
+}`;
+			const start = source.indexOf(tag);
+			const end = start + tag.length;
+
+			it(`throws for ${label}`, () => {
+				expect(() => compile(source, 'App.tsrx')).toThrow(
+					expect.objectContaining({
+						code: TSRX_ERRORS.DYNAMIC_TAG_EXPRESSION.code,
+						pos: start,
+						end,
+					}),
+				);
+			});
+
+			it(`records ${label} in collect mode`, () => {
+				const { code, errors } = compile(source, 'App.tsrx', { collect: true });
+
+				expect(errors.map((error) => [error.code, error.pos, error.end])).toEqual([
+					[TSRX_ERRORS.DYNAMIC_TAG_EXPRESSION.code, start, end],
+				]);
+				expect(virtual_parse_diagnostics(code), code).toEqual([]);
+			});
+		}
+
+		it('compiles an identifier, a member access, and a string literal', () => {
+			const { code } = compile(
+				`export function App({ tag, props, registry, items, kind }: any) @{
+	<main>
+		<{tag} />
+		<{props.as}>x</{props.as}>
+		<{registry[kind].tag} />
+		<{items[0]} />
+		<{'section'} />
+	</main>
+}`,
+				'App.tsrx',
+			);
+
+			expect(virtual_parse_diagnostics(code), code).toEqual([]);
 		});
 	});
 
@@ -2067,10 +2895,7 @@ export function runSharedCompileTests({
 				{ collect: true },
 			);
 
-			expect(result.errors.map((error) => error.message)).toContain(
-				"Unclosed tag '<div>'. Expected '</div>' before end of template.",
-			);
-			expect(diagnostic_codes(result)).toContain(DIAGNOSTIC_CODES.UNCLOSED_TAG);
+			expect(diagnostic_codes(result)).toContain(TSRX_ERRORS.UNCLOSED_TAG.code);
 		});
 
 		it('keeps loose unclosed tag recovery silent', () => {
@@ -2204,6 +3029,70 @@ export function runSharedCompileTests({
 			expect(code).toContain('line\\nbreak');
 		});
 
+		it('keeps the space after a closing tag whose body ends in a line break', () => {
+			const { code } = compile(
+				'export function App() @{\n\t<div>\n\t\t<span>\n\t\t\t<b>1</b>\n\t\t</span> 2\n\t</div>\n}',
+				'App.tsrx',
+			);
+
+			expect(code).toContain('</span> 2');
+		});
+
+		it('keeps a non-breaking space next to a line break as text for the JSX compiler', () => {
+			// JSX whitespace is ASCII, so the character is text. The JSX compiler
+			// decides whether it renders at the edge of a line, as it does for TSX.
+			const { code } = compile(
+				'export function App() @{\n\t<div>\n\t\t\u00a0<b>x</b>\n\t</div>\n}',
+				'App.tsrx',
+			);
+
+			expect(code).toContain('\u00a0<b>x</b>');
+		});
+
+		it('keeps the space after a closing tag in an element in a container', () => {
+			const { code } = compile(
+				'export function App() @{\n\t<main>\n\t\t{show && <div><b>1</b> 2</div>}\n\t\t<p slot={<div><i>3</i> 4</div>} />\n\t</main>\n}',
+				'App.tsrx',
+			);
+
+			expect(code).toContain('</b> 2');
+			expect(code).toContain('</i> 4');
+		});
+
+		it('keeps the text of an element in an @switch case', () => {
+			const { code } = compile(
+				'export function App() @{\n\t@switch (kind) {\n\t\t@case 1: {\n\t\t\t<div><b>3</b> 4<i />\u00a05</div>\n\t\t}\n\t}\n}',
+				'App.tsrx',
+			);
+
+			expect(code).toContain('</b> 4<i');
+			expect(code).toContain('\u00a05');
+		});
+
+		it('keeps the text of an element in a setup statement', () => {
+			const { code } = compile(
+				'export function App() @{\n\tconst a = <div>Hello<b /> 2<i />\u00a03</div>;\n\t<main>{a}</main>\n}',
+				'App.tsrx',
+			);
+
+			expect(code).toContain('Hello<b');
+			expect(code).toContain('/> 2<i');
+			expect(code).toContain('\u00a03');
+		});
+
+		it("keeps the text of an element in a spread attribute's argument and in an attribute value without braces", () => {
+			const { code } = compile(
+				'export function App() @{\n\t<main>\n\t\t<p {...{ k: <div><b>1</b> /* c */ 2</div> }} />\n\t\t<p k=<div><i>3</i> /* c */ 4</div> />\n\t\t<p {...(x ? <div>@if (y) { <s>5</s> } 6</div> : {})} />\n\t</main>\n}',
+				'App.tsrx',
+			);
+
+			expect(code).toContain('</b> {} 2');
+			expect(code).toContain('</i> {} 4');
+			expect(code).toContain('5</s>');
+			expect(code).not.toContain('/* c */');
+			expect(code).not.toContain('@if');
+		});
+
 		it('keeps double-quoted strings inside expression containers as JavaScript strings', () => {
 			const { code } = compile(
 				`export function App() @{
@@ -2225,7 +3114,7 @@ break"}</p>
 					}`,
 					'App.tsrx',
 				),
-			).toThrow(/Unterminated string constant/);
+			).toThrow(error_with('TS1002'));
 		});
 
 		it('keeps compact string comparisons in expression containers parseable', () => {
@@ -2271,6 +3160,61 @@ export function optionalFn(bar: string, baz?: string) {
 			expect(code).toContain('export type OptionalFn = (bar: string, baz?: string) => void;');
 			expect(code).toContain('(bar: string, baz?: string): void');
 			expect(code).toContain('export function optionalFn(bar: string, baz?: string)');
+		});
+
+		// acorn-typescript flags `export import` on the declaration itself, and
+		// the printer ignored the flag, so the module lost the alias's export.
+		it('keeps the export on import-equals aliases', () => {
+			const { code } = compile(
+				`namespace Shapes {
+	export const sides = 4;
+}
+export import Square = Shapes;
+import Local = Shapes;
+export namespace Outer {
+	export import Inner = Shapes;
+}
+export import path = require('node:path');`,
+				'App.tsrx',
+			);
+
+			expect(code).toContain('export import Square = Shapes');
+			expect(code).toMatch(/^import Local = Shapes$/m);
+			expect(code).toContain('export import Inner = Shapes');
+			expect(code).toContain("export import path = require('node:path');");
+
+			const module = { exports: /** @type {Record<string, any>} */ ({}) };
+			const commonjs = ts.transpileModule(code, {
+				compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+			}).outputText;
+			new Function('module', 'exports', 'require', commonjs)(module, module.exports, () => ({
+				sep: '/',
+			}));
+			expect(module.exports.Square).toEqual({ sides: 4 });
+			expect(module.exports.Outer.Inner).toEqual({ sides: 4 });
+			expect(module.exports.path).toEqual({ sep: '/' });
+		});
+
+		// esrap's import type printer drops the import attributes (#422).
+		it('keeps the import attributes of import types', () => {
+			const { code } = compile(
+				`type Data = import('./data.json', { with: { type: 'json' } });
+export type Mode = import('pkg', { with: { 'resolution-mode': 'require' } }).ns.Mode<string>;
+export function App() @{
+	const loaded: typeof import('./data.json', { with: { type: 'json' } }).default = load();
+	<div>{String(loaded)}</div>
+}`,
+				'App.tsrx',
+			);
+
+			expect(code).toContain("type Data = import('./data.json', { with: { type: 'json' } });");
+			expect(code).toContain(
+				"export type Mode = import('pkg', { with: { 'resolution-mode': 'require' } }).ns.Mode<string>;",
+			);
+			expect(code).toContain(
+				"const loaded: typeof import('./data.json', { with: { type: 'json' } }).default = load();",
+			);
+			expect(virtual_parse_diagnostics(code)).toEqual([]);
 		});
 
 		it('keeps JavaScript block scopes inside component-local callables', () => {
@@ -2370,7 +3314,7 @@ export function optionalFn(bar: string, baz?: string) {
 					'App.tsrx',
 					{ collect: true },
 				),
-			).toThrow(/Unexpected closing tag/);
+			).toThrow(error_with(TSRX_ERRORS.UNEXPECTED_CLOSING_TAG));
 		});
 	});
 
@@ -2415,7 +3359,7 @@ export function optionalFn(bar: string, baz?: string) {
 					}`,
 					'App.tsrx',
 				),
-			).toThrow(/Return statements are not allowed inside TSRX template @if blocks/);
+			).toThrow(error_with(TSRX_ERRORS.IF_RETURN_STATEMENT));
 		});
 	});
 
@@ -3674,7 +4618,7 @@ export function optionalFn(bar: string, baz?: string) {
 			expect(code).toContain('card');
 		});
 
-		it('prunes style expression selectors that the class map cannot reach', () => {
+		it('keeps every selector of a style expression that only class entries read', () => {
 			const { css, cssHash } = compile(
 				`export function App() @{
 						const styles = <style>
@@ -3692,13 +4636,16 @@ export function optionalFn(bar: string, baz?: string) {
 				'App.tsrx',
 			);
 
-			expect(css).toContain('/* (unused) div { color: red; }*/');
-			expect(css).toContain('/* (unused) .parent .card { font-weight: bold; }*/');
+			// An assigned block is a theme: `$class` can reach any element, so
+			// element, descendant, and global selectors all stay.
+			expect(css).not.toContain('(unused)');
+			expect(css).toContain(`div.${cssHash} { color: red; }`);
+			expect(css).toContain(`.parent.${cssHash} .card:where(.${cssHash}) { font-weight: bold; }`);
 			expect(css).toContain(`.card.${cssHash}`);
 			expect(css).toContain('&:hover { color: blue; }');
 			expect(css).toContain('.badge { padding: 0; }');
 			expect(css).not.toContain(`.badge.${cssHash}`);
-			expect(css).toContain('/* (unused) :global(body) { margin: 0; }*/');
+			expect(css).toContain('body { margin: 0; }');
 		});
 
 		it('matches free-standing selectors for both class and className attributes', () => {
@@ -3886,6 +4833,42 @@ function runSharedPlatformTests({ compile, name }) {
 			expect(code).not.toContain('not_ios');
 		});
 
+		it('keeps var bindings hoisted from an inactive branch', () => {
+			const { code } = compile(
+				`if (import.meta.env.platform.web) { var value = 'web_value'; }
+				export { value };
+				export function read() {
+					if (import.meta.env.platform.web) { var local = 'web_local'; }
+					return local;
+				}`,
+				'App.tsrx',
+				{ platform: 'ios' },
+			);
+
+			expect(code).toMatch(/var value;[\s\S]*export \{ value \}/);
+			expect(code).toMatch(/function read\(\) \{\s*var local;\s*return local;/);
+			expect(code).not.toContain('web_value');
+			expect(code).not.toContain('web_local');
+		});
+
+		it('declares only discarded var bindings the selected branch lacks', () => {
+			const { code } = compile(
+				`if (import.meta.env.platform.web) {
+					var shared = 'web_shared';
+					var web_only = 'web_only';
+				} else {
+					var shared = 'native_shared';
+				}
+				export { shared, web_only };`,
+				'App.tsrx',
+				{ platform: 'android' },
+			);
+
+			expect(code).toMatch(/var web_only;[\s\S]*var shared = 'native_shared'/);
+			expect(code).not.toContain('var shared;');
+			expect(code).not.toContain('web_shared');
+		});
+
 		it('drops inactive imports and scoped CSS before dependency/style analysis', () => {
 			const { code, css } = compile(
 				`if (import.meta.env.platform.web) {
@@ -3947,7 +4930,7 @@ function runSharedPlatformTests({ compile, name }) {
 
 		it('requires configuration when a recognized flag is used', () => {
 			expect(() => compile('if (import.meta.env.platform.web) { consume(); }', 'App.tsrx')).toThrow(
-				/requires a configured TSRX platform/,
+				error_with(TSRX_ERRORS.PLATFORM_REQUIRED),
 			);
 
 			const result = compile('if (import.meta.env.platform.web) { consume(); }', 'App.tsrx', {

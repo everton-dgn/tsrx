@@ -13,6 +13,7 @@ import {
 	createHookSafeHelper,
 	create_generated_identifier,
 	createJsxTransform,
+	DIAGNOSTIC_CODES,
 	error,
 	has_location,
 	is_component_like_element,
@@ -54,6 +55,11 @@ const vue_platform = {
 		rewriteClassAttr: false,
 		multiRefStrategy: 'merge-refs',
 		hostSpreadRefStrategy: 'explicit-ref-attr',
+		// vue-jsx-vapor escapes a string child into its HTML template, where a
+		// `<script>` element's text isn't decoded, and writes a string
+		// `innerHTML` there as an attribute. `v-html` sets the body as written
+		// when the element is created, and the server renders it as written.
+		scriptBody: 'v-html',
 	},
 	validation: {
 		requireUseServerForAwait: true,
@@ -148,6 +154,7 @@ const vue_platform = {
 				await_expression,
 				ctx?.errors,
 				ctx?.comments,
+				DIAGNOSTIC_CODES.TARGET_AWAIT_UNSUPPORTED,
 			);
 		},
 		injectImports(program, ctx) {

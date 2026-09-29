@@ -28,6 +28,64 @@ describe('platform specialization', () => {
 		expect(ast.body[0].type).toBe('IfStatement');
 	});
 
+	it('declares every var an inactive branch hoists, without locations', () => {
+		const ast = parseModule(
+			`function read(o, xs) {
+				if (import.meta.env.platform.web) {
+					for (var i = 0; i < 1; i++) { var in_for; }
+					for (var key in o) {}
+					for (var { x, y: [z = 1, ...rest] } of xs) {}
+					while (o) { var in_while; }
+					do { var in_do; } while (o);
+					label: { var in_label; }
+					try { var in_try; } catch (e) { var in_catch; } finally { var in_finally; }
+					switch (o) { case 1: var in_case; default: { var in_default; } }
+					if (o) var in_if; else var in_else;
+					let not_let;
+					const not_const = 1;
+					function not_function() { var in_function; }
+					class NotClass { static { var in_static; } method() { var in_method; } }
+					const not_arrow = () => { var in_arrow; };
+				}
+			}`,
+			'App.tsrx',
+		);
+
+		const specialized = specializePlatform(ast, 'ios', 'App.tsrx');
+		const read = specialized.body[0];
+		if (read.type !== 'FunctionDeclaration') throw new Error('expected FunctionDeclaration');
+		const [declaration] = read.body.body;
+		if (declaration.type !== 'VariableDeclaration') throw new Error('expected VariableDeclaration');
+
+		expect(read.body.body).toHaveLength(1);
+		expect(declaration.kind).toBe('var');
+		expect(declaration.loc).toBeUndefined();
+		expect(
+			declaration.declarations.map((declarator) => {
+				expect(declarator.init).toBeUndefined();
+				expect(declarator.id.loc).toBeUndefined();
+				return declarator.id.type === 'Identifier' ? declarator.id.name : null;
+			}),
+		).toEqual([
+			'i',
+			'in_for',
+			'key',
+			'x',
+			'z',
+			'rest',
+			'in_while',
+			'in_do',
+			'in_label',
+			'in_try',
+			'in_catch',
+			'in_finally',
+			'in_case',
+			'in_default',
+			'in_if',
+			'in_else',
+		]);
+	});
+
 	it('returns an unguarded program unchanged', () => {
 		const ast = parseModule('if (ready) consume();', 'App.tsrx');
 		expect(specializePlatform(ast, 'web', 'App.tsrx')).toBe(ast);
@@ -63,6 +121,16 @@ describe('platform specialization', () => {
 		expect(result.code).toContain('const active = true;');
 		expect(result.map.sources).toEqual(['flags.ts']);
 		expect(result.map.sourcesContent?.[0]).toBe(source);
+	});
+
+	it('replaces flags in a module with a hashbang and syntax newer than ES2022', () => {
+		const source = `#!/usr/bin/env node
+using handle = open();
+const letters = /[\\p{L}--[a-z]]/v;
+const active = import.meta.env.platform.web;`;
+		const result = replacePlatformFlags(source, 'cli.ts', 'web');
+
+		expect(result.code).toBe(source.replace('import.meta.env.platform.web', 'true'));
 	});
 
 	it('preserves an incoming map when there is nothing to rewrite', () => {

@@ -3,10 +3,11 @@
 
 import tsx from 'esrap/languages/tsx';
 import {
+	format_comment,
+	is_file_level_pragma,
+	is_jsx_child_tooling_comment,
 	should_preserve_comment,
 	should_preserve_jsx_tooling_comment,
-	is_file_level_pragma,
-	format_comment,
 } from '../../comment-utils.js';
 import { has_location } from '../../utils/ast.js';
 import { with_deferred_imports } from '../imports.js';
@@ -25,6 +26,30 @@ import { with_deferred_imports } from '../imports.js';
 export function in_jsx_child_context(path) {
 	const parent = path[path.length - 1];
 	return !!parent && (parent.type === 'JSXElement' || parent.type === 'JSXFragment');
+}
+
+/** @type {Record<string, string>} */
+const JSX_TEXT_ESCAPES = { '<': '&lt;', '>': '&gt;' };
+
+/** The characters that `escape_jsx_text` writes as character references. */
+export const regex_jsx_text_escaped = /[<>]/g;
+
+/**
+ * JSX text as the output writes it. A `JSXText` node's `raw` is its text as
+ * written, character references included (`&amp;`), and JSX reads it the same
+ * way; `value` is what it renders, with the references decoded. TSRX text can
+ * also hold characters that JSX text can't: a `<` or `>` in template text
+ * (`<span><3</span>`, `a > b`). The target's JSX toolchain rejects a bare `<`
+ * or `>` (esbuild, oxc, TypeScript) or gives no output (vue-jsx-vapor), so each
+ * is written as a character reference, which JSX decodes back to the same
+ * character. The references already in the text stay as written. A raw-text
+ * `<script>` body is never JSX text (see `create_script_body`).
+ *
+ * @param {string} raw
+ * @returns {string}
+ */
+export function escape_jsx_text(raw) {
+	return raw.replace(regex_jsx_text_escaped, (ch) => JSX_TEXT_ESCAPES[ch]);
 }
 
 /**
@@ -80,8 +105,15 @@ export function set_node_path_metadata(node, path) {
  * annotations stay with their declarations, members, or statements. A sparse
  * print with explicitly supplied comments retains its existing leading-pragma
  * behavior. Ordinary build callers supply no comments.
+ * @param {string | null} [hashbang] The source's hashbang line (`#!…`, see
+ * `get_hashbang`), printed as the output's first line. The parser also reports
+ * it as the `Line` comment at offset 0, which is then never printed as `//…`.
  */
-export function tsx_with_ts_locations(boundary_tokens = false, comments = undefined) {
+export function tsx_with_ts_locations(
+	boundary_tokens = false,
+	comments = undefined,
+	hashbang = null,
+) {
 	const base = with_deferred_imports(tsx({ boundaryTokens: boundary_tokens }));
 	const { _: base_visitor, ...base_visitors } = base;
 	const preserve_comments = comments !== undefined;
@@ -96,6 +128,7 @@ export function tsx_with_ts_locations(boundary_tokens = false, comments = undefi
 	const write_preserved_comment = (comment, context) => {
 		if (
 			!emitted_comments ||
+			(hashbang !== null && comment.start === 0) ||
 			!(preserve_owner_comments
 				? should_preserve_jsx_tooling_comment(comment)
 				: should_preserve_comment(comment))
@@ -144,6 +177,12 @@ export function tsx_with_ts_locations(boundary_tokens = false, comments = undefi
 	/** @type {ESRap.Visitors<AST.Node>} */
 	const wrappers = {
 		Program: (node, context) => {
+			// A hashbang is only valid as the very first line of a module.
+			if (hashbang !== null) {
+				context.location(1, 0);
+				context.write(hashbang);
+				context.newline();
+			}
 			for (const comment of leading_preserved(node)) {
 				write_preserved_comment(comment, context);
 			}
@@ -194,13 +233,30 @@ export function tsx_with_ts_locations(boundary_tokens = false, comments = undefi
 			context.visit(value.body);
 		},
 
-		// TSRX text may contain a literal `<` — one that cannot start a tag
-		// (`<span><3</span>`) or a raw-text `<script>` body — but the printed TSX
-		// is re-parsed by a JSX toolchain (esbuild, Babel, SWC), and JSX forbids
-		// a bare `<` in text. Emit it as `&lt;`, which those parsers decode back
-		// to the same string.
+		// A comment between children is in an empty `{}` (see `#addTemplateText`
+		// in `plugin.js`). In the editor's TypeScript, a tooling comment there
+		// prints inside it in block form, `{/* @ts-expect-error */}`, which
+		// TypeScript applies to the next line, as in TSX.
+		JSXEmptyExpression: (node, context) => {
+			if (!emitted_comments || !preserve_owner_comments) return;
+			for (const comment of /** @type {AST.CommentWithLocation[]} */ (node.innerComments ?? [])) {
+				if (!is_jsx_child_tooling_comment(comment) || comment.value.includes('*/')) continue;
+				const key = `${comment.start}:${comment.end}:${comment.type}:${comment.value}`;
+				if (emitted_comments.has(key)) continue;
+				emitted_comments.add(key);
+				if (comment.loc) context.location(comment.loc.start.line, comment.loc.start.column);
+				context.write(
+					comment.type === 'Line' ? `/* ${comment.value.trim()} */` : `/*${comment.value}*/`,
+				);
+				if (comment.loc) context.location(comment.loc.end.line, comment.loc.end.column);
+			}
+		},
+
+		// Text prints from `raw`, as JSX printers do: `value` has its character
+		// references decoded, so `&#123;x&#125;` would print as the expression
+		// `{x}`.
 		JSXText: (node, context) => {
-			context.write(node.value.replace(/</g, '&lt;'), node);
+			context.write(escape_jsx_text(node.raw ?? node.value), node);
 		},
 
 		// esrap's JSXOpeningElement printer doesn't emit `typeArguments`, so generic
@@ -230,6 +286,63 @@ export function tsx_with_ts_locations(boundary_tokens = false, comments = undefi
 				context.visit(node.typeParameters);
 			}
 		},
+		// esrap's TSImportType printer drops `options`, the import attributes in
+		// `import('./data.json', { with: { type: 'json' } })`, which TypeScript
+		// reads, for instance to pick the module's `resolution-mode`
+		// (sveltejs/esrap#231). Remove this once esrap prints them.
+		TSImportType: (node, context) => {
+			if (!node.options) {
+				/** @type {NonNullable<typeof base.TSImportType>} */ (base.TSImportType)(node, context);
+				return;
+			}
+			context.write('import(');
+			context.visit(node.argument);
+			context.write(', ');
+			context.visit(node.options);
+			context.write(')');
+			if (node.qualifier) {
+				context.write('.');
+				context.visit(node.qualifier);
+			}
+			if (node.typeArguments) {
+				context.visit(node.typeArguments);
+			}
+		},
+		// esrap's TSParameterProperty printer drops `override`, so
+		// `constructor(override readonly n: number)` typechecks as TS4115
+		// ("must have an 'override' modifier") under `noImplicitOverride`.
+		// TypeScript's modifier order is accessibility, override, readonly.
+		TSParameterProperty: (node, context) => {
+			if (node.accessibility) {
+				context.write(node.accessibility + ' ');
+			}
+			if (node.override) {
+				context.write('override ');
+			}
+			if (node.readonly) {
+				context.write('readonly ');
+			}
+			context.visit(node.parameter);
+		},
+		// acorn-typescript marks `export import A = B` with `isExport` instead of
+		// wrapping it in an ExportNamedDeclaration, and esrap's printer ignores
+		// the flag, so the compiled module silently lost the alias's export.
+		// Tooling prints mark both ends, as for an ExportNamedDeclaration, so
+		// the whole exported statement maps back to its source.
+		TSImportEqualsDeclaration: (node, context) => {
+			const print = /** @type {NonNullable<typeof base.TSImportEqualsDeclaration>} */ (
+				base.TSImportEqualsDeclaration
+			);
+			if (!node.isExport) {
+				print(node, context);
+				return;
+			}
+			const loc = boundary_tokens ? node.loc : undefined;
+			if (loc) context.location(loc.start.line, loc.start.column);
+			context.write('export ');
+			print(node, context);
+			if (loc) context.location(loc.end.line, loc.end.column);
+		},
 		TSModuleDeclaration: (node, context) => {
 			// `declare global` is represented as a TSModuleDeclaration whose id is
 			// `global`; adding `module` changes it into an unrelated named module.
@@ -237,15 +350,26 @@ export function tsx_with_ts_locations(boundary_tokens = false, comments = undefi
 			// the typeOnly/volar output is real TS and `module '…' { … }` alone is
 			// a syntax error (TS1035).
 			if (node.declare) context.write('declare ');
-			if (node.kind === 'global') {
-				context.visit(node.id);
-				context.visit(node.body);
-				return;
+			if (node.kind !== 'global') {
+				context.write(node.kind);
+				context.write(' ');
 			}
-			context.write(node.kind);
-			context.write(' ');
 			context.visit(node.id);
-			context.visit(node.body);
+			// A dotted name (`namespace A.B { … }`) parses as nested declarations
+			// whose body is the next name part; print one qualified name instead
+			// of repeating the keyword (`namespace Anamespace B`).
+			let body = node.body;
+			while (body?.type === 'TSModuleDeclaration') {
+				context.write('.');
+				context.visit(body.id);
+				body = body.body;
+			}
+			if (body) {
+				context.visit(body);
+			} else {
+				// Shorthand ambient module: `declare module '…';`
+				context.write(';');
+			}
 		},
 		_(node, context, visit) {
 			if (preserve_owner_comments) write_leading_comments(node, context);
@@ -347,6 +471,7 @@ const LOCATION_WRAPPED_NODE_TYPES = new Set([
 	'JSXOpeningElement',
 	'JSXClosingElement',
 	'JSXExpressionContainer',
+	'JSXSpreadChild',
 	// TS wrapper nodes with the same issue.
 	'TSTypeParameterInstantiation',
 	'TSTypeParameterDeclaration',

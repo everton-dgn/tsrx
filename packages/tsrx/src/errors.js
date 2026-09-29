@@ -4,18 +4,24 @@
 */
 
 /**
- *
- * @param {string} message
+ * Report an error at `node`: record it in `errors`, or throw it. `message` is
+ * the error's entry, such as `TSRX_ERRORS.UNCLOSED_TAG('div')`, with its code,
+ * or its text, with `code`.
+ * @param {string | { code: string | undefined, message: string }} message
  * @param {string | null} filename
  * @param {AST.Node | AST.NodeWithLocation} node
  * @param {CompileError[]} [errors]
  * @param {AST.CommentWithLocation[]} [comments]
- * @param {string} [code]
+ * @param {string} [code] TSRX's own code, or TypeScript's for a mistake TypeScript also reports
  * @returns {void}
  */
 export function error(message, filename, node, errors, comments, code) {
 	if (errors && comments && is_error_suppressed(node, comments)) {
 		return;
+	}
+	if (typeof message !== 'string') {
+		code ??= message.code;
+		message = message.message;
 	}
 
 	const error = /** @type {CompileError} */ (new Error(message));

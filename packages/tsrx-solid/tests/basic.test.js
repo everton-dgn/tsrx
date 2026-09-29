@@ -1067,11 +1067,30 @@ describe('@tsrx/solid basic', () => {
 			);
 			expect(code).toContain('{...App__spread_props1}');
 			expect(code).toContain('{...App__spread_props2}');
-			expect(code).toContain('ref={[App__spread_props1.ref, App__spread_props2.ref, cb]}');
+			expect(code).toContain('ref={[App__spread_props1?.ref, App__spread_props2?.ref, cb]}');
 			expect(code.match(/__normalize_spread_props_for_ref_attr\(/g)).toHaveLength(2);
 			expect(code).not.toContain('create_ref_prop');
 			expect(code).not.toContain('__normalize_spread_props(first, cb)');
 			expect(code).not.toContain('__normalize_spread_props(second, cb)');
+		});
+
+		it('lowers a host spread beside a ref in expression position once', () => {
+			const source = `export function App({ enabled, bag, cb }) {
+					return enabled ? <input {...bag} ref={cb} /> : null;
+				}`;
+
+			for (const { code } of [
+				compile(source, 'App.tsrx'),
+				compile_to_volar_mappings(source, 'App.tsrx'),
+			]) {
+				expect(code).toContain(
+					'let App__spread_props1 = __normalize_spread_props_for_ref_attr(bag);',
+				);
+				expect(code).toContain(
+					'<input {...App__spread_props1} ref={[App__spread_props1?.ref, cb]} />',
+				);
+				expect(code).not.toContain('App__spread_props2');
+			}
 		});
 
 		it('keeps named ref-like props as ordinary props on host elements', () => {

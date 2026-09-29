@@ -5,6 +5,7 @@
 import { walk } from 'zimmerframe';
 import { print } from 'esrap';
 import { error } from '../../errors.js';
+import { DIAGNOSTIC_CODES, TSRX_ERRORS } from '../../diagnostics.js';
 import { is_template_value_position } from '../../analyze/validation.js';
 import { analyze_css } from '../../analyze/css-analyze.js';
 import {
@@ -56,6 +57,7 @@ import {
 } from '../jsx-interleave.js';
 import { is_hoist_safe_jsx_node } from '../jsx-hoist.js';
 import { lower_server_module_for_types } from './server-module.js';
+import { get_hashbang } from '../../comment-utils.js';
 import {
 	child_nodes,
 	has_location,
@@ -64,21 +66,9 @@ import {
 	is_function_or_class_node as is_function_or_class_boundary,
 	is_template_directive as is_jsx_control_flow_expression,
 	node_children,
+	render_children,
 } from '../../utils/ast.js';
 
-const TEMPLATE_FRAGMENT_ERROR =
-	'JSX fragment syntax is not needed in TSRX templates. TSRX renders in immediate mode, so everything is already a fragment. Use `<>...</>` only in expression position.';
-const TSRX_FOR_RETURN_ERROR =
-	'Return statements are not allowed inside TSRX template for...of loops. Filter the iterable before rendering or use an @empty fallback for empty lists.';
-const TSRX_FOR_BREAK_ERROR =
-	'Break statements are not allowed inside TSRX template for...of loops.';
-const TSRX_FOR_CONTINUE_ERROR =
-	'Continue statements are not allowed inside TSRX template for...of loops. Filter the iterable before rendering.';
-const TSRX_IF_RETURN_ERROR =
-	'Return statements are not allowed inside TSRX template @if blocks. Move the return before the template output or render conditionally instead.';
-const TSRX_IF_BREAK_ERROR = 'Break statements are not allowed inside TSRX template @if blocks.';
-const TSRX_IF_CONTINUE_ERROR =
-	'Continue statements are not allowed inside TSRX template @if blocks. Filter before rendering or use conditional output instead.';
 const DYNAMIC_IMPORT_LOCAL = 'TsrxDynamic';
 const DYNAMIC_FACTORY_LOCAL = '_tsrx_dynamic';
 const LEADING_INLINE_WHITESPACE = /^[ \t]+/;
@@ -90,20 +80,6 @@ const TRAILING_INLINE_WHITESPACE = /[ \t]+$/;
  */
 function is_newline_char(ch) {
 	return ch === '\n' || ch === '\r';
-}
-
-/**
- * @param {AST.Node} node
- * @param {TransformContext} transform_context
- */
-function report_jsx_fragment_in_tsrx_error(node, transform_context) {
-	error(
-		TEMPLATE_FRAGMENT_ERROR,
-		transform_context.filename,
-		node,
-		transform_context.errors,
-		transform_context.comments,
-	);
 }
 
 /**
@@ -588,6 +564,7 @@ export function createJsxTransform(platform) {
 			needs_dynamic_element: false,
 			needs_dynamic_factory: false,
 			needs_for_of_iterable: false,
+			needs_for_of_iterable_async: false,
 			needs_iteration_value_type: false,
 			needs_show: false,
 			needs_for: false,
@@ -677,10 +654,7 @@ export function createJsxTransform(platform) {
 				const is_empty_container_child =
 					immediate_parent?.type === 'JSXExpressionContainer' &&
 					in_jsx_child_context(path.slice(0, -1)) &&
-					!node_children(target).some(
-						(child) =>
-							child.type !== 'EmptyStatement' && (child.type !== 'JSXText' || child.value !== ''),
-					);
+					!render_children(target).some((child) => child.type !== 'EmptyStatement');
 				const in_jsx_child = in_jsx_child_context(path) || is_empty_container_child;
 				let expression = tsrx_node_to_jsx_expression(target, state, in_jsx_child);
 				// Keep a fragment's `<> … </>` identity in expression position when it is
@@ -712,12 +686,21 @@ export function createJsxTransform(platform) {
 				}
 
 				if (!node.metadata?.native_tsrx) {
-					return next() ?? node;
+					// JSX the parser reads as plain JSX (an element in a dynamic tag
+					// name, `<{…}>`), but the JSXOpeningElement visitor still lowers
+					// its host ref/spread to a setup declaration. Wrap it here: left
+					// for the nearest native ancestor, it would be declared outside
+					// any callback between the two, where the callback's parameters
+					// are not in scope.
+					return wrap_jsx_setup_declarations(
+						/** @type {AST.Expression} */ (next() ?? node),
+						in_jsx_child_context(path),
+					);
 				}
 
 				// Capture raw children BEFORE the walker transforms them so platform
 				// hooks can inspect the original JSX child shape.
-				const raw_children = node_children(node).map((child) => ({ ...child }));
+				const raw_children = render_children(node).map((child) => ({ ...child }));
 				const inner = /** @type {AST.TSRXJSXElement} */ (next() ?? node);
 				const in_jsx_child = in_jsx_child_context(path);
 				const hook = platform.hooks?.transformElement;
@@ -731,10 +714,11 @@ export function createJsxTransform(platform) {
 				// element in plain-JS expression position — a ternary arm, a concise
 				// arrow body, a declarator init, a callback body, an attribute value, an
 				// array element — reaches neither: the declaration is dropped while the
-				// rewritten attributes still reference the name, and the type-only print
-				// carries an undefined identifier (TS2304). Wrap it in the same IIFE the
-				// native-directive path already uses.
-				return state.typeOnly && produced.type !== 'JSXSpreadChild' && produced.type !== 'JSXText'
+				// rewritten attributes still reference the name, so the runtime output
+				// throws a ReferenceError and the type-only print carries an undefined
+				// identifier (TS2304). Wrap it in the same IIFE the native-directive path
+				// already uses.
+				return produced.type !== 'JSXSpreadChild' && produced.type !== 'JSXText'
 					? wrap_jsx_setup_declarations(produced, in_jsx_child)
 					: produced;
 			},
@@ -773,12 +757,7 @@ export function createJsxTransform(platform) {
 					if (stylesheet && !node.metadata.tsrx_style_prepared) {
 						node.metadata.tsrx_style_prepared = true;
 						analyze_css(stylesheet);
-						state.stylesheets.push(
-							prepare_stylesheet_for_render(
-								stylesheet,
-								node.metadata.styleKind === 'theme' ? 'theme' : 'class-map',
-							),
-						);
+						state.stylesheets.push(prepare_stylesheet_for_render(stylesheet, 'theme'));
 					}
 					return create_style_expression_value(node, stylesheet, state);
 				}
@@ -858,17 +837,23 @@ export function createJsxTransform(platform) {
 			transformed_program.body.unshift(...type_only_style_anchors);
 		}
 		const expanded = expand_component_helpers(transformed_program);
-		inject_dynamic_import(expanded, transform_context);
-		if (platform.hooks?.injectImports) {
-			platform.hooks.injectImports(expanded, transform_context, suspense_source);
-		} else {
-			inject_try_imports(expanded, transform_context, effective_platform, suspense_source);
-		}
 
 		// Lower any `@{ … }` code blocks left in generated helper bodies, so every
 		// `@{ … }` block / `@`-directive has been lowered to its final closure /
-		// block shape before printing.
-		const final_program = lower_remaining_jsx_code_blocks(expanded, transform_context);
+		// block shape before printing. Only then are all generated closures known,
+		// so the ones an authored `await` or `yield` landed in are made async or
+		// generators last. Imports come after, because that can swap which
+		// iterable helper is used.
+		const final_program = suspend_generated_closures(
+			lower_remaining_jsx_code_blocks(expanded, transform_context),
+			transform_context,
+		);
+		inject_dynamic_import(final_program, transform_context);
+		if (platform.hooks?.injectImports) {
+			platform.hooks.injectImports(final_program, transform_context, suspense_source);
+		} else {
+			inject_try_imports(final_program, transform_context, effective_platform, suspense_source);
+		}
 
 		const result = print(
 			final_program,
@@ -878,6 +863,7 @@ export function createJsxTransform(platform) {
 			tsx_with_ts_locations(
 				transform_context.typeOnly,
 				transform_context.typeOnly ? transform_context.comments : undefined,
+				get_hashbang(source),
 			),
 			{
 				sourceMapSource: filename,
@@ -1869,7 +1855,7 @@ function validate_native_await(node, transform_context) {
 
 	if (transform_context.platform.validation.requireUseServerForAwait) {
 		error(
-			'Top-level `await` in TSRX functions requires a module-level `"use server"` directive.',
+			TSRX_ERRORS.TOP_LEVEL_AWAIT_USE_SERVER,
 			transform_context.filename,
 			await_node,
 			transform_context.errors,
@@ -2528,9 +2514,7 @@ function mark_native_pretransformed_jsx(node, seen = new Set()) {
  * @returns {AST.Node[]}
  */
 function get_tsrx_render_children(node) {
-	return node_children(node).filter(
-		(child) => child.type !== 'EmptyStatement' && (child.type !== 'JSXText' || child.value !== ''),
-	);
+	return render_children(node).filter((child) => child.type !== 'EmptyStatement');
 }
 
 /**
@@ -2930,6 +2914,309 @@ function lower_remaining_jsx_code_blocks(node, transform_context, seen = new Set
 	}
 
 	return /** @type {T} */ (out);
+}
+
+/**
+ * An authored `await` or `yield` is valid where it was written, but lowering
+ * can move it into a closure the compiler generated: the IIFE of a `@switch`,
+ * of a branch with setup statements, or of an element whose spread and `ref`
+ * need a setup binding, or a callback a `@for` hands to `map_iterable`. The
+ * parser rejects `await` inside authored functions that are not async, and
+ * `yield` inside authored functions that are not generators, so a function
+ * that directly contains one it cannot hold is generated. This pass gives each
+ * such closure the missing kind and suspends where it is called, so the value
+ * still settles in the enclosing function, in source order:
+ *
+ * - an IIFE holding an `await` becomes `await (async () => { … })()`;
+ * - an IIFE holding a `yield` becomes a generator the call delegates to,
+ *   `yield* (function* () { … })()`, which is also `async` when it awaits.
+ *   An arrow shares `this` and `arguments` with the enclosing function and a
+ *   generator does not, so the runtime call passes whichever the body reads
+ *   (`.call(this)` or `.apply(this, arguments)`). The type-only print keeps
+ *   the plain call, the form TypeScript types the delegated `yield` results
+ *   from;
+ * - a `map_iterable` call given an async callback becomes
+ *   `await map_iterable_async(…)`, which settles one item before the next,
+ *   like a `for...of` loop with an `await` in its body.
+ *
+ * Any other generated closure is a callback that something else calls (a
+ * `@catch` fallback the target renders, or a `@for` body that yields), where
+ * the result cannot be awaited or delegated, so the `await` or `yield` there
+ * is reported instead.
+ *
+ * The tree is never mutated; see `lower_remaining_jsx_code_blocks`.
+ *
+ * @template {AST.Node} T
+ * @param {T} program
+ * @param {TransformContext} transform_context
+ * @returns {T}
+ */
+function suspend_generated_closures(program, transform_context) {
+	// Only a source that mentions `await` or `yield` can contain one.
+	if (
+		transform_context.source &&
+		!transform_context.source.includes('await') &&
+		!transform_context.source.includes('yield')
+	) {
+		return program;
+	}
+
+	/**
+	 * @typedef {{
+	 *   node: AST.Node,
+	 *   first_await: AST.Node | null,
+	 *   first_yield: AST.Node | null,
+	 * }} SuspendResult
+	 */
+
+	/** @type {Map<AST.Node, SuspendResult>} */
+	const results = new Map();
+	/** Closures made async here, with the authored `await` that required it. */
+	/** @type {Map<AST.Node, AST.Node>} */
+	const made_async = new Map();
+	/** Closures made generators here, with the authored `yield` that required it. */
+	/** @type {Map<AST.Node, AST.Node>} */
+	const made_generator = new Map();
+	let sync_iterable_calls = 0;
+	let async_iterable_calls = 0;
+
+	/**
+	 * Returns the node with its generated closures made async or generators,
+	 * and the first authored `await` and `yield` it contains outside any
+	 * nested function.
+	 *
+	 * @param {AST.Node} node
+	 * @param {boolean} awaitable whether the parent awaits this node's call when
+	 *   it becomes an async closure
+	 * @param {boolean} delegable whether the parent delegates to this node's
+	 *   call when it becomes a generator
+	 * @returns {SuspendResult}
+	 */
+	const visit = (node, awaitable, delegable) => {
+		const cached = results.get(node);
+		if (cached) return cached;
+
+		/** @type {AST.Node | null} */
+		let first_await =
+			node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await)
+				? node
+				: null;
+		/** @type {AST.Node | null} */
+		let first_yield = node.type === 'YieldExpression' ? node : null;
+		const is_call = node.type === 'CallExpression';
+		const is_iterable_call =
+			is_call &&
+			node.callee.type === 'Identifier' &&
+			node.callee.name === MAP_ITERABLE_INTERNAL_NAME;
+		/** @type {AST.TraversableAstNode} */
+		let out = /** @type {AST.TraversableAstNode} */ (node);
+
+		for (const key of Object.keys(node)) {
+			if (key === 'loc' || key === 'start' || key === 'end' || key === 'metadata') continue;
+			const value = /** @type {AST.TraversableAstNode} */ (node)[key];
+			// A generated IIFE is awaited or delegated to below; a callback
+			// `map_iterable` receives can only be awaited.
+			const is_callee = is_call && key === 'callee';
+			const child_awaitable = is_callee || (is_iterable_call && key === 'arguments');
+			/**
+			 * @param {AST.Node} child
+			 * @returns {AST.Node}
+			 */
+			const visit_child = (child) => {
+				const result = visit(child, child_awaitable, is_callee);
+				first_await ??= result.first_await;
+				first_yield ??= result.first_yield;
+				return result.node;
+			};
+			/** @type {unknown} */
+			let next = value;
+			if (Array.isArray(value)) {
+				const walked = value.map((child) => (is_ast_node(child) ? visit_child(child) : child));
+				if (walked.some((child, index) => child !== value[index])) next = walked;
+			} else if (is_ast_node(value)) {
+				next = visit_child(value);
+			}
+			if (next !== value) {
+				if (out === node) out = { ...out };
+				out[key] = next;
+			}
+		}
+
+		/** @type {SuspendResult} */
+		let result = { node: /** @type {AST.Node} */ (out), first_await, first_yield };
+
+		if (is_function_node(node)) {
+			// An `await` or `yield` never escapes the function that contains it.
+			result = { node: result.node, first_await: null, first_yield: null };
+			let fn = /** @type {AST.Function} */ (result.node);
+			const make_async = !!first_await && !node.async;
+			const make_generator = !!first_yield && !node.generator;
+			if (make_async) {
+				if (awaitable) {
+					fn = { ...fn, async: true };
+				} else {
+					error(
+						TSRX_ERRORS.TARGET_AWAIT_UNSUPPORTED(transform_context.platform.name),
+						transform_context.filename,
+						/** @type {AST.Node} */ (first_await),
+						transform_context.errors,
+						transform_context.comments,
+					);
+				}
+			}
+			if (make_generator) {
+				if (delegable) {
+					fn = to_generator_function(fn);
+				} else {
+					error(
+						TSRX_ERRORS.TARGET_YIELD_UNSUPPORTED(transform_context.platform.name),
+						transform_context.filename,
+						/** @type {AST.Node} */ (first_yield),
+						transform_context.errors,
+						transform_context.comments,
+					);
+				}
+			}
+			result.node = fn;
+			if (fn.async && make_async) made_async.set(fn, /** @type {AST.Node} */ (first_await));
+			if (fn.generator && make_generator) {
+				made_generator.set(fn, /** @type {AST.Node} */ (first_yield));
+			}
+		} else if (result.node.type === 'CallExpression') {
+			// The `await` or `yield*` added here stands for the authored one
+			// inside the closure, which the enclosing function now has to allow.
+			const call = result.node;
+			const async_callback = is_iterable_call
+				? call.arguments.find((arg) => made_async.has(arg))
+				: undefined;
+			if (made_generator.has(call.callee)) {
+				// `yield*` also settles a delegated async generator, so a closure
+				// made both async and a generator is not awaited as well.
+				result = {
+					node: b.yield(delegate_to_generated_generator(call, transform_context), true),
+					first_await: made_async.get(call.callee) ?? first_await,
+					first_yield: made_generator.get(call.callee) ?? first_yield,
+				};
+			} else if (made_async.has(call.callee)) {
+				result = {
+					node: b.await(call),
+					first_await: made_async.get(call.callee) ?? null,
+					first_yield,
+				};
+			} else if (async_callback) {
+				result = {
+					node: b.await({
+						...call,
+						callee: {
+							.../** @type {AST.Identifier} */ (call.callee),
+							name: MAP_ITERABLE_ASYNC_INTERNAL_NAME,
+						},
+					}),
+					first_await: made_async.get(async_callback) ?? null,
+					first_yield,
+				};
+				async_iterable_calls += 1;
+			} else if (is_iterable_call) {
+				sync_iterable_calls += 1;
+			}
+		}
+
+		results.set(node, result);
+		return result;
+	};
+
+	const lowered = /** @type {T} */ (visit(program, false, false).node);
+	if (async_iterable_calls > 0) {
+		transform_context.needs_for_of_iterable = sync_iterable_calls > 0;
+		transform_context.needs_for_of_iterable_async = true;
+	}
+	return lowered;
+}
+
+/**
+ * A generated closure as a generator function expression. An arrow's concise
+ * body becomes a `return`, since a generator has no concise form.
+ *
+ * @param {AST.Function} fn
+ * @returns {AST.FunctionExpression}
+ */
+function to_generator_function(fn) {
+	return /** @type {AST.FunctionExpression} */ ({
+		...fn,
+		type: 'FunctionExpression',
+		id: fn.type === 'ArrowFunctionExpression' ? null : fn.id,
+		generator: true,
+		body: fn.body.type === 'BlockStatement' ? fn.body : b.block([b.return(fn.body)]),
+	});
+}
+
+/**
+ * The call a `yield*` delegates to for an IIFE made a generator. The arrow it
+ * replaces read `this` and `arguments` from the enclosing function, so the
+ * runtime call passes on whichever the body reads. `super` has no such
+ * hand-off: a function expression cannot reference it, so it is reported.
+ *
+ * @param {AST.CallExpression} call
+ * @param {TransformContext} transform_context
+ * @returns {AST.CallExpression}
+ */
+function delegate_to_generated_generator(call, transform_context) {
+	const generator = /** @type {AST.FunctionExpression} */ (call.callee);
+	/** @type {{ this: boolean, arguments: boolean, super: AST.Node | null }} */
+	const found = { this: false, arguments: false, super: null };
+	for (const child of child_nodes(generator.body)) {
+		find_function_context_references(child, found);
+	}
+
+	if (found.super) {
+		error(
+			TSRX_ERRORS.TARGET_SUPER_UNSUPPORTED(transform_context.platform.name),
+			transform_context.filename,
+			found.super,
+			transform_context.errors,
+			transform_context.comments,
+		);
+	}
+
+	// TypeScript types the delegated `yield` results only for a direct call.
+	if (transform_context.typeOnly) return call;
+	if (found.arguments) {
+		return b.call(b.member(generator, 'apply'), b.this, b.id('arguments'));
+	}
+	if (found.this) {
+		return b.call(b.member(generator, 'call'), b.this, ...call.arguments);
+	}
+	return call;
+}
+
+/**
+ * Records whether `node` reads `this`, `arguments`, or `super` from the
+ * function a generated closure sits in. An arrow shares all three with that
+ * function; a nested function, class field initializer, or static block binds
+ * its own.
+ *
+ * @param {AST.Node} node
+ * @param {{ this: boolean, arguments: boolean, super: AST.Node | null }} found
+ * @returns {void}
+ */
+function find_function_context_references(node, found) {
+	if (node.type === 'ThisExpression') {
+		found.this = true;
+	} else if (node.type === 'Identifier' && node.name === 'arguments') {
+		found.arguments = true;
+	} else if (node.type === 'Super') {
+		found.super ??= node;
+	} else if (
+		node.type === 'FunctionExpression' ||
+		node.type === 'FunctionDeclaration' ||
+		node.type === 'StaticBlock'
+	) {
+		return;
+	}
+
+	for (const child of child_nodes(node, node.type === 'PropertyDefinition' ? 'value' : undefined)) {
+		find_function_context_references(child, found);
+	}
 }
 
 /**
@@ -3472,27 +3759,67 @@ function create_helper_props_type_literal_with_typeof_flags(bindings, aliases, u
 }
 
 /**
- * @param {AST.TSRXJSXElement | AST.TSRXJSXFragment | AST.JSXStyleElement} node
+ * Whether a node is a raw-text `<script>` element: its body is `content`, as
+ * written, and it has no children.
+ *
+ * @param {AST.Node | null | undefined} node
+ * @returns {node is AST.TSRXJSXElement & { content: string }}
+ */
+export function is_raw_script_element(node) {
+	return (
+		node?.type === 'JSXElement' &&
+		node.openingElement?.name?.type === 'JSXIdentifier' &&
+		node.openingElement.name.name === 'script' &&
+		typeof (/** @type {AST.TSRXJSXElement} */ (node).content) === 'string'
+	);
+}
+
+/**
+ * The output of a raw-text `<script>` element's body, in the form the target
+ * renders exactly, on the client and from server HTML:
+ *
+ * - `'children'`: one string child, `<script>{"…"}</script>`.
+ * - `'dangerouslySetInnerHTML'`: `<script dangerouslySetInnerHTML={{ __html: "…" }} />`.
+ * - `'innerHTML'`: `<script innerHTML={"…"} />`.
+ * - `'v-html'`: `<script v-html={"…"} />`.
+ *
+ * JSX text can't hold the body: a JSX compiler joins its lines and decodes its
+ * character references. `null` for any other element, and for a body of only
+ * whitespace, which renders as an empty script, as the formatter prints it.
+ *
+ * @param {AST.TSRXJSXElement} node
+ * @param {NonNullable<JsxPlatform['jsx']['scriptBody']>} [form]
+ * @returns {{ attributes: ESTreeJSX.JSXAttribute[], children: ESTreeJSX.JSXExpressionContainer[], selfClosing: boolean } | null}
+ */
+export function create_script_body(node, form = 'children') {
+	if (!is_raw_script_element(node) || node.content.trim() === '') return null;
+	const body = b.literal(node.content);
+	if (form === 'children') {
+		return { attributes: [], children: [b.jsx_expression_container(body)], selfClosing: false };
+	}
+	const value = form === 'dangerouslySetInnerHTML' ? b.object([b.init('__html', body)]) : body;
+	return {
+		attributes: [b.jsx_attribute(b.jsx_id(form), b.jsx_expression_container(value))],
+		children: [],
+		selfClosing: true,
+	};
+}
+
+/**
+ * @param {AST.TSRXJSXElement | AST.JSXStyleElement} node
  * @param {TransformContext} transform_context
  * @param {AST.Node[]} [raw_children]
  * @param {boolean} [in_jsx_child]
- * @returns {AST.TSRXJSXElement | AST.TSRXJSXFragment}
+ * @returns {AST.TSRXJSXElement}
  */
 function to_jsx_element(
 	node,
 	transform_context,
-	raw_children = node_children(node),
+	raw_children = render_children(node),
 	in_jsx_child = false,
 ) {
 	if (node.type === 'JSXElement' && !node.metadata?.native_tsrx) {
 		return node;
-	}
-
-	// A fragment has no opening element to take a name from; in a TSRX template
-	// that is the "fragments are not needed here" error case.
-	if (node.type === 'JSXFragment' || !node.openingElement?.name) {
-		report_jsx_fragment_in_tsrx_error(node, transform_context);
-		return set_loc(b.jsx_fragment(), node);
 	}
 	const source_opening = node.openingElement;
 	const name = clone_jsx_name(source_opening.name);
@@ -3501,27 +3828,33 @@ function to_jsx_element(
 		transform_context,
 		/** @type {AST.TSRXJSXElement} */ (node),
 	);
-	let walked_children = node_children(node);
-	// A raw-text `<script>` body (mirrored by the parser as a JSXText child of
-	// `node.content`) must not appear in the type-only editor TSX: raw JS/TS
-	// (`{`, `<`) doesn't lex as JSX text there and would surface bogus syntactic
-	// diagnostics. The embedded TS document built from `scriptMappings` covers
-	// the body in the editor; runtime output keeps the text child.
-	if (transform_context.typeOnly && typeof node.content === 'string') {
-		walked_children = [];
-		raw_children = [];
-	}
+	const walked_children = render_children(node);
 	let selfClosing = !!source_opening.selfClosing;
 	let children;
-	const child_transform = transform_context.platform.hooks?.transformElementChildren?.(
-		/** @type {AST.TSRXJSXElement} */ (node),
-		walked_children,
-		raw_children,
-		attributes,
-		transform_context,
-	);
+	// A raw-text `<script>` body is `node.content`, printed in the form the
+	// target renders exactly. The type-only editor TSX leaves it out: the
+	// embedded TS document built from `scriptMappings` covers it there.
+	const script_body = transform_context.typeOnly
+		? null
+		: create_script_body(
+				/** @type {AST.TSRXJSXElement} */ (node),
+				transform_context.platform.jsx?.scriptBody,
+			);
+	const child_transform = script_body
+		? null
+		: transform_context.platform.hooks?.transformElementChildren?.(
+				/** @type {AST.TSRXJSXElement} */ (node),
+				walked_children,
+				raw_children,
+				attributes,
+				transform_context,
+			);
 
-	if (child_transform) {
+	if (script_body) {
+		attributes.push(...script_body.attributes);
+		children = script_body.children;
+		selfClosing = script_body.selfClosing;
+	} else if (child_transform) {
 		children = child_transform.children;
 		if (typeof child_transform.selfClosing === 'boolean') {
 			selfClosing = child_transform.selfClosing;
@@ -4135,6 +4468,7 @@ function is_render_child_node(node) {
 		case 'JSXElement':
 		case 'JSXFragment':
 		case 'JSXExpressionContainer':
+		case 'JSXSpreadChild':
 		case 'JSXText':
 		case 'JSXIfExpression':
 		case 'JSXForExpression':
@@ -4221,27 +4555,33 @@ export function wrap_edge_whitespace(nodes) {
 			out.push(node);
 			continue;
 		}
+		// The whitespace is read from the text as written, which the output
+		// prints, and taken off both forms of the text: spaces and tabs are the
+		// same in each.
 		let value = /** @type {string} */ (node.value);
+		let raw = node.raw ?? value;
 		if (at_start) {
-			const lead = LEADING_INLINE_WHITESPACE.exec(value);
-			if (lead && !is_newline_char(value[lead[0].length])) {
+			const lead = LEADING_INLINE_WHITESPACE.exec(raw);
+			if (lead && !is_newline_char(raw[lead[0].length])) {
 				out.push(to_jsx_expression_container(b.literal(lead[0]), node));
 				value = value.slice(lead[0].length);
+				raw = raw.slice(lead[0].length);
 			}
 		}
 		/** @type {ESTreeJSX.JSXExpressionContainer | null} */
 		let trailing = null;
 		if (at_end) {
-			const trail = TRAILING_INLINE_WHITESPACE.exec(value);
-			if (trail && !is_newline_char(value[value.length - trail[0].length - 1])) {
+			const trail = TRAILING_INLINE_WHITESPACE.exec(raw);
+			if (trail && !is_newline_char(raw[raw.length - trail[0].length - 1])) {
 				trailing = to_jsx_expression_container(b.literal(trail[0]), node);
 				value = value.slice(0, value.length - trail[0].length);
+				raw = raw.slice(0, raw.length - trail[0].length);
 			}
 		}
-		if (value !== '') {
+		if (raw !== '') {
 			// keep the location as we need it for @ autocomplete
 			// and perhaps other things in the future
-			out.push(b.jsx_text(value, value, has_location(node) ? node : undefined));
+			out.push(b.jsx_text(value, raw, has_location(node) ? node : undefined));
 		}
 		if (trailing) {
 			out.push(trailing);
@@ -4294,7 +4634,7 @@ function to_jsx_child(node, transform_context) {
 		case 'JSXForExpression':
 			if (node.statementType !== 'ForOfStatement') {
 				error(
-					'TSRX `@for` currently supports `for...of` loops in template output.',
+					TSRX_ERRORS.FOR_OF_ONLY,
 					transform_context.filename,
 					node,
 					transform_context.errors,
@@ -4345,10 +4685,7 @@ function to_jsx_child(node, transform_context) {
  * @returns {AST.Expression | ESTreeJSX.JSXExpressionContainer}
  */
 function tsrx_node_to_jsx_expression(node, transform_context, in_jsx_child = false) {
-	const children = (node.children || []).filter(
-		(child) =>
-			child && child.type !== 'EmptyStatement' && (child.type !== 'JSXText' || child.value !== ''),
-	);
+	const children = render_children(node).filter((child) => child.type !== 'EmptyStatement');
 
 	/** @type {AST.Expression | null} */
 	let expression = null;
@@ -4773,7 +5110,7 @@ function validate_for_body_control_flow(node, transform_context, is_root = true)
 
 	if (node.type === 'ReturnStatement') {
 		error(
-			TSRX_FOR_RETURN_ERROR,
+			TSRX_ERRORS.FOR_RETURN_STATEMENT,
 			transform_context.filename,
 			node,
 			transform_context.errors,
@@ -4783,7 +5120,7 @@ function validate_for_body_control_flow(node, transform_context, is_root = true)
 	}
 	if (node.type === 'BreakStatement') {
 		error(
-			TSRX_FOR_BREAK_ERROR,
+			TSRX_ERRORS.FOR_BREAK_STATEMENT,
 			transform_context.filename,
 			node,
 			transform_context.errors,
@@ -4793,7 +5130,7 @@ function validate_for_body_control_flow(node, transform_context, is_root = true)
 	}
 	if (node.type === 'ContinueStatement') {
 		error(
-			TSRX_FOR_CONTINUE_ERROR,
+			TSRX_ERRORS.FOR_CONTINUE_STATEMENT,
 			transform_context.filename,
 			node,
 			transform_context.errors,
@@ -4829,7 +5166,7 @@ function validate_if_body_control_flow(node, transform_context) {
 
 	if (node.type === 'ReturnStatement') {
 		error(
-			TSRX_IF_RETURN_ERROR,
+			TSRX_ERRORS.IF_RETURN_STATEMENT,
 			transform_context.filename,
 			node,
 			transform_context.errors,
@@ -4839,7 +5176,7 @@ function validate_if_body_control_flow(node, transform_context) {
 	}
 	if (node.type === 'BreakStatement') {
 		error(
-			TSRX_IF_BREAK_ERROR,
+			TSRX_ERRORS.IF_BREAK_STATEMENT,
 			transform_context.filename,
 			node,
 			transform_context.errors,
@@ -4849,7 +5186,7 @@ function validate_if_body_control_flow(node, transform_context) {
 	}
 	if (node.type === 'ContinueStatement') {
 		error(
-			TSRX_IF_CONTINUE_ERROR,
+			TSRX_ERRORS.IF_CONTINUE_STATEMENT,
 			transform_context.filename,
 			node,
 			transform_context.errors,
@@ -4892,7 +5229,7 @@ function is_loop_statement(node) {
 function for_of_statement_to_jsx_child(node, transform_context) {
 	if (node.await) {
 		error(
-			`${transform_context.platform.name} TSRX does not support \`for await...of\` in TSRX templates.`,
+			TSRX_ERRORS.TARGET_FOR_AWAIT_UNSUPPORTED(transform_context.platform.name),
 			transform_context.filename,
 			node,
 			transform_context.errors,
@@ -4930,8 +5267,13 @@ function for_of_statement_to_jsx_child(node, transform_context) {
 		collect_pattern_bindings(param, transform_context.available_bindings);
 	}
 
-	if (implicit_non_hook_key_expression && should_apply_key_to_loop_body(loop_body)) {
-		loop_body = apply_key_to_loop_body(loop_body, implicit_non_hook_key_expression);
+	// Without hooks, the key placed before lowering and the one placed after it
+	// come from the same clause, so both passes share one `LoopKey`.
+	const implicit_loop_key = implicit_non_hook_key_expression
+		? create_loop_key(implicit_non_hook_key_expression, transform_context)
+		: null;
+	if (implicit_loop_key) {
+		loop_body = apply_key_to_loop_body(loop_body, implicit_loop_key, transform_context);
 	}
 
 	let body_statements = has_hooks
@@ -4953,7 +5295,7 @@ function for_of_statement_to_jsx_child(node, transform_context) {
 	if (!has_hooks && non_hook_key_expression) {
 		body_statements = apply_key_to_render_statements(
 			body_statements,
-			non_hook_key_expression,
+			implicit_loop_key ?? create_loop_key(non_hook_key_expression, transform_context),
 			transform_context,
 		);
 	}
@@ -5027,34 +5369,152 @@ function for_of_statement_to_jsx_child(node, transform_context) {
 }
 
 /**
- * Returns a copy of `body_nodes` where the first keyable element carries the
- * key attribute on a rebuilt opening element — the source nodes are never
- * mutated (they may belong to the caller's parsed AST).
+ * A loop's key clause as the keying passes hand it out. A body that renders
+ * through `@if` / `@switch` needs a copy per branch, but only the first copy
+ * keeps its source locations, so the clause maps to one place in the output.
+ *
+ * `branches` is off for a platform that lowers the loop itself
+ * (`renderForOf`, e.g. Vue's `VaporFor`): it keys rows through the loop and
+ * only expects a key on the body's top-level output, including when it falls
+ * back to the default lowering.
+ *
+ * @typedef {{ expression: AST.Expression, mapped: boolean, branches: boolean }} LoopKey
+ */
+
+/**
+ * @param {AST.Expression} expression
+ * @param {TransformContext} transform_context
+ * @returns {LoopKey}
+ */
+function create_loop_key(expression, transform_context) {
+	return {
+		expression,
+		mapped: false,
+		branches: !transform_context.platform.hooks?.renderForOf,
+	};
+}
+
+/**
+ * @param {LoopKey} loop_key
+ * @returns {ESTreeJSX.JSXAttribute}
+ */
+function create_loop_key_attribute(loop_key) {
+	const expression = clone_ast_node(loop_key.expression, !loop_key.mapped);
+	loop_key.mapped = true;
+	return b.jsx_attribute(b.jsx_id('key'), to_jsx_expression_container(expression));
+}
+
+/**
+ * Returns a copy of `body_nodes` where the element the body renders carries
+ * the key attribute: its only top-level element, or the only element of each
+ * `@if` / `@switch` branch it renders through. Keying before lowering keeps
+ * those elements from being hoisted as statics; anything else a body renders
+ * is keyed after lowering by `apply_key_to_render_statements`. The source
+ * nodes are never mutated (they may belong to the caller's parsed AST).
+ *
  * @param {AST.Node[]} body_nodes
- * @param {AST.Expression} key_expression
+ * @param {LoopKey} loop_key
+ * @param {TransformContext} transform_context
  * @returns {AST.Node[]}
  */
-function apply_key_to_loop_body(body_nodes, key_expression) {
-	let applied = false;
-	return body_nodes.map((node) => {
-		if (applied || node.type !== 'JSXElement') return node;
-		applied = true;
-		const attributes = node.openingElement?.attributes || [];
-		if (attributes.some(is_key_attribute)) return node;
-		return {
-			...node,
-			openingElement: {
-				...node.openingElement,
-				attributes: [
-					...attributes,
-					b.jsx_attribute(
-						b.jsx_id('key'),
-						to_jsx_expression_container(clone_ast_node(key_expression), key_expression),
-					),
-				],
-			},
-		};
+function apply_key_to_loop_body(body_nodes, loop_key, transform_context) {
+	/** @type {AST.Node | undefined} */
+	let output;
+	/** @type {AST.Node | undefined} */
+	let keyed;
+	if (should_apply_key_to_loop_body(body_nodes)) {
+		output = body_nodes.find((node) => node.type === 'JSXElement');
+		keyed = apply_key_to_jsx_element(/** @type {AST.TSRXJSXElement} */ (output), loop_key);
+	} else if (loop_key.branches) {
+		const render_nodes = body_nodes.filter(is_render_child_node);
+		if (render_nodes.length !== 1) return body_nodes;
+		output = render_nodes[0];
+		if (is_if_control_node(output)) {
+			keyed = apply_key_to_if_branches(output, loop_key, transform_context);
+		} else if (is_switch_control_node(output)) {
+			keyed = apply_key_to_switch_cases(output, loop_key, transform_context);
+		}
+	}
+
+	if (!keyed || keyed === output) return body_nodes;
+	return body_nodes.map((node) => (node === output ? keyed : node));
+}
+
+/**
+ * @param {AST.IfStatement | AST.JSXIfExpression} node
+ * @param {LoopKey} loop_key
+ * @param {TransformContext} transform_context
+ * @returns {AST.IfStatement | AST.JSXIfExpression}
+ */
+function apply_key_to_if_branches(node, loop_key, transform_context) {
+	const consequent = apply_key_to_branch_block(node.consequent, loop_key, transform_context);
+	const alternate = !node.alternate
+		? node.alternate
+		: is_if_control_node(node.alternate)
+			? apply_key_to_if_branches(node.alternate, loop_key, transform_context)
+			: apply_key_to_branch_block(node.alternate, loop_key, transform_context);
+
+	if (consequent === node.consequent && alternate === node.alternate) return node;
+	return /** @type {AST.IfStatement | AST.JSXIfExpression} */ ({ ...node, consequent, alternate });
+}
+
+/**
+ * @param {AST.SwitchStatement | AST.JSXSwitchExpression} node
+ * @param {LoopKey} loop_key
+ * @param {TransformContext} transform_context
+ * @returns {AST.SwitchStatement | AST.JSXSwitchExpression}
+ */
+function apply_key_to_switch_cases(node, loop_key, transform_context) {
+	let changed = false;
+	const cases = node.cases.map((switch_case) => {
+		// `@case x: { … }` holds its body in one block.
+		const [block] = switch_case.consequent;
+		const consequent =
+			switch_case.consequent.length === 1 && block.type === 'BlockStatement'
+				? [apply_key_to_branch_block(block, loop_key, transform_context)]
+				: apply_key_to_branch_body(switch_case.consequent, loop_key, transform_context);
+		if (consequent.every((statement, i) => statement === switch_case.consequent[i])) {
+			return switch_case;
+		}
+		changed = true;
+		return { ...switch_case, consequent };
 	});
+
+	if (!changed) return node;
+	return /** @type {AST.SwitchStatement | AST.JSXSwitchExpression} */ ({ ...node, cases });
+}
+
+/**
+ * @template {AST.Node} T
+ * @param {T} block
+ * @param {LoopKey} loop_key
+ * @param {TransformContext} transform_context
+ * @returns {T}
+ */
+function apply_key_to_branch_block(block, loop_key, transform_context) {
+	if (block.type !== 'BlockStatement') return block;
+	const body = apply_key_to_branch_body(block.body, loop_key, transform_context);
+	return body === block.body ? block : { ...block, body };
+}
+
+/**
+ * A branch body with hooks is lifted into a helper component, and the helper's
+ * element is keyed after lowering, so its own elements are left alone.
+ *
+ * @template {AST.Node} T
+ * @param {T[]} body_nodes
+ * @param {LoopKey} loop_key
+ * @param {TransformContext} transform_context
+ * @returns {T[]}
+ */
+function apply_key_to_branch_body(body_nodes, loop_key, transform_context) {
+	if (
+		should_extract_hook_helpers(transform_context) &&
+		body_contains_top_level_hook_call(body_nodes, transform_context, true)
+	) {
+		return body_nodes;
+	}
+	return /** @type {T[]} */ (apply_key_to_loop_body(body_nodes, loop_key, transform_context));
 }
 
 /**
@@ -5077,25 +5537,18 @@ function should_apply_key_to_loop_body(body_nodes) {
  * argument.
  *
  * @param {AST.Statement[]} statements
- * @param {AST.Expression} key_expression
+ * @param {LoopKey} loop_key
  * @param {TransformContext} transform_context
  * @returns {AST.Statement[]}
  */
-function apply_key_to_render_statements(statements, key_expression, transform_context) {
+function apply_key_to_render_statements(statements, loop_key, transform_context) {
 	for (let i = statements.length - 1; i >= 0; i -= 1) {
 		const statement = statements[i];
 		if (statement?.type !== 'ReturnStatement' || !statement.argument) {
 			continue;
 		}
 
-		let argument = statement.argument;
-		if (argument.type === 'JSXElement') {
-			argument = apply_key_to_jsx_element(argument, key_expression);
-		} else if (argument.type === 'JSXFragment') {
-			transform_context.needs_fragment = true;
-			argument = keyed_fragment_to_jsx_element(argument, key_expression);
-		}
-
+		const argument = apply_key_to_rendered_value(statement.argument, loop_key, transform_context);
 		if (argument === statement.argument) {
 			return statements;
 		}
@@ -5107,12 +5560,141 @@ function apply_key_to_render_statements(statements, key_expression, transform_co
 }
 
 /**
+ * Keys what one loop iteration renders. `@if` lowers to a ternary, and
+ * `@switch` (or a branch with setup statements) to an IIFE, so the key is
+ * pushed into every element and fragment they can return; an element the
+ * author already keyed keeps its own key.
+ *
+ * @param {AST.Expression} expression
+ * @param {LoopKey} loop_key
+ * @param {TransformContext} transform_context
+ * @returns {AST.Expression}
+ */
+function apply_key_to_rendered_value(expression, loop_key, transform_context) {
+	switch (expression.type) {
+		case 'JSXElement':
+			return apply_key_to_jsx_element(expression, loop_key);
+		case 'JSXFragment':
+			transform_context.needs_fragment = true;
+			return keyed_fragment_to_jsx_element(expression, loop_key);
+		case 'ConditionalExpression': {
+			if (!loop_key.branches) return expression;
+			const consequent = apply_key_to_rendered_value(
+				expression.consequent,
+				loop_key,
+				transform_context,
+			);
+			const alternate = apply_key_to_rendered_value(
+				expression.alternate,
+				loop_key,
+				transform_context,
+			);
+			if (consequent === expression.consequent && alternate === expression.alternate) {
+				return expression;
+			}
+			return { ...expression, consequent, alternate };
+		}
+		case 'CallExpression': {
+			if (!loop_key.branches || !is_render_iife(expression)) return expression;
+			const callee = expression.callee;
+			const body = apply_key_to_returned_values(callee.body.body, loop_key, transform_context);
+			if (body === callee.body.body) return expression;
+			return { ...expression, callee: { ...callee, body: { ...callee.body, body } } };
+		}
+		default:
+			return expression;
+	}
+}
+
+/**
+ * @param {AST.CallExpression} expression
+ * @returns {expression is AST.SimpleCallExpression & { callee: AST.ArrowFunctionExpression & { body: AST.BlockStatement } }}
+ */
+function is_render_iife(expression) {
+	return (
+		expression.arguments.length === 0 &&
+		expression.callee.type === 'ArrowFunctionExpression' &&
+		expression.callee.params.length === 0 &&
+		expression.callee.body.type === 'BlockStatement'
+	);
+}
+
+/**
+ * @param {AST.Statement[]} statements
+ * @param {LoopKey} loop_key
+ * @param {TransformContext} transform_context
+ * @returns {AST.Statement[]}
+ */
+function apply_key_to_returned_values(statements, loop_key, transform_context) {
+	let changed = false;
+	const result = statements.map((statement) => {
+		const keyed = apply_key_to_returned_value(statement, loop_key, transform_context);
+		if (keyed !== statement) changed = true;
+		return keyed;
+	});
+	return changed ? result : statements;
+}
+
+/**
+ * Follows the statements a lowered `@if` / `@switch` IIFE returns through, and
+ * stops at any other statement: nested functions own their returns.
+ *
+ * @param {AST.Statement} statement
+ * @param {LoopKey} loop_key
+ * @param {TransformContext} transform_context
+ * @returns {AST.Statement}
+ */
+function apply_key_to_returned_value(statement, loop_key, transform_context) {
+	switch (statement.type) {
+		case 'ReturnStatement': {
+			if (!statement.argument) return statement;
+			const argument = apply_key_to_rendered_value(statement.argument, loop_key, transform_context);
+			return argument === statement.argument ? statement : { ...statement, argument };
+		}
+		case 'BlockStatement': {
+			const body = apply_key_to_returned_values(statement.body, loop_key, transform_context);
+			return body === statement.body ? statement : { ...statement, body };
+		}
+		case 'IfStatement': {
+			const consequent = apply_key_to_returned_value(
+				statement.consequent,
+				loop_key,
+				transform_context,
+			);
+			const alternate =
+				statement.alternate &&
+				apply_key_to_returned_value(statement.alternate, loop_key, transform_context);
+			if (consequent === statement.consequent && alternate === statement.alternate) {
+				return statement;
+			}
+			return { ...statement, consequent, alternate };
+		}
+		case 'SwitchStatement': {
+			let changed = false;
+			const cases = statement.cases.map((switch_case) => {
+				const consequent = apply_key_to_returned_values(
+					switch_case.consequent,
+					loop_key,
+					transform_context,
+				);
+				if (consequent === switch_case.consequent) return switch_case;
+				changed = true;
+				return { ...switch_case, consequent };
+			});
+			return changed ? { ...statement, cases } : statement;
+		}
+		default:
+			return statement;
+	}
+}
+
+/**
  * @param {AST.TSRXJSXElement} element
- * @param {AST.Expression} key_expression
+ * @param {LoopKey} loop_key
  * @returns {AST.TSRXJSXElement} the element itself when it already has a `key`,
  * otherwise a shallow copy with the key attribute appended.
  */
-function apply_key_to_jsx_element(element, key_expression) {
+function apply_key_to_jsx_element(element, loop_key) {
 	const attributes = element.openingElement?.attributes || [];
 	if (attributes.some(is_key_attribute)) return element;
 
@@ -5120,13 +5702,7 @@ function apply_key_to_jsx_element(element, key_expression) {
 		...element,
 		openingElement: {
 			...element.openingElement,
-			attributes: [
-				...attributes,
-				b.jsx_attribute(
-					b.jsx_id('key'),
-					to_jsx_expression_container(clone_ast_node(key_expression), key_expression),
-				),
-			],
+			attributes: [...attributes, create_loop_key_attribute(loop_key)],
 		},
 	};
 }
@@ -5143,18 +5719,14 @@ function is_key_attribute(attr) {
 
 /**
  * @param {AST.TSRXJSXFragment} fragment
- * @param {AST.Expression} key_expression
+ * @param {LoopKey} loop_key
  * @returns {AST.TSRXJSXElement}
  */
-function keyed_fragment_to_jsx_element(fragment, key_expression) {
+function keyed_fragment_to_jsx_element(fragment, loop_key) {
 	const name = b.jsx_id('Fragment');
-	const key_attribute = b.jsx_attribute(
-		b.jsx_id('key'),
-		to_jsx_expression_container(clone_ast_node(key_expression), key_expression),
-	);
 
 	return b.jsx_element_fresh(
-		b.jsx_opening_element(name, [key_attribute]),
+		b.jsx_opening_element(name, [create_loop_key_attribute(loop_key)]),
 		b.jsx_closing_element(clone_jsx_name(name)),
 		fragment.children,
 	);
@@ -5195,7 +5767,7 @@ function try_statement_to_jsx_child(node, transform_context) {
 
 	if (finalizer) {
 		error(
-			`${transform_context.platform.name} TSRX does not support JavaScript \`try/finally\` in TSRX templates. \`finally\` is not part of TSRX control flow; move the try/finally into a function if you need cleanup logic.`,
+			TSRX_ERRORS.TEMPLATE_TRY_FINALLY(transform_context.platform.name),
 			transform_context.filename,
 			finalizer,
 			transform_context.errors,
@@ -5205,7 +5777,7 @@ function try_statement_to_jsx_child(node, transform_context) {
 
 	if (!pending && !handler) {
 		error(
-			'TSRX try statements must have a `pending` or `catch` block.',
+			TSRX_ERRORS.TEMPLATE_TRY_HANDLER,
 			transform_context.filename,
 			node,
 			transform_context.errors,
@@ -5221,6 +5793,7 @@ function try_statement_to_jsx_child(node, transform_context) {
 			pending,
 			transform_context.errors,
 			transform_context.comments,
+			DIAGNOSTIC_CODES.TARGET_PENDING_UNSUPPORTED,
 		);
 	}
 
@@ -5419,8 +5992,17 @@ function inject_try_imports(program, transform_context, platform, suspense_sourc
 		imports.push(b.imports([['Suspense', 'Suspense']], suspense_source));
 	}
 
-	if (transform_context.needs_for_of_iterable && platform.imports.forOfIterableHelper) {
-		const specifiers = [b.import_specifier('map_iterable', MAP_ITERABLE_INTERNAL_NAME)];
+	if (
+		(transform_context.needs_for_of_iterable || transform_context.needs_for_of_iterable_async) &&
+		platform.imports.forOfIterableHelper
+	) {
+		const specifiers = [];
+		if (transform_context.needs_for_of_iterable) {
+			specifiers.push(b.import_specifier('map_iterable', MAP_ITERABLE_INTERNAL_NAME));
+		}
+		if (transform_context.needs_for_of_iterable_async) {
+			specifiers.push(b.import_specifier('map_iterable_async', MAP_ITERABLE_ASYNC_INTERNAL_NAME));
+		}
 		// The loop-scoped type alias `IterationValue<typeof source>` only
 		// appears in the output when at least one hook-bearing for-of body
 		// was lowered with non-module-scoped helpers (editor tooling sets
@@ -5766,7 +6348,12 @@ function build_switch_with_lift(switch_node, transform_context) {
 			}
 		}
 
-		return set_loc(b.switch_case(original_case.test, case_body), original_case);
+		// Each arm is its own template block, but the cases of a JS `switch` share
+		// one lexical scope, so an arm's setup locals get a block of their own.
+		return set_loc(
+			b.switch_case(original_case.test, case_body.length > 1 ? [b.block(case_body)] : case_body),
+			original_case,
+		);
 	});
 
 	return {
@@ -5831,12 +6418,8 @@ function transform_element_attributes_dispatch(attrs, transform_context, element
 	const result = hook ? hook(attrs, transform_context, element) : attrs;
 	// An element in plain-JS expression position reaches BOTH lowering sites —
 	// the JSXOpeningElement visitor above and this dispatch — so without the
-	// marker its host ref/spread is lowered twice. Scoped to the type-only
-	// print: runtime emit for the other platforms sharing this transform keeps
-	// its existing output.
-	const already_lowered =
-		transform_context.typeOnly &&
-		element?.openingElement?.metadata?.host_ref_spread_lowered === true;
+	// marker its host ref/spread is lowered twice.
+	const already_lowered = element?.openingElement?.metadata?.host_ref_spread_lowered === true;
 	return merge_duplicate_refs(
 		already_lowered ? result : normalize_host_ref_spreads(result, !is_component, transform_context),
 		transform_context,
@@ -5883,6 +6466,11 @@ function normalize_host_ref_spreads(attrs, is_host, transform_context) {
 		.filter((attr) => is_jsx_ref_attribute(attr))
 		.map((attr) => attr.value.expression);
 	const needs_synthetic_spread_ref = needs_explicit_spread_ref || ref_exprs.length > 0;
+	// Types do not depend on evaluation order, so the type-only print keeps
+	// the initialized setup declaration.
+	const bind_in_place =
+		!transform_context.typeOnly &&
+		transform_context.platform.jsx?.hostSpreadRefBinding === 'in-place';
 
 	return attrs.flatMap(
 		/**
@@ -5908,19 +6496,32 @@ function normalize_host_ref_spreads(attrs, is_host, transform_context) {
 				const normalized_id = create_generated_identifier(
 					create_spread_props_name(transform_context),
 				);
+				// Bound in place, the bag is evaluated between the attributes around
+				// it, as in native JSX; the setup declaration only declares the name.
+				// The `ref` read below comes after the spread either way: the synthetic
+				// ref follows it, and `merge_duplicate_refs` appends the merged ref.
 				const spread = {
 					...attr,
-					argument: clone_identifier(normalized_id),
+					argument: bind_in_place
+						? b.parenthesized(b.assignment('=', clone_identifier(normalized_id), normalized))
+						: clone_identifier(normalized_id),
 				};
+				// A spread bag may be nullish (`{...props.optional}`) and spread to
+				// nothing, as in native JSX, so its ref is read without throwing.
 				const ref_attr = b.jsx_attribute(
 					b.jsx_id('ref'),
-					to_jsx_expression_container(b.member(clone_identifier(normalized_id), 'ref'), attr),
+					to_jsx_expression_container(b.maybe_member(clone_identifier(normalized_id), 'ref'), attr),
 					false,
 					has_location(attr) ? attr : undefined,
 				);
 				ref_attr.metadata = { ...(ref_attr.metadata || {}) };
 				ref_attr.metadata.synthetic_ref = true;
-				add_jsx_setup_declaration(spread, b.let(clone_identifier(normalized_id), normalized));
+				add_jsx_setup_declaration(
+					spread,
+					bind_in_place
+						? b.let(clone_identifier(normalized_id))
+						: b.let(clone_identifier(normalized_id), normalized),
+				);
 
 				return [spread, ref_attr];
 			}
@@ -6052,8 +6653,7 @@ export function validate_at_most_one_ref_attribute(raw_attrs, transform_context)
 			continue;
 		}
 		error(
-			'Element has multiple `ref={...}` attributes; an element may have at most one. ' +
-				'Use a single array-valued ref such as `ref={[a, b]}` where the target framework supports multiple refs.',
+			TSRX_ERRORS.MULTIPLE_REFS,
 			transform_context?.filename ?? null,
 			node,
 			transform_context?.errors,
@@ -6223,6 +6823,7 @@ function stamp_directive_origin(node, directive, keyword, transform_context) {
 }
 
 export const MAP_ITERABLE_INTERNAL_NAME = '__map_iterable';
+export const MAP_ITERABLE_ASYNC_INTERNAL_NAME = '__map_iterable_async';
 export const ITERATION_VALUE_INTERNAL_NAME = '__IterationValue';
 
 const HTML_REF_TAG_NAMES = new Set(
@@ -6368,6 +6969,11 @@ export function build_return_expression(render_nodes, in_jsx_child = false, type
 			if (!type_only && !in_jsx_child && (only.value ?? '').trim() === '') {
 				return null;
 			}
+			return set_loc(b.jsx_fragment([only]), has_location(only) ? only : undefined);
+		}
+		if (only.type === 'JSXSpreadChild') {
+			// Analysis reports spread children; the editor's output keeps
+			// `{...items}`, which has no single-value form, as a fragment child.
 			return set_loc(b.jsx_fragment([only]), has_location(only) ? only : undefined);
 		}
 		return only;

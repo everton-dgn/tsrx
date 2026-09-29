@@ -4,8 +4,9 @@
 
 import { walk } from 'zimmerframe';
 import { node_children } from '../utils/ast.js';
+import { unescape_css } from '../parse/style.js';
+import { regex_whitespaces_strict } from '../utils/patterns.js';
 
-const regex_backslash_and_following_character = /\\(.)/g;
 /** @type {CssPruneDirection} */
 const FORWARD = 0;
 /** @type {CssPruneDirection} */
@@ -287,7 +288,7 @@ function apply_selector(relative_selectors, rule, element, direction) {
 				// Extract class selectors from the relative selector
 				for (const selector of relative_selector.selectors) {
 					if (selector.type === 'ClassSelector') {
-						const name = selector.name.replace(regex_backslash_and_following_character, '$1');
+						const name = unescape_css(selector.name);
 
 						if (!element.metadata.css) {
 							element.metadata.css = {
@@ -746,7 +747,9 @@ function test_attribute(operator, expected_value, case_insensitive, value) {
 		case '=':
 			return value === expected_value;
 		case '~=':
-			return value.split(/\s/).includes(expected_value);
+			// Split on ASCII whitespace only, as HTML does for class tokens, so a
+			// no-break space stays inside its word
+			return value.split(regex_whitespaces_strict).includes(expected_value);
 		case '|=':
 			return `${value}-`.startsWith(`${expected_value}-`);
 		case '^=':
@@ -907,7 +910,7 @@ function relative_selector_might_apply_to_node(relative_selector, rule, element,
 	for (const selector of other_selectors) {
 		if (selector.type === 'Percentage' || selector.type === 'Nth') continue;
 
-		const name = selector.name.replace(regex_backslash_and_following_character, '$1');
+		const name = unescape_css(selector.name);
 
 		switch (selector.type) {
 			case 'PseudoClassSelector': {
@@ -1003,11 +1006,11 @@ function relative_selector_might_apply_to_node(relative_selector, rule, element,
 						? whitelist_attribute_selector.get(element_name.name.toLowerCase())
 						: undefined;
 				if (
-					!whitelisted?.includes(selector.name.toLowerCase()) &&
+					!whitelisted?.includes(name.toLowerCase()) &&
 					!attribute_matches(
 						element,
-						selector.name,
-						selector.value && unquote(selector.value),
+						name,
+						selector.value && unescape_css(selector.value),
 						selector.matcher,
 						selector.flags?.includes('i') ?? false,
 					)
@@ -1080,20 +1083,6 @@ function relative_selector_might_apply_to_node(relative_selector, rule, element,
 
 	// possible match
 	return true;
-}
-
-/**
- * @param {string} str
- * @returns {string}
- */
-function unquote(str) {
-	if (
-		(str[0] === '"' && str[str.length - 1] === '"') ||
-		(str[0] === "'" && str[str.length - 1] === "'")
-	) {
-		return str.slice(1, -1);
-	}
-	return str;
 }
 
 /**
@@ -1178,7 +1167,7 @@ export function prune_css(css, element, styleClasses, topScopedClasses, regionHa
 					sole_selector.selectors[0].type === 'ClassSelector'
 				) {
 					const class_selector = sole_selector.selectors[0];
-					const name = class_selector.name.replace(regex_backslash_and_following_character, '$1');
+					const name = unescape_css(class_selector.name);
 					if (!top_scoped_classes.has(name)) {
 						top_scoped_classes.set(name, {
 							start: class_selector.start,

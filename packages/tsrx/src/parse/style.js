@@ -2,6 +2,7 @@
 /** @import { NonEmptyString } from '../../types/helpers' */
 
 import { strong_hash } from '../utils/hashing.js';
+import { DIAGNOSTIC_CODES } from '../diagnostics.js';
 
 const REGEX_MATCHER = /^[~^$*|]?=/;
 const REGEX_ATTRIBUTE_FLAGS = /^[a-zA-Z]+/;
@@ -14,6 +15,11 @@ const REGEX_LEADING_HYPHEN_OR_DIGIT = /-?\d/;
 const REGEX_WHITESPACE_OR_COLON = /[\s:]/;
 const REGEX_NTH_OF =
 	/^(even|odd|\+?(\d+|\d*n(\s*[+-]\s*\d+)?)|-\d*n(\s*\+\s*\d+))((?=\s*[,)])|\s+of\s+)/;
+// Up to six hex digits, then one optional whitespace that ends the escape
+// https://www.w3.org/TR/css-syntax-3/#consume-escaped-code-point
+const REGEX_HEX_ESCAPE = /^[0-9a-fA-F]{1,6}(\r\n|[ \t\n\r\f])?/;
+// In a string, an escaped newline is a line continuation and decodes to nothing
+const REGEX_ESCAPE = /\\(?:([0-9a-fA-F]{1,6})(?:\r\n|[ \t\n\r\f])?|(\r\n|[\n\r\f])|([\s\S]))/g;
 
 const regex_whitespace = /\s/;
 
@@ -139,7 +145,7 @@ export function parse_style(content, location, options) {
 		source: content,
 		hash: `tsrx-${strong_hash(hash_source)}`,
 		type: 'StyleSheet',
-		children: read_body(parser),
+		children: read_css_body(parser),
 		start: 0,
 		end: content.length,
 		filename: location.filename,
@@ -154,6 +160,23 @@ export function parse_style(content, location, options) {
 	}
 
 	return sheet;
+}
+
+/**
+ * The rules of a style body. A CSS syntax error gets its code
+ * (`DIAGNOSTIC_CODES.CSS_SYNTAX`).
+ * @param {Parser} parser
+ * @returns {Array<AST.CSS.Rule | AST.CSS.Atrule>}
+ */
+function read_css_body(parser) {
+	try {
+		return read_body(parser);
+	} catch (error) {
+		if (error instanceof Error && !(/** @type {{ code?: string }} */ (error).code)) {
+			/** @type {{ code?: string }} */ (error).code = DIAGNOSTIC_CODES.CSS_SYNTAX;
+		}
+		throw error;
+	}
 }
 
 /**
@@ -735,22 +758,19 @@ function read_selector(parser, inside_pseudo_class = false) {
  */
 function read_attribute_value(parser) {
 	let value = '';
-	let escaped = false;
 	const quote_mark = parser.eat('"') ? '"' : parser.eat("'") ? "'" : null;
 
 	while (parser.index < parser.template.length) {
 		const char = parser.template[parser.index];
-		if (escaped) {
-			value += '\\' + char;
-			escaped = false;
-		} else if (char === '\\') {
-			escaped = true;
+		if (char === '\\') {
+			value += read_escape(parser);
+			continue;
 		} else if (quote_mark ? char === quote_mark : /[\s\]]/.test(char)) {
 			if (quote_mark) {
 				parser.eat(quote_mark, true);
 			}
 
-			return value.trim();
+			return value;
 		} else {
 			value += char;
 		}
@@ -774,15 +794,11 @@ function read_identifier(parser) {
 		throw new Error('Unexpected CSS identifier');
 	}
 
-	let escaped = false;
-
 	while (parser.index < parser.template.length) {
 		const char = parser.template[parser.index];
-		if (escaped) {
-			identifier += '\\' + char;
-			escaped = false;
-		} else if (char === '\\') {
-			escaped = true;
+		if (char === '\\') {
+			identifier += read_escape(parser);
+			continue;
 		} else if (
 			/** @type {number} */ (char.codePointAt(0)) >= 160 ||
 			REGEX_VALID_IDENTIFIER_CHAR.test(char)
@@ -800,4 +816,40 @@ function read_identifier(parser) {
 	}
 
 	return identifier;
+}
+
+/**
+ * Read the escape at the parser's backslash and return its source text. A hex
+ * escape keeps the whitespace that ends it, so `\31 23` is the one identifier
+ * `123`, not `\31` followed by a descendant combinator.
+ * @param {Parser} parser
+ * @returns {string}
+ */
+function read_escape(parser) {
+	const start = parser.index++;
+
+	if (!parser.read(REGEX_HEX_ESCAPE) && parser.index < parser.template.length) {
+		parser.index++;
+	}
+
+	return parser.template.slice(start, parser.index);
+}
+
+/**
+ * Decode the escapes in a CSS identifier or string body as written in source,
+ * e.g. `foo\:bar` to `foo:bar` and `\31 23` to `123`.
+ * @param {string} value
+ * @returns {string}
+ */
+export function unescape_css(value) {
+	return value.replace(REGEX_ESCAPE, (_, hex, newline, char) => {
+		if (newline !== undefined) return '';
+		if (hex === undefined) return char;
+
+		const code = parseInt(hex, 16);
+		// NULL, surrogates, and values past the last code point decode to U+FFFD
+		return code === 0 || (code >= 0xd800 && code <= 0xdfff) || code > 0x10ffff
+			? '\uFFFD'
+			: String.fromCodePoint(code);
+	});
 }

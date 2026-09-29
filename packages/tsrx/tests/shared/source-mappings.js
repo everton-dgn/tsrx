@@ -81,6 +81,22 @@ export function runSharedSourceMappingTests({
 			},
 		);
 
+		// A type parameter's name is an Identifier (#873), mapped to itself
+		it.each([
+			['export function C<const T extends string>(x: T) @{\n\t<div>{x}</div>\n}', 'T extends'],
+			['export type M<X> = { [K in keyof X]: X[K] };', 'K in'],
+			['export type I<X> = X extends Array<infer U> ? U : never;', 'U>'],
+		])('maps the type parameter name in %j', (source, marker) => {
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			const offset = source.indexOf(marker);
+			const mapping = result.mappings.find(
+				(/** @type {any} */ m) => m.sourceOffsets[0] === offset && m.lengths[0] === 1,
+			);
+			if (!mapping) throw new Error(`No mapping for ${marker}`);
+			const generated = mapping.generatedOffsets[0];
+			expect(result.code.slice(generated, generated + 1)).toBe(source[offset]);
+		});
+
 		it('retains the trailing-comma diagnostic for an ambiguous generic arrow', () => {
 			const result = compile_to_volar_mappings(
 				'export const identity = <Value>(value: Value) => value;',
@@ -122,6 +138,158 @@ export function List({ items =${whitespace}EMPTY_ARRAY as string[] }: { items?: 
 		);
 	});
 
+	describe(`[${name}] await in lowered template bodies (#145)`, () => {
+		/** @type {Record<string, string>} */
+		const SOURCES = {
+			'@for body': `export async function App({ items }: { items: number[] }) @{
+	@for (const item of items; index i) {
+		const value = await load(item);
+		<p>{i}{value}{await load(item)}</p>
+	}
+}`,
+			'@empty body': `export async function App({ items }: { items: number[] }) @{
+	@for (const item of items) {
+		<p>{item}</p>
+	} @empty {
+		<p>{await load(0)}</p>
+	}
+}`,
+			'nested @for': `export async function App({ rows }: { rows: number[][] }) @{
+	@for (const row of rows) {
+		@for (const item of row) {
+			<p>{await load(item)}</p>
+		}
+	}
+}`,
+			'@switch case': `export async function App({ kind }: { kind: string }) @{
+	@switch (kind) {
+		@case 'a': {
+			const value = await load(1);
+			<p>{value}</p>
+		}
+	}
+}`,
+			'@if branch with setup statements': `export async function App({ ok }: { ok: boolean }) @{
+	@if (ok) {
+		const value = await load(1);
+		<p>{value}</p>
+	}
+}`,
+		};
+
+		if (rejectsComponentAwait) {
+			it.each(Object.keys(SOURCES))('rejects an await in the %s', (label) => {
+				expect(() => compile(SOURCES[label], 'App.tsrx')).toThrow(/await/);
+			});
+			return;
+		}
+
+		it.each(Object.keys(SOURCES))('emits valid async output for the %s', (label) => {
+			const { code } = compile(SOURCES[label], 'App.tsrx');
+			expect(() =>
+				parseModule(code, 'App.tsx', { preserveParens: true, errors: [], comments: [] }),
+			).not.toThrow();
+		});
+
+		it.each(Object.keys(SOURCES))('maps the authored await keywords in the %s', (label) => {
+			const source = SOURCES[label];
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors).toEqual([]);
+			for (const match of source.matchAll(/\bawait\b/g)) {
+				const generated = result.mappings.flatMap((mapping) =>
+					mapping.sourceOffsets.flatMap((offset, index) =>
+						offset === match.index && mapping.lengths[index] === 5
+							? [
+									result.code.slice(
+										mapping.generatedOffsets[index],
+										mapping.generatedOffsets[index] + 5,
+									),
+								]
+							: [],
+					),
+				);
+				expect(generated, `await at ${match.index}`).toContain('await');
+			}
+		});
+
+		it('walks the loop body one item at a time', () => {
+			const { code } = compile(SOURCES['@for body'], 'App.tsrx');
+			expect(code).toContain('await __map_iterable_async(items, async (item, i) =>');
+			expect(code).not.toContain('map_iterable as __map_iterable');
+		});
+
+		it('reports an await in a @catch body at the authored await', () => {
+			const source = `export async function App() @{
+	@try {
+		<p>ok</p>
+	} @catch (error) {
+		<p>{await load(error)}</p>
+	}
+}`;
+			expect(() => compile(source, 'App.tsrx')).toThrow(/does not support `await` here/);
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors.map((error) => [error.message, error.pos])).toEqual([
+				[expect.stringContaining('does not support `await` here'), source.indexOf('await')],
+			]);
+		});
+	});
+
+	describe(`[${name}] yield in lowered expressions (#246)`, () => {
+		/** @type {Record<string, string>} */
+		const SOURCES = {
+			'host spread beside a ref in a ternary arm': `export function* makeInput(enabled: boolean) {
+	return enabled ? <input {...{}} ref={() => {}} title={yield 'title'} /> : null;
+}`,
+			'host spread beside a ref in a logical operand': `export function* makeInput(fallback: unknown) {
+	return fallback || <input {...{}} ref={() => {}} title={yield 'title'} />;
+}`,
+			'@switch case': `export function* makeLabel(kind: number) {
+	return <p>{@switch (kind) { @case 1: { <span title={yield 'title'} /> } }}</p>;
+}`,
+		};
+
+		it.each(Object.keys(SOURCES))('keeps the yield inside a generator for the %s', (label) => {
+			const runtime = compile(SOURCES[label], 'App.tsrx').code;
+			const type_only = compile_to_volar_mappings(SOURCES[label], 'App.tsrx', { loose: true });
+			expect(type_only.errors).toEqual([]);
+			for (const code of [runtime, type_only.code]) {
+				expect(() =>
+					parseModule(code, 'App.tsx', { preserveParens: true, errors: [], comments: [] }),
+				).not.toThrow();
+			}
+		});
+
+		it.each(Object.keys(SOURCES))('maps the yielded value in the %s', (label) => {
+			const source = SOURCES[label];
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			const offset = source.indexOf("'title'");
+			const generated = result.mappings.flatMap((mapping) =>
+				mapping.sourceOffsets.flatMap((source_offset, index) =>
+					source_offset === offset
+						? [
+								result.code.slice(
+									mapping.generatedOffsets[index],
+									mapping.generatedOffsets[index] + mapping.lengths[index],
+								),
+							]
+						: [],
+				),
+			);
+			expect(generated).toContain("'title'");
+		});
+
+		it('reports a yield in a @for body at the authored yield', () => {
+			const source = `export function* makeList(items: string[]) {
+	return <ul>{@for (const item of items) { <li title={yield item} /> }}</ul>;
+}`;
+			expect(() => compile(source, 'App.tsrx')).toThrow(/does not support `yield` here/);
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors.map((error) => [error.message, error.pos])).toEqual([
+				[expect.stringContaining('does not support `yield` here'), source.indexOf('yield')],
+			]);
+		});
+	});
+
 	describe(`[${name}] multiline spread attributes`, () => {
 		it.each([
 			['LF', '\n'],
@@ -153,6 +321,106 @@ export function List({ items =${whitespace}EMPTY_ARRAY as string[] }: { items?: 
 				expect(result.code.slice(generated_start, generated_start + generated_length)).toBe(
 					source.slice(start, start + length),
 				);
+			}
+		});
+	});
+
+	describe(`[${name}] text with a comment and characters JSX text can't hold`, () => {
+		// A comment between children prints as `{}`, and text writes a `>` as
+		// `&gt;`, so the output is shorter or longer than the source it spans. The
+		// code around it still maps to itself.
+		it('maps the code after the text', () => {
+			const source = `export function App() @{
+	<div>
+		a /* c */ > b &amp; c
+		{value}
+		<span title={other}>x//y</span>
+	</div>
+}`;
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors).toEqual([]);
+			expect(result.code).toContain('a {} &gt; b &amp; c');
+
+			for (const identifier of ['value', 'other']) {
+				const start = source.indexOf(identifier);
+				const mapping = result.mappings.find(
+					(mapping) =>
+						mapping.sourceOffsets[0] === start && mapping.lengths[0] === identifier.length,
+				);
+				assert(mapping, identifier);
+				const generated = mapping.generatedOffsets[0];
+				expect(
+					result.code.slice(generated, generated + mapping.generatedLengths[0]),
+					identifier,
+				).toBe(identifier);
+			}
+		});
+	});
+
+	describe(`[${name}] a TypeScript directive between children`, () => {
+		// A comment between children is an empty `{}` in the output; a directive
+		// goes inside it, on the line before the child, as `{/* @ts-expect-error */}`
+		// works in TSX.
+		it('keeps it on the line before the child for the editor', () => {
+			const source = `export function App() @{
+	<div>
+		// @ts-expect-error
+		<Missing a={1} />
+		text /* @ts-ignore */ <Other />
+		/** @ts-expect-error */
+		<Third b={2} />
+		plain /* not a directive */ more
+	</div>
+}`;
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors).toEqual([]);
+			expect(result.code).toMatch(/\n\s*\{\/\* @ts-expect-error \*\/\}\n\s*<Missing a=\{1\} \/>/);
+			expect(result.code).toContain('text {/* @ts-ignore */} <Other />');
+			expect(result.code).toMatch(/\n\s*\{\/\*\* @ts-expect-error \*\/\}\n\s*<Third b=\{2\} \/>/);
+			expect(result.code).toContain('plain {} more');
+			expect(result.code).not.toContain('not a directive');
+		});
+	});
+
+	describe(`[${name}] whitespace or a comment after an element's \`<\``, () => {
+		it('maps the element from its `<`, not from the gap', () => {
+			const source = [
+				'export function App() @{',
+				'\tconst a = < div>x</div>;',
+				'\tconst b = </* note */span>y</span>;',
+				'\t<',
+				'\t\t// note',
+				'\t\tsection>',
+				'\t\t{a}',
+				'\t\t{b}',
+				'\t</section>',
+				'}',
+			].join('\n');
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors).toEqual([]);
+			const mapped = result.mappings.flatMap((mapping) =>
+				mapping.sourceOffsets.map((offset, index) => ({
+					offset,
+					generated: mapping.generatedOffsets[index],
+				})),
+			);
+
+			for (const [open, tag] of [
+				['< div', 'div'],
+				['</* note */span', 'span'],
+				['<\n\t\t// note\n\t\tsection', 'section'],
+			]) {
+				const start = source.indexOf(open);
+				const name_start = start + open.length - tag.length;
+				expect(
+					mapped.filter(({ offset }) => offset > start && offset < name_start),
+					open,
+				).toEqual([]);
+				const at_start = mapped.filter(({ offset }) => offset === start);
+				expect(at_start.length, open).toBeGreaterThan(0);
+				for (const { generated } of at_start) {
+					expect(result.code[generated], open).toMatch(/[<{(]/);
+				}
 			}
 		});
 	});
@@ -487,6 +755,35 @@ function App({ tag }: { tag: string }) @{
 			expect(css_mapping).toBeDefined();
 			expect(css_mapping?.data.customData.embeddedId).toMatch(/^style-/);
 		});
+		it('exposes style blocks, scripts and scoped classes inside attribute values', () => {
+			// The compiler scopes elements in an attribute value too
+			// (`icon={<span class="a" />}` prints `class="a tsrx-…"`).
+			const source = `export function App(props: { on: boolean }) @{
+	<>
+		<Comp icon={<span class="a" />} />
+		<Comp badge={(@if (props.on) { <><i class="b" /><style>.b { color: blue; }</style></> })} />
+		<Comp slot={<script>const inner = 1;</script>} />
+		<style>.a { color: red; }</style>
+	</>
+}`;
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors).toEqual([]);
+
+			const css_contents = result.cssMappings.map((mapping) => mapping.data.customData.content);
+			expect(css_contents.join('\n')).toContain('.b { color: blue; }');
+			const script_contents = result.scriptMappings.map(
+				(mapping) => mapping.data.customData.content,
+			);
+			expect(script_contents.join('\n')).toContain('const inner = 1;');
+			for (const class_name of ['a', 'b']) {
+				const offset = source.indexOf(`class="${class_name}"`) + 'class="'.length;
+				const mapping = result.mappings.find(
+					(/** @type {CodeMapping} */ entry) =>
+						entry.sourceOffsets[0] === offset && entry.lengths[0] === class_name.length,
+				);
+				expect(mapping?.data.customData?.hover).toContain(`.${class_name}`);
+			}
+		});
 		it('keeps assigned style blocks anchored in type-only output', () => {
 			const source = `function C() @{
 		const styles = <style>
@@ -588,12 +885,129 @@ function App({ tag }: { tag: string }) @{
 			expect_maps(`function C() @{
 	const F = class<T> { x: T | null = null; };
 }`));
+		it('maps class type positions, field annotations, and decorators', () => {
+			// An unmapped name drops its diagnostic, so `value!: Missing` type-checked clean.
+			const source = `declare function classDec(...args: any[]): any;
+declare function fieldDec(...args: any[]): any;
+declare function methodDec(...args: any[]): any;
+declare function exprDec(...args: any[]): any;
+declare const key: unique symbol;
+declare class Base<T> {}
+@classDec export abstract class Model<P extends ClassBound> extends Base<SuperArg> implements Shape<ImplArg>, OtherShape {
+	@fieldDec value!: FieldType;
+	static count: StaticType = null!;
+	'quoted': QuotedType;
+	0: NumericType;
+	[key]: ComputedType;
+	#secret: PrivateType = null!;
+	declare declared: DeclaredType;
+	accessor acc: AccessorType = null!;
+	abstract ab: AbstractType;
+	optional?: OptionalType;
+	@methodDec method<M extends MethodBound>(): void {}
+	overload<O extends OverloadBound>(o: O): void;
+	overload(o: unknown) {}
+}
+const Expr = @exprDec class<E extends ExprBound> implements ExprShape { field!: ExprField; };
+function C() @{}`;
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			/** @param {string} text @param {string} [prefix] */
+			const mapped = (text, prefix = '') => {
+				const offset = source.indexOf(prefix + text) + prefix.length;
+				return result.mappings.some(
+					(mapping) => mapping.sourceOffsets[0] === offset && mapping.lengths[0] === text.length,
+				);
+			};
+			const types = [
+				'ClassBound',
+				'SuperArg',
+				'Shape',
+				'ImplArg',
+				'OtherShape',
+				'FieldType',
+				'StaticType',
+				'QuotedType',
+				'NumericType',
+				'ComputedType',
+				'PrivateType',
+				'DeclaredType',
+				'AccessorType',
+				'AbstractType',
+				'OptionalType',
+				'MethodBound',
+				'OverloadBound',
+				'ExprBound',
+				'ExprShape',
+				'ExprField',
+			];
+			const decorators = ['classDec', 'fieldDec', 'methodDec', 'exprDec'];
+			expect(types.filter((name) => !mapped(name))).toEqual([]);
+			expect(decorators.filter((name) => !mapped(name, '@'))).toEqual([]);
+		});
 
 		// Method shorthand and class methods with type parameters / return types.
 		it('class method with type parameters', () =>
 			expect_maps(`class Foo { bar<T>(x: T): T { return x; } } function C() @{}`));
 		it('class method with return type', () =>
 			expect_maps(`class Foo { bar(x: number): string { return ''; } } function C() @{}`));
+
+		// TS-only class members: constructor parameter properties and bodyless
+		// methods (TSDeclareMethod: overloads, abstract, optional).
+		it('constructor parameter properties', () =>
+			expect_maps(
+				`class Foo { constructor(private readonly a: number, public b = 1, protected c?: string) {} } function C() @{}`,
+			));
+		it('override parameter property', () =>
+			expect_maps(
+				`class A { constructor(public n: number) {} } class B extends A { constructor(override readonly n: number) { super(n); } } function C() @{}`,
+			));
+		it('keeps parameter property modifiers in the virtual TS', () => {
+			const { code } = compile_to_volar_mappings(
+				`class A { constructor(public n: number) {} } class B extends A { constructor(public override readonly n: number) { super(n); } } function C() @{}`,
+				'App.tsrx',
+				{ loose: true },
+			);
+			expect(code).toContain('constructor(public override readonly n: number)');
+		});
+		it('method overload signatures', () =>
+			expect_maps(
+				`class Foo { f(x: string): string; f<T>(x: T): T; f(x: any) { return x; } } function C() @{}`,
+			));
+		it('abstract class members', () =>
+			expect_maps(
+				`abstract class Foo { abstract m(x: number): number; abstract readonly p: string; abstract accessor v: number; } function C() @{}`,
+			));
+		it('optional method signature', () =>
+			expect_maps(`class Foo { m?(): void; } function C() @{}`));
+		it('maps bodyless method names through their MethodDefinition key', () => {
+			// The parser emits bodyless methods as MethodDefinition { key, value:
+			// TSDeclareMethod }, so the key is mapped by MethodDefinition and the
+			// TSDeclareMethod case only walks the signature.
+			const source = `abstract class Foo { fmt(x: string): string; fmt(x: any) { return x; } abstract area(): number; opt?(): void; } function C() @{}`;
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			/** @param {number} offset @param {number} length */
+			const mapped = (offset, length) =>
+				result.mappings.some(
+					(mapping) => mapping.sourceOffsets[0] === offset && mapping.lengths[0] === length,
+				);
+			expect(mapped(source.indexOf('fmt(x: string)'), 3)).toBe(true);
+			expect(mapped(source.indexOf('area()'), 4)).toBe(true);
+			expect(mapped(source.indexOf('opt?()'), 3)).toBe(true);
+		});
+		it('maps parameter property names and annotations', () => {
+			const source = `class Foo { constructor(private readonly start: Date, public step: Date = new Date()) {} } function C() @{}`;
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			/** @param {string} text */
+			const mapped = (text) => {
+				const offset = source.indexOf(text);
+				return result.mappings.some(
+					(mapping) => mapping.sourceOffsets[0] === offset && mapping.lengths[0] === text.length,
+				);
+			};
+			expect(mapped('start')).toBe(true);
+			expect(mapped('step')).toBe(true);
+			expect(mapped('Date')).toBe(true);
+		});
 		it('object method shorthand with type parameters', () =>
 			expect_maps(`function C() @{
 	const o = { foo<T>(x: T): T { return x; } };
@@ -937,6 +1351,53 @@ function C() @{
 		});
 	});
 
+	describe(`[${name}] loop key clauses map to one emitted key`, () => {
+		const BODIES = {
+			'@if': `@if (item.visible) {
+				<li>{item.id}</li>
+			} @else {
+				<li>{'hidden'}</li>
+			}`,
+			'@switch': `@switch (item.visible) {
+				@case true: {
+					<li>{item.id}</li>
+				}
+				@default: {
+					<>{'hidden'}</>
+				}
+			}`,
+		};
+
+		/**
+		 * @param {string} body
+		 * @returns {number}
+		 */
+		const count_key_clause_mappings = (body) => {
+			const source = `function App(props: { items: { id: string; visible: boolean }[] }) @{
+	<ul>
+		@for (const item of props.items; key item.id) {
+			${body}
+		}
+	</ul>
+}`;
+			const key_offset = source.indexOf('key item.id') + 'key '.length;
+			const result = compile_to_volar_mappings(source, 'App.tsrx');
+			return result.mappings.filter(
+				(/** @type {{ sourceOffsets: number[] }} */ m) => m.sourceOffsets[0] === key_offset,
+			).length;
+		};
+
+		for (const [directive, body] of Object.entries(BODIES)) {
+			it(`maps the key clause as for a single element when the loop renders through ${directive}`, () => {
+				// Branches may each carry a copy of the key, but only one copy maps
+				// back to the clause.
+				expect(count_key_clause_mappings(body)).toBe(
+					count_key_clause_mappings('<li>{item.id}</li>'),
+				);
+			});
+		}
+	});
+
 	describe(`[${name}] optional TypeScript identifiers keep mappings`, () => {
 		it('maps manually printed optional tuple labels and function parameters', () => {
 			const source = `export type OptionalTuple = [tupleRequired: string, tupleMaybe?: string];
@@ -976,6 +1437,267 @@ export function optionalFn(declRequired: string, declMaybe?: string) {
 			expect_identifier_mapping('tupleMaybe', 'tupleMaybe?: string');
 			expect_identifier_mapping('fnMaybe', 'fnMaybe?: string');
 			expect_identifier_mapping('declMaybe', 'declMaybe?: string');
+		});
+	});
+
+	describe(`[${name}] private names keep mappings`, () => {
+		it('maps each private name, including its #, to the generated name', () => {
+			// TypeScript reports private-name diagnostics on the whole `#name`, so an
+			// unmapped name let `#value: number = 'bad'` type-check clean.
+			const source = `export class Model {
+	#value: number = 1;
+	static #count = 0;
+	accessor #flag = false;
+	#Tag = 'div';
+	get #size() { return this.#value; }
+	#run() { return Model.#count; }
+	static has(o: object) { return #value in o; }
+	render() { return <{this.#Tag}>{'x'}</{this.#Tag}>; }
+}`;
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors).toEqual([]);
+
+			const unmapped = [...source.matchAll(/#\w+/g)]
+				.filter(
+					({ 0: text, index }) =>
+						!result.mappings.some(
+							(/** @type {CodeMapping} */ mapping) =>
+								mapping.sourceOffsets[0] === index &&
+								mapping.lengths[0] === text.length &&
+								mapping.data.verification &&
+								result.code.slice(
+									mapping.generatedOffsets[0],
+									mapping.generatedOffsets[0] + mapping.generatedLengths[0],
+								) === text,
+						),
+				)
+				.map(({ 0: text, index }) => `${text}@${index}`);
+			expect(unmapped).toEqual([]);
+		});
+	});
+
+	describe(`[${name}] primitive type keywords keep mappings`, () => {
+		const keywords = [
+			'any',
+			'unknown',
+			'number',
+			'object',
+			'boolean',
+			'bigint',
+			'string',
+			'symbol',
+			'void',
+			'undefined',
+			'null',
+			'never',
+			'this',
+		];
+		// No `function` keyword anywhere, so the lexer collects no keyword tokens.
+		const source = `export class Model {\n${keywords
+			.map((keyword, index) => `\tm${index}(): ${keyword} {}`)
+			.join('\n')}\n}`;
+
+		it('maps each keyword to the generated keyword', () => {
+			// TypeScript reports a missing return (TS2355) on the whole return
+			// type, so an unmapped `number` let `value(): number {}` type-check clean.
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors).toEqual([]);
+
+			const unmapped = keywords.filter((keyword, index) => {
+				const start = source.indexOf(`m${index}(): `) + `m${index}(): `.length;
+				return !result.mappings.some(
+					(/** @type {CodeMapping} */ mapping) =>
+						mapping.sourceOffsets[0] === start &&
+						mapping.lengths[0] === keyword.length &&
+						mapping.data.verification &&
+						result.code.slice(
+							mapping.generatedOffsets[0],
+							mapping.generatedOffsets[0] + mapping.generatedLengths[0],
+						) === keyword,
+				);
+			});
+			expect(unmapped).toEqual([]);
+		});
+
+		it('does not map a method value as a function keyword', () => {
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			const value_starts = keywords.map((_, index) => source.indexOf(`m${index}(`) + 2);
+			expect(
+				result.mappings.filter((/** @type {CodeMapping} */ mapping) =>
+					value_starts.includes(mapping.sourceOffsets[0]),
+				),
+			).toEqual([]);
+		});
+	});
+
+	describe(`[${name}] superclass expressions keep mappings`, () => {
+		/**
+		 * Verification mappings over exactly `base`, the superclass in `source`.
+		 * @param {string} source
+		 * @param {string} base
+		 */
+		const whole_span_mappings = (source, base) => {
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors).toEqual([]);
+			const start = source.indexOf(`extends ${base}`) + 'extends '.length;
+			return result.mappings.filter(
+				(/** @type {CodeMapping} */ mapping) =>
+					mapping.sourceOffsets[0] === start &&
+					mapping.lengths[0] === base.length &&
+					mapping.data.verification &&
+					result.code
+						.slice(
+							mapping.generatedOffsets[0],
+							mapping.generatedOffsets[0] + mapping.generatedLengths[0],
+						)
+						.replace(/\s/g, '') === base.replace(/\s/g, ''),
+			);
+		};
+
+		it.each([
+			'createBase()',
+			'mixin(\n\tBase\n)',
+			'registry?.get()',
+			'(flag ? Base : Other)',
+			'(Base as unknown as {})',
+			'[]',
+		])('maps the whole superclass expression: %s', (base) => {
+			// TypeScript reports a non-constructor base (TS2507) on the whole
+			// expression, so an unmapped end let `extends createBase()` type-check clean.
+			expect(whole_span_mappings(`export class Model extends ${base} {}`, base)).toHaveLength(1);
+			expect(whole_span_mappings(`const Model = class extends ${base} {};`, base)).toHaveLength(1);
+		});
+
+		it.each(['Base', 'ns.Base', 'new Factory()'])(
+			'adds no second mapping for a base that already maps its whole span: %s',
+			(base) => {
+				expect(whole_span_mappings(`export class Model extends ${base} {}`, base)).toHaveLength(1);
+			},
+		);
+	});
+
+	describe(`[${name}] whole calls and parenthesized expressions keep mappings`, () => {
+		/**
+		 * Verification mappings over exactly `expression`, the first one in `source`
+		 * at or after `after`, whose generated text is the same expression.
+		 * @param {string} source
+		 * @param {string} expression
+		 * @param {string} [after]
+		 */
+		const whole_span_mappings = (source, expression, after = '') => {
+			/** @param {string} code without whitespace or trailing commas */
+			const normalize = (code) => code.replace(/\s/g, '').replace(/,\)/g, ')');
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors).toEqual([]);
+			const start = source.indexOf(expression, source.indexOf(after));
+			return result.mappings.filter(
+				(/** @type {CodeMapping} */ mapping) =>
+					mapping.sourceOffsets[0] === start &&
+					mapping.lengths[0] === expression.length &&
+					mapping.data.verification &&
+					normalize(
+						result.code.slice(
+							mapping.generatedOffsets[0],
+							mapping.generatedOffsets[0] + mapping.generatedLengths[0],
+						),
+					) === normalize(expression),
+			);
+		};
+
+		it.each([
+			['const items = [...createBase()];', 'createBase()'],
+			['createBase()();', 'createBase()()'],
+			['createBase()();', 'createBase()'],
+			['(plain)();', '(plain)()'],
+			['(plain)();', '(plain)'],
+			['if (createVoid()) {}', 'createVoid()'],
+			['const frozen = createBase() as const;', 'createBase()'],
+			['createBase(\n\t\t1,\n\t)();', 'createBase(\n\t\t1,\n\t)'],
+			['maybe?.()();', 'maybe?.()'],
+			['(plain || other)();', '(plain || other)'],
+			['((plain))();', '(plain)'],
+		])('maps the whole expression once in `%s`: %s', (statement, expression) => {
+			// TypeScript reports TS2488 on a spread argument, TS2349 on a callee,
+			// TS1345 on a `void` condition and TS1355 on an `as const` operand, all
+			// over the whole expression, so an unmapped end dropped each of them.
+			const source = `export function run() {\n\t${statement}\n}`;
+			expect(whole_span_mappings(source, expression, statement)).toHaveLength(1);
+		});
+
+		it('maps the whole call in a component body', () => {
+			const source = `export function App() @{
+	const items = [...createBase()];
+	<div>{items.length}</div>
+}`;
+			expect(whole_span_mappings(source, 'createBase()')).toHaveLength(1);
+		});
+
+		it('maps the whole call in an attribute value', () => {
+			// The compiler prints the arrow body over several lines, so the
+			// attribute's own mapping no longer lines up with the call inside it.
+			const source = `export function App() @{
+	<div onClick={() => { if (createVoid()) {} }} />
+}`;
+			expect(whole_span_mappings(source, 'createVoid()')).toHaveLength(1);
+		});
+
+		it('adds no whole-span mapping over parentheses around a compiled directive', () => {
+			// The parentheses are the author's, but the expression inside them is
+			// generated, so an error in it must not be reported over the source span.
+			const source = `export function App(props: { on: boolean }) @{
+	const badge = (@if (props.on) { <b>on</b> }) || 'off';
+	<div>{badge}</div>
+}`;
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors).toEqual([]);
+			const expression = '(@if (props.on) { <b>on</b> })';
+			const start = source.indexOf(expression);
+			expect(
+				result.mappings.filter(
+					(/** @type {CodeMapping} */ mapping) =>
+						mapping.sourceOffsets[0] === start && mapping.lengths[0] === expression.length,
+				),
+			).toEqual([]);
+		});
+	});
+
+	describe(`[${name}] this and super keep mappings`, () => {
+		it('maps each bare this and super to the generated keyword', () => {
+			// TypeScript reports on the bare keyword (TS2683 implicit `this`, TS17009
+			// `this` before `super()`), so an unmapped `this` let both type-check clean.
+			const source = `class Base {}
+export class Derived extends Base {
+	constructor() {
+		this;
+		super();
+	}
+}
+export function read(flag: boolean) {
+	return [this, this!, this as unknown, flag ? this : null, ...this, this()];
+}
+export function App() @{
+	const value = this;
+	<div>{String(value)}</div>
+}`;
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors).toEqual([]);
+
+			const keywords = [...source.matchAll(/\b(?:this|super)\b/g)];
+			expect(keywords).toHaveLength(9);
+			const unmapped = keywords.filter(
+				(match) =>
+					!result.mappings.some(
+						(/** @type {CodeMapping} */ mapping) =>
+							mapping.sourceOffsets[0] === match.index &&
+							mapping.lengths[0] === match[0].length &&
+							mapping.data.verification &&
+							result.code.slice(
+								mapping.generatedOffsets[0],
+								mapping.generatedOffsets[0] + mapping.generatedLengths[0],
+							) === match[0],
+					),
+			);
+			expect(unmapped.map((match) => `${match[0]}@${match.index}`)).toEqual([]);
 		});
 	});
 
@@ -1639,6 +2361,29 @@ export function App(props: { items: { id: string; name: string }[] }) @{
 				<li>{item.name}</li>
 				<li>{open ? 'open' : 'closed'}</li>
 			</>
+		}
+	</ul>
+}`,
+			'keyed loops rendering through @if and @switch': `export function App(props: { items: { id: string; kind: string }[] }) @{
+	<ul>
+		@for (const item of props.items; key item.id) {
+			@if (item.kind === 'a') {
+				<li>{'static'}</li>
+			} @else if (item.kind === 'b') {
+				<>
+					<li>{item.id}</li>
+				</>
+			} @else {
+				@switch (item.kind) {
+					@case 'c': {
+						const label = item.id;
+						<li>{label}</li>
+					}
+					@default: {
+						<li key={item.kind}>{'other'}</li>
+					}
+				}
+			}
 		}
 	</ul>
 }`,

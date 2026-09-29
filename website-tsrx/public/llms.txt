@@ -218,6 +218,9 @@ export default defineConfig({
 });
 ```
 
+Hono server components may be async and can use `await` in setup code and in
+template bodies, including `@for` and `@switch` bodies.
+
 For browser builds, use `tsrxHono({ mode: 'dom' })`. Hono DOM components are
 synchronous; use Hono's async and Suspense APIs for asynchronous work. The DOM
 validator reports explicit async components when they can be identified safely
@@ -596,7 +599,8 @@ const icon = <svg aria-hidden="true" />;
 
 TSRX opens from JSX expression positions: arrow expression bodies, assignments,
 props, helper returns, and children can all create TSRX values. Plain JSX
-children stay JSX text, elements, comments, and `{...}` expression containers.
+children stay JSX text, elements, JavaScript comments (see "Comments between
+children"), and `{...}` expression containers.
 When a scope needs TypeScript setup before rendering, use a JSX statement
 container: `@{ ... }`. Setup must come first and the container must finish with
 exactly one output node: a JSX element, JSX fragment, or JSX control-flow
@@ -666,6 +670,73 @@ const Article = ({ markup }: { markup: string }) =>
 	<article innerHTML={markup} />;
 ```
 
+### Comments between children
+
+JavaScript comments are comments between the children of every element in a
+`.tsrx` file: in a template, a control-flow body, JSX returned from a regular
+function, and module-level JSX. A comment renders like `{/* … */}` in TSX, so
+text on each side of it follows JSX's whitespace rules on its own.
+
+- `/*` starts a comment anywhere in text.
+- `//` starts a comment after whitespace, at the start of a line, or right after
+  a tag, `{…}` or block, and runs to the end of the line, a closing tag
+  included: `<p>a // note</p>` on one line leaves `<p>` unclosed.
+- `//` touching other text (`https://example.com`, `a//b`) is text.
+
+This differs from TSX, where `/* … */` and `//` lines between children are text.
+To show comment-like text, write the first `/` as `&#47;` or use a string:
+
+```tsrx
+export function Samples() @{
+	<main>
+		<div>&#47;* something */</div> // renders /* something */
+		<div>{'// something'}</div> // renders // something
+		<div>/* something */</div> // empty: its content is a comment
+	</main>
+}
+```
+
+### Scripts
+
+A `<script>` body is raw text, like a `<style>` body, in a template and in plain
+TSX: everything up to `</script>`, kept as written. JSX text rules don't apply
+to it. Comments, `<`, `>`, `&amp;`, and line breaks stay as they are, and `{…}`
+is text, not an expression container: `<script>{code}</script>` is a script
+whose text is `{code}`, as in an `.html` file.
+
+```tsrx
+export function Page() @{
+	<>
+		<script type="importmap">
+			{ "imports": { "app": "/app.js" } }
+		</script>
+		<script>
+			// A line comment, a <, and an &amp; stay as written.
+			if (a < b) log('&amp;');
+		</script>
+	</>
+}
+```
+
+The body ends at `</script`, optional whitespace, and `>`, where HTML ends it.
+Any other `</script` in the body, in any letter case, is the
+`TSRX1004` error, because a browser would end the script
+there. Write it as `<\/script`, the same string, regular expression, or JSON.
+
+For a body computed at runtime, use a self-closing `<script>` with the
+target's own property. Whether a script runs is each target's decision:
+
+| Target                    | Dynamic body                                 | Runs on a client render | Runs from server HTML |
+| ------------------------- | -------------------------------------------- | ----------------------- | --------------------- |
+| React                     | `dangerouslySetInnerHTML={{ __html: code }}` | No                      | Yes                   |
+| Preact                    | `dangerouslySetInnerHTML={{ __html: code }}` | Yes                     | Yes                   |
+| Hono server (`hono/jsx`)  | `dangerouslySetInnerHTML={{ __html: code }}` | Not applicable          | Yes                   |
+| Hono DOM (`hono/jsx/dom`) | `dangerouslySetInnerHTML={{ __html: code }}` | Yes                     | Not applicable        |
+| Solid                     | `innerHTML={code}`                           | No                      | Yes                   |
+| Vue                       | `innerHTML={code}`                           | No                      | Yes                   |
+
+Ripple and Octane decide for themselves; see their documentation.
+
 ### Prop shorthand
 
 When a prop name matches the variable, use `{name}` instead of `name={name}`.
@@ -717,12 +788,26 @@ const Body = expanded ? ExpandedBody : CompactBody;
 <{Body} item={item} />
 ```
 
-The tag expression must resolve to an element name: an identifier, member
-access, static string, or a runtime expression composed of those. Calls,
-spreads, string concatenation, and string interpolation are not valid tag
-names. Do not use removed dynamic tag syntax such as `<@tag />`,
-`<@Component />`, or the imported `Dynamic` component with an `is` prop. Use
-`<{tag}>` instead.
+The tag expression must be one of three forms:
+
+- an identifier: `tag`, `Comp`;
+- a member access, including chains: `props.as`, `this.tag`, `registry[name]`,
+  `items[0]`. The chain starts at an identifier or `this`, and each computed key
+  is an identifier, a string or number literal, or a member access;
+- a string literal: `'section'`.
+
+Any other expression is a compile error, and the editor underlines it. That
+includes a conditional, `||`, `??` and `&&`, even when every branch or operand
+is one of the three forms; parentheses and type-only wrappers (`as`,
+`satisfies`, `!`); optional member access (`a?.b`); calls, `new`, spreads,
+string concatenation, template literals, assignments and sequences; functions,
+elements and fragments; and every literal other than a string. A
+non-self-closing element repeats the expression in its closing tag, so compute
+anything more above the element, as `Body` is in the example above, and use the
+result: `const Tag = c ? Child : Fallback;` followed by `<{Tag} />`.
+
+Do not use removed dynamic tag syntax such as `<@tag />`, `<@Component />`, or
+the imported `Dynamic` component with an `is` prop. Use `<{tag}>` instead.
 
 ## Control Flow
 
@@ -938,7 +1023,7 @@ A `@{ ... }` body and every `@if`, `@for`, `@switch`, or `@try` branch (each
 `@else`, `@empty`, `@case`, `@default`, `@pending`, and `@catch` body too)
 render exactly one output node, and a `<style>` block counts as an output node.
 Beside another output it is the multiple-outputs error; as the only output it
-is `tsrx-style-standalone-needs-fragment` and styles nothing. Wrap the block
+is `TSRX3009` and styles nothing. Wrap the block
 and its output in a fragment.
 
 ```tsrx
@@ -977,7 +1062,7 @@ function Note({ open }: { open: boolean }) @{
 
 Raw CSS in `<style>` is TSRX template syntax. A block with CSS in it must sit
 lexically inside a `@{ ... }` body or an `@if`/`@for`/`@switch`/`@try` body (at
-any depth); anywhere else it is the `tsrx-style-standalone-outside-template`
+any depth); anywhere else it is the `TSRX3008`
 error. In plain TSX, write `<style>{css}</style>`: an ordinary element with an
 expression child, which the compiler never scopes and never gives a hash class.
 
@@ -1057,7 +1142,7 @@ with CSS nesting:
 - Compound `.card:global(.is-open)` -> `.card.<hash>.is-open`: your own
   element, with a class another library toggles on it.
 - `:global` in the middle of a selector (`.card :global(.x) .title`) is the
-  `tsrx-css-global-placement` error: it may only start or end a selector.
+  `TSRX3011` error: it may only start or end a selector.
 - Block `:global { .toast { ... } body { ... } }` -> `.toast { ... } body { ... }`:
   the wrapper is dropped (left behind as a comment) and everything inside is
   unscoped. Several page-wide rules at once.
@@ -1087,6 +1172,11 @@ and keep it narrow: it overrides the child's own rules by specificity. To style
 several of the child's classes, nest one `:global { ... }` block under your
 scoped selector. Never write a bare `:global` selector or a top-level
 `:global { ... }` block for anything but page-level elements.
+
+`@import` is not allowed in a `<style>` block (`TSRX3012`): the imported
+rules would not be scoped. Share scoped styles through an assigned block and
+`apply`. For global CSS, use `:global` in the block, or import the stylesheet in
+JavaScript (`import './global.css'`), which the bundler adds to the page as is.
 
 | I want to ...                                              | Use ...                                                                           |
 | ---------------------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -1190,11 +1280,12 @@ is the hash class and the class name together. Pass these strings to child
 components as props. `$class` is reserved: a block cannot declare a `.$class`
 selector.
 
-- A block that is exported, applied, or whose `$class` is read is a theme. It
-  keeps every selector, element and descendant selectors included.
-- A block that is only read through class entries (`styles.card`) is a class
-  map. It keeps only its standalone class selectors; the others are removed as
-  unused.
+- Every assigned block is a theme. It keeps every selector, element and
+  descendant selectors included, and none is removed as unused: `$class` is an
+  ordinary string that destructuring, props, and return values carry anywhere,
+  and `apply` can stamp it on scopes in other modules.
+- An element that carries a class entry (`styles.card`) also carries the hash,
+  so the block's element rules match it too.
 - The block can live at module scope or inside a component body.
 
 ```tsrx
@@ -1311,9 +1402,9 @@ Every element of `Panel` carries `A theme.$class`; the nested `div` carries
 - `class={theme.$class}` opts one element in: it matches the theme's element and
   descendant rules exactly as an element of an applying scope does, and no other
   element is affected. `theme.card` stays `'<hash> card'`.
-- Reading `theme.$class` anywhere in the module makes the block a theme, so its
-  element selectors are kept; a block read only through class entries stays a
-  class map.
+- `theme.$class` is an ordinary string: read it directly, destructure it
+  (`const { $class } = theme`), or pass the theme object along, and it works
+  the same.
 - Pass `theme.$class` to a child component through a prop to opt its elements
   in; on the child's elements it comes before the child's own hash class.
 - `$class` and `apply` combine. Listing several themes' `$class` values on one
@@ -1353,10 +1444,11 @@ export function App() @{
 }
 ```
 
-`theme` is a theme because `theme.$class` is read, so `div { color: blue }` is
-kept and scoped as `div.<hash>`. Only the opted-in `<div>` and `Card`'s
-`<article>` and `<h2>` match it; the `<p>` carries nothing from `theme`. Inside
-`Card`, the compiled class is `` `${parentClass} <card-hash>` ``.
+`div { color: blue }` is kept and scoped as `div.<hash>`. The opted-in `<div>`
+and `Card`'s `<article>` and `<h2>` match it, and so does the `.card` `<div>`,
+because `theme.card` carries the hash too (`.card` still wins on specificity);
+the `<p>` carries nothing from `theme`. Inside `Card`, the compiled class is
+`` `${parentClass} <card-hash>` ``.
 
 ### Cascade layers pass through
 
@@ -1375,7 +1467,9 @@ or expression values are isolated behind generated child components
 when safe. Hook results must stay local to the generated component; move shared
 state into an explicit child component when values need to cross the generated
 boundary. React and Preact can also emit async component functions when template
-body `await` is supported by the target pipeline.
+body `await` is supported by the target pipeline. An `await` in an `@for`,
+`@empty`, `@switch`, or `@if` body is awaited by that component, and a loop body
+finishes one item before it starts the next.
 
 ```tsrx
 import { useEffect, useState } from 'react';

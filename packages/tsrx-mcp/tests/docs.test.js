@@ -111,22 +111,22 @@ describe('@tsrx/mcp documentation index', () => {
 		expect(content).toContain('class={theme.$class}');
 		// Opting elements in with $class (the spec's STYLE_THEME_EXAMPLE card.tsrx section).
 		expect(content).toContain('<Card parentClass={palette.$class} />');
-		expect(content).toContain('palette.$class is read, so palette is a theme');
-		expect(content).toContain('is a theme and keeps every selector');
+		expect(content).toContain('palette is assigned, so it is a theme');
+		expect(content).toContain('Every assigned block is a theme and keeps every selector');
 		expect(content).toContain('declared before the applying block');
 
 		// Static constraints with their diagnostic codes.
 		for (const code of [
-			'tsrx-style-standalone-at-module-scope',
-			'tsrx-style-standalone-outside-template',
-			'tsrx-style-unknown-attribute',
-			'tsrx-style-apply-value',
-			'tsrx-style-apply-duplicate',
-			'tsrx-style-apply-unsupported-host',
-			'tsrx-style-apply-target',
-			'tsrx-style-apply-before-declaration',
-			'tsrx-style-reserved-class-key',
-			'tsrx-css-global-placement',
+			'TSRX3007',
+			'TSRX3008',
+			'TSRX3010',
+			'TSRX3001',
+			'TSRX3004',
+			'TSRX3005',
+			'TSRX3002',
+			'TSRX3003',
+			'TSRX3006',
+			'TSRX3011',
 		]) {
 			expect(content).toContain(code);
 		}

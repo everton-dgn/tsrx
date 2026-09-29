@@ -12,10 +12,17 @@
  */
 
 import { is_reference } from './utils/is-reference.js';
-import { extract_identifiers, object, unwrap_pattern } from './utils/ast.js';
+import {
+	extract_identifiers,
+	is_submodule_declaration,
+	is_transparent_expression_wrapper,
+	object,
+	unwrap_pattern,
+} from './utils/ast.js';
 import { walk } from 'zimmerframe';
 import { is_reserved } from './utils.js';
 import { error } from './errors.js';
+import { TS_ERRORS, TSRX_ERRORS } from './diagnostics.js';
 import { IDENTIFIER_OBFUSCATION_PREFIX } from './identifier-utils.js';
 import * as b from './utils/builders.js';
 
@@ -80,7 +87,8 @@ export function create_scopes(ast, root, parent, error_options) {
 				// TSTypeAnnotation, TSInterfaceDeclaration etc - these are normally already filtered out,
 				// but for the migration they aren't, so we need to filter them out here
 				// TODO -> once migration script is gone we can remove this check
-				!parent.type.startsWith('TS')
+				// `value as T`, `value!`, and `value satisfies T` still read `value`.
+				(!parent.type.startsWith('TS') || is_transparent_expression_wrapper(parent, node))
 			) {
 				references.push([state.scope, { node, path: path.slice() }]);
 			}
@@ -129,8 +137,8 @@ export function create_scopes(ast, root, parent, error_options) {
 			next();
 		},
 
-		TSModuleDeclaration(node, { state, next }) {
-			const is_submodule = node.declare !== true && node.kind === 'module';
+		TSModuleDeclaration(node, { path, state, next }) {
+			const is_submodule = is_submodule_declaration(node, path);
 			if (is_submodule && node.id?.type === 'Identifier') {
 				state.scope.declare(node.id, 'normal', 'module', node);
 			}
@@ -179,6 +187,23 @@ export function create_scopes(ast, root, parent, error_options) {
 		SwitchStatement: create_block_scope,
 		JSXForExpression: create_block_scope,
 		JSXSwitchExpression: create_block_scope,
+		// A `@switch` arm is its own template block, unlike the cases of a JS
+		// `switch`, which share the switch body's scope. The `@case` test sits
+		// outside the arm's braces, so it still resolves in the enclosing scope.
+		SwitchCase(node, { state, path, visit, next }) {
+			if (path.at(-1)?.type !== 'JSXSwitchExpression') {
+				next();
+				return;
+			}
+
+			if (node.test) visit(node.test);
+
+			const scope = state.scope.child(true);
+			scopes.set(node, scope);
+			for (const statement of node.consequent) {
+				visit(statement, { ...state, scope });
+			}
+		},
 		// Each `@{ … }` code block is its own lexical scope, whether it is a
 		// function body or a template child — its bindings never leak out.
 		JSXCodeBlock(node, context) {
@@ -369,7 +394,7 @@ export class Scope {
 
 		if (node.name.startsWith(IDENTIFIER_OBFUSCATION_PREFIX)) {
 			error(
-				`Cannot declare a variable named "${node.name}" as identifiers starting with "${IDENTIFIER_OBFUSCATION_PREFIX}" are reserved`,
+				TSRX_ERRORS.RESERVED_IDENTIFIER_PREFIX(node.name, IDENTIFIER_OBFUSCATION_PREFIX),
 				this.#error_options.filename,
 				node,
 				this.#error_options.collect ? this.#error_options.errors : undefined,
@@ -379,7 +404,7 @@ export class Scope {
 
 		if (this.declarations.has(node.name)) {
 			error(
-				`'${node.name}' has already been declared in the current scope`,
+				TS_ERRORS.DECLARED_IN_SCOPE(node.name),
 				this.#error_options.filename,
 				node,
 				this.#error_options.collect ? this.#error_options.errors : undefined,

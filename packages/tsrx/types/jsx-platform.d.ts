@@ -41,6 +41,7 @@ export interface JsxTransformContext {
 	needs_dynamic_element: boolean;
 	needs_dynamic_factory: boolean;
 	needs_for_of_iterable: boolean;
+	needs_for_of_iterable_async: boolean;
 	needs_iteration_value_type: boolean;
 	needs_show: boolean;
 	needs_for: boolean;
@@ -222,8 +223,11 @@ export interface JsxPlatformHooks {
 	/**
 	 * Optionally replace the default React-style `.map(...)` lowering for a
 	 * `for...of` body after the shared transform has already produced its render
-	 * statements and applied any explicit or implicit keys. Vue uses this to hand
-	 * the loop to the downstream Vapor JSX compiler as a typed `VaporFor` component.
+	 * statements and applied any explicit or implicit key to the body's top-level
+	 * element. The default lowering also keys each element an `@if` / `@switch`
+	 * body renders; with this hook set, those branches stay unkeyed, including
+	 * when the hook returns `null`. Vue uses this to hand the loop to the
+	 * downstream Vapor JSX compiler as a typed `VaporFor` component.
 	 */
 	renderForOf?: (
 		node: AST.ForOfStatement,
@@ -406,7 +410,8 @@ export interface JsxPlatform {
 		/**
 		 * Module to import the `map_iterable` runtime helper (and the
 		 * `IterationValue` type) from when compiling `for ... of` bodies whose
-		 * source can be any `Iterable` — not just an array. React and Preact
+		 * source can be any `Iterable` — not just an array. A body that awaits
+		 * imports `map_iterable_async` from the same module. React and Preact
 		 * use target-owned paths like `'@tsrx/react/runtime/iterable'` and
 		 * `'@tsrx/preact/runtime/iterable'`, which re-export from
 		 * `'@tsrx/core/runtime/iterable'`. Solid and Vue lower for-of via their
@@ -457,6 +462,36 @@ export interface JsxPlatform {
 		 * explicit `ref={normalized.ref}` attribute.
 		 */
 		hostSpreadRefStrategy?: 'explicit-ref-attr';
+		/**
+		 * Where a host spread binds its normalized props bag when the element
+		 * also reads the bag's `ref` through a `ref` attribute.
+		 *
+		 * - `'in-place'`: assign the bag inside the spread
+		 *   (`{...(bag = normalize(expr))}`) and declare `let bag;` ahead of the
+		 *   element, so attribute expressions keep their authored evaluation
+		 *   order. Requires a JSX runtime that evaluates attributes left to
+		 *   right, as `jsx()` and `createElement` calls do.
+		 * - `undefined`: evaluate the spread in a `let bag = normalize(expr);`
+		 *   declaration ahead of the element, for compiled JSX that reads `ref`
+		 *   before the spread or evaluates the spread lazily, such as Solid's.
+		 */
+		hostSpreadRefBinding?: 'in-place';
+		/**
+		 * How a raw-text `<script>` element's body (its `content`, as written)
+		 * is output, in the form the target renders exactly on the client and
+		 * from server HTML. JSX text can't hold it: a JSX compiler joins its
+		 * lines and decodes its character references.
+		 *
+		 * - `'children'` (default): one string child, `<script>{"…"}</script>`.
+		 * - `'dangerouslySetInnerHTML'`:
+		 *   `<script dangerouslySetInnerHTML={{ __html: "…" }} />`, for server
+		 *   renderers that escape a string child like text.
+		 * - `'innerHTML'`: `<script innerHTML={"…"} />`, for compilers that
+		 *   escape a string child into their HTML templates.
+		 * - `'v-html'`: `<script v-html={"…"} />`, for vue-jsx-vapor, which
+		 *   writes a string `innerHTML` into its HTML template as an attribute.
+		 */
+		scriptBody?: 'children' | 'dangerouslySetInnerHTML' | 'innerHTML' | 'v-html';
 	};
 
 	validation: {

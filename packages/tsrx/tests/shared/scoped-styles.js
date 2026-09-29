@@ -210,6 +210,78 @@ export function runSharedScopedStyleTests({
 			expect(css).not.toContain('(unused)');
 		});
 
+		it('matches hexadecimal selector escapes against decoded class and id names', () => {
+			const { code, css, cssHash } = compile(
+				String.raw`export function App() @{
+					<>
+						<style>.\31 23 { color: red; } #\31 { color: blue; }</style>
+						<div ${attr}="123" id="1">{'a'}</div>
+					</>
+				}`,
+				'App.tsrx',
+			);
+
+			const hash = hashes_of(cssHash)[0];
+			expect(css).toContain(String.raw`.\31 23.${hash} {`);
+			expect(css).toContain(String.raw`#\31 .${hash}{`);
+			expect(css).not.toContain('(unused)');
+			expect(class_of(code, '123')).toBe(`123 ${hash}`);
+		});
+
+		it('matches attribute selectors against decoded names and values', () => {
+			const { css, cssHash } = compile(
+				String.raw`export function App() @{
+					<>
+						<style>
+							[data-a=\31 23] { color: red; }
+							[data-b="\31 23"] { color: blue; }
+							[\64 ata-c=y] { color: green; }
+							[data-d=a\ ] { margin: 0; }
+							[title=" a "] { padding: 0; }
+							[lang="'x'"] { border: 0; }
+						</style>
+						<div data-a="123" data-b="123" data-c="y" data-d="a " title=" a " lang="'x'">{'a'}</div>
+					</>
+				}`,
+				'App.tsrx',
+			);
+
+			const hash = hashes_of(cssHash)[0];
+			expect(css).toContain(String.raw`[data-a=\31 23].${hash} {`);
+			expect(css).not.toContain('(unused)');
+		});
+
+		it('splits class attributes on ASCII whitespace only, so a no-break space stays inside its class', () => {
+			const nbsp = '\u00a0';
+			const { code, css, cssHash } = compile(
+				String.raw`export function App() @{
+					<>
+						<style>
+							.a\a0 b { color: red; }
+							.c${nbsp}d { color: blue; }
+							.e\2003 f { color: green; }
+							.g { margin: 0; }
+							.h { padding: 0; }
+							.a { border: 0; }
+						</style>
+						<div ${attr}="a${nbsp}b">{'a'}</div>
+						<p ${attr}="c${nbsp}d">{'c'}</p>
+						<span ${attr}="e${'\u2003'}f${'\t'}g${'\n'}h">{'e'}</span>
+					</>
+				}`,
+				'App.tsrx',
+			);
+
+			const hash = hashes_of(cssHash)[0];
+			expect(css).toContain(String.raw`.a\a0 b.${hash} {`);
+			expect(css).toContain(`.c${nbsp}d.${hash} {`);
+			expect(css).toContain(String.raw`.e\2003 f.${hash} {`);
+			expect(css).toContain(`.g.${hash} {`);
+			expect(css).toContain(`.h.${hash} {`);
+			expect(css).toContain('/* (unused) .a { border: 0; }*/');
+			expect(class_of(code, `a${nbsp}b`)).toBe(`a${nbsp}b ${hash}`);
+		});
+
 		it('rfc1-nested-scope: a nested @{} gets its own hash and emits after its parent even when written first', () => {
 			const { code, css, cssHash } = compile(
 				`export function App() @{
@@ -635,6 +707,46 @@ export function runSharedScopedStyleTests({
 			expect(code).toContain(`'title': '${hash} title'`);
 		});
 
+		it('defines a .__proto__ class entry as an own property of the theme', () => {
+			const { code, css } = compile(
+				`export const theme = <style>
+					.__proto__ { color: red; }
+					.card { color: blue; }
+				</style>;`,
+				'App.tsrx',
+			);
+
+			const hash = hash_for_selector(css, '__proto__');
+			// A literal `'__proto__'` key would set the prototype instead.
+			expect(code).toContain(`['__proto__']: '${hash} __proto__'`);
+			const literal = /export const theme = (\{[\s\S]*?\});/.exec(code)?.[1];
+			const theme = new Function(`return ${literal}`)();
+			expect(Object.hasOwn(theme, '__proto__')).toBe(true);
+			expect(theme.__proto__).toBe(`${hash} __proto__`);
+			expect(theme.card).toBe(`${hash} card`);
+			expect(Object.getPrototypeOf(theme)).toBe(Object.prototype);
+		});
+
+		it('exposes hexadecimal class escapes under their decoded names', () => {
+			// `\31 ` is one escape for the digit 1; its space ends the escape and
+			// is not a descendant combinator.
+			const { code, css } = compile(
+				String.raw`export const theme = <style>
+					.\31 23 { color: red; }
+					.\31 { color: blue; }
+					.\E9t\E9  { color: green; }
+				</style>;`,
+				'App.tsrx',
+			);
+
+			const hash = /\.\\31 23\.(tsrx-[0-9a-f]+)/.exec(css)?.[1];
+			expect(hash).toBeDefined();
+			expect(code).toContain(`'123': '${hash} 123'`);
+			expect(code).toContain(`'1': '${hash} 1'`);
+			expect(code).toContain(`'été': '${hash} été'`);
+			expect(code).not.toContain(`'31'`);
+		});
+
 		it('composes $class from applied same-module themes, own hash last', () => {
 			const { code, css } = compile(
 				`const base = <style>.x { color: red; }</style>;
@@ -849,8 +961,8 @@ export function runSharedScopedStyleTests({
 			expect(css).not.toContain('(unused)');
 		});
 
-		it('still prunes an unexported, unapplied assigned block', () => {
-			const { css } = compile(
+		it('keeps every selector of an unexported, unapplied assigned block', () => {
+			const { css, cssHash } = compile(
 				`export function App() @{
 					const styles = <style>
 						div { color: red; }
@@ -861,7 +973,9 @@ export function runSharedScopedStyleTests({
 				'App.tsrx',
 			);
 
-			expect(css).toContain('/* (unused) div { color: red; }*/');
+			const hash = hashes_of(cssHash)[0];
+			expect(css).not.toContain('(unused)');
+			expect(css).toContain(`div.${hash} { color: red; }`);
 		});
 
 		it('resolves apply through lexical scope to a block declared in the component body', () => {
@@ -990,19 +1104,36 @@ export function runSharedScopedStyleTests({
 			expect(code).toContain(`<h2 ${classAttrName}={\`\${parentClass} ${local}\`}>`);
 		});
 
-		it('keeps class-map pruning when only class entries of a local block are read', () => {
-			const { css } = compile(
-				`export function App() @{
-					const styles = <style>
-						div { color: blue; }
-						.card { color: red; }
-					</style>;
-					<div ${classAttrName}={styles.card}>{'card'}</div>
+		it('keeps every selector however $class leaves the block', () => {
+			const block = '<style>div { color: red; }</style>';
+			for (const source of [
+				`const theme = ${block};
+				const { $class: cls } = theme;
+				export function App() { return <div ${classAttrName}={cls}>{'a'}</div>; }`,
+				`const theme = ${block};
+				const alias = theme;
+				export function App() { return <div ${classAttrName}={alias.$class}>{'a'}</div>; }`,
+				`const themes = { red: ${block} };
+				export function App() { return <div ${classAttrName}={themes.red.$class}>{'a'}</div>; }`,
+				`const themes = [${block}];
+				export function App() {
+					return <>{themes.map((t) => <div ${classAttrName}={t.$class}>{'a'}</div>)}</>;
 				}`,
-				'App.tsrx',
-			);
+				`function Card({ theme }: { theme: { $class: string } }) {
+					return <div ${classAttrName}={theme.$class}>{'a'}</div>;
+				}
+				const theme = ${block};
+				export function App() { return <Card theme={theme} />; }`,
+				`function getTheme() { const theme = ${block}; return theme; }
+				export function App() { return <div ${classAttrName}={getTheme().$class}>{'a'}</div>; }`,
+				`const theme = ${block};
+				export function App() { return <div ${classAttrName}={theme!.$class}>{'a'}</div>; }`,
+			]) {
+				const { css, cssHash } = compile(source, 'App.tsrx');
 
-			expect(css).toContain('/* (unused) div { color: blue; }*/');
+				expect(css, source).not.toContain('(unused)');
+				expect(css, source).toContain(`div.${hashes_of(cssHash)[0]} { color: red; }`);
+			}
 		});
 
 		it('includes $class in the class map handed to a style ref', () => {

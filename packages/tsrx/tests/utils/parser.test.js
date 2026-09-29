@@ -1,12 +1,16 @@
 /** @import * as AST from 'estree' */
 /** @import { TSESTree } from '@typescript-eslint/types' */
-/** @import { CompileError, NodeOfType, NodeTypeName } from '../../types/index' */
+/** @import { CompileError, NodeOfType, NodeTypeName, ParseOptions } from '../../types/index' */
 /** @import * as ESTreeJSX from 'estree-jsx' */
+/** @import { ErrorKind } from '../shared/errors.js' */
 
 import { describe, expect, it } from 'vitest';
-import { acorn, parseModule } from '../../src/index.js';
+import { acorn, analyzeTsrx, isLayoutWhitespace, parseModule } from '../../src/index.js';
+import { TS_ERRORS, TSRX_ERRORS, UPSTREAM_ERRORS } from '../../src/diagnostics.js';
 import { node_children } from '../../src/utils/ast.js';
+import { code_of, error_with, line_column, thrown } from '../shared/errors.js';
 import { as_type, assert_type } from '../shared/node-types.js';
+import { parse_in_worker, parse_in_worker_with_ast } from '../shared/parse-in-worker.js';
 import { STYLE_SYNTAX_CASES } from './fixtures/style-syntax.js';
 
 /**
@@ -176,6 +180,42 @@ function openingName(element) {
  */
 function child(node, index, type) {
 	return as_type(node_children(node)[index], type);
+}
+
+/**
+ * The node's children without layout whitespace (see `isLayoutWhitespace`),
+ * for tests about something other than the text between children.
+ *
+ * @param {AST.Node} node
+ * @returns {AST.Node[]}
+ */
+function contentChildren(node) {
+	return node_children(node).filter((child) => !isLayoutWhitespace(child));
+}
+
+/**
+ * The node's child at `index` among {@link contentChildren}, asserted to be
+ * `type`.
+ *
+ * @template {NodeTypeName} T
+ * @param {AST.Node} node
+ * @param {number} index
+ * @param {T} type
+ * @returns {NodeOfType<T>}
+ */
+function contentChild(node, index, type) {
+	return as_type(contentChildren(node)[index], type);
+}
+
+/**
+ * The statements of an `@case` or `@default` body: its `{ … }` block's (#842).
+ *
+ * @param {AST.SwitchCase} switch_case
+ * @returns {AST.Node[]}
+ */
+function caseBody(switch_case) {
+	expect(switch_case.consequent).toHaveLength(1);
+	return as_type(switch_case.consequent[0], 'BlockStatement').body;
 }
 
 /**
@@ -400,15 +440,15 @@ describe('TSRX parser', () => {
 			expect(as_type(declaration, 'ImportDeclaration').specifiers[0].local.name).toBe('defer');
 		});
 
-		it('keeps the existing AST shape for ordinary dynamic import options', () => {
+		it('gives an ordinary dynamic import the same `options` shape', () => {
 			const expression = findNode(
 				"const feature = import('./feature.json', { with: { type: 'json' } });",
 				'ImportExpression',
 			);
 
 			expect(expression.phase).toBeUndefined();
-			expect(expression.options).toBeUndefined();
-			expect(expression.arguments).toHaveLength(1);
+			expect(expression.options?.type).toBe('ObjectExpression');
+			expect(expression).not.toHaveProperty('arguments');
 		});
 
 		it('rejects deferred default, named, and bare imports', () => {
@@ -418,8 +458,138 @@ describe('TSRX parser', () => {
 				"import defer './feature.js';",
 			]) {
 				expect(() => parseModule(source, 'App.tsrx')).toThrow(
-					'`import defer` only supports a namespace import from a string literal.',
+					error_with(TS_ERRORS.IMPORT_DEFER_NAMESPACE),
 				);
+			}
+		});
+	});
+
+	// The parser accepts everything the installed acorn supports, not only ES2022.
+	describe('syntax newer than ES2022', () => {
+		/** @type {Array<[string, () => ParseOptions | undefined]>} */
+		const option_sets = [
+			['without options', () => undefined],
+			['with the formatter options', () => ({ collect: true, comments: [] })],
+			['in loose mode', () => ({ loose: true, errors: [], comments: [] })],
+		];
+
+		/**
+		 * Every node of `type` in the parsed source, in source order.
+		 *
+		 * @template {NodeTypeName} T
+		 * @param {string} source
+		 * @param {T} type
+		 * @param {ParseOptions} [options]
+		 * @returns {NodeOfType<T>[]}
+		 */
+		function find_all(source, type, options) {
+			/** @type {NodeOfType<T>[]} */
+			const found = [];
+			find_first(parseModule(source, 'App.tsrx', options), (node) => {
+				if (node.type === type) found.push(/** @type {NodeOfType<T>} */ (node));
+				return false;
+			});
+			return found;
+		}
+
+		describe.each(option_sets)('%s', (_, options) => {
+			it('parses using and await using declarations with type annotations', () => {
+				const declarations = find_all(
+					`{
+						using handle: Disposable = open();
+					}
+					async function load() {
+						await using connection: AsyncDisposable = await connect(), other = g();
+					}`,
+					'VariableDeclaration',
+					options(),
+				);
+
+				expect(declarations.map((declaration) => declaration.kind)).toEqual([
+					'using',
+					'await using',
+				]);
+				const handle = as_type(declarations[0].declarations[0].id, 'Identifier');
+				expect(handle.name).toBe('handle');
+				expect(handle.typeAnnotation?.typeAnnotation.type).toBe('TSTypeReference');
+				expect(declarations[1].declarations).toHaveLength(2);
+			});
+
+			it('parses using and await using declarations in for...of heads', () => {
+				const loops = find_all(
+					`async function load(items, stream) {
+						for (using item of items) {}
+						for await (await using item of stream) {}
+					}`,
+					'ForOfStatement',
+					options(),
+				);
+
+				expect(
+					loops.map((loop) => [as_type(loop.left, 'VariableDeclaration').kind, loop.await]),
+				).toEqual([
+					['using', false],
+					['await using', true],
+				]);
+			});
+
+			it('parses using declarations in a component body', () => {
+				const declarations = find_all(
+					`function App() @{
+						using handle = open();
+						<div>{handle.name}</div>
+					}`,
+					'VariableDeclaration',
+					options(),
+				);
+
+				expect(declarations.map((declaration) => declaration.kind)).toEqual(['using']);
+			});
+
+			it('parses a hashbang as the line comment at offset 0', () => {
+				const parse_options = options();
+				const ast = parseModule(
+					'#!/usr/bin/env node\nconsole.log(1);\n',
+					'App.tsrx',
+					parse_options,
+				);
+				const hashbang = { type: 'Line', value: '/usr/bin/env node', start: 0, end: 19 };
+
+				expect(ast.body.map((node) => node.type)).toEqual(['ExpressionStatement']);
+				expect(ast.body[0].leadingComments).toEqual([expect.objectContaining(hashbang)]);
+				if (parse_options?.comments) {
+					expect(parse_options.comments).toEqual([expect.objectContaining(hashbang)]);
+				}
+			});
+
+			it('parses the regex v flag and modifiers', () => {
+				const literals = find_all(
+					'const set = /[\\p{L}--[a-z]]/v;\nconst modified = /(?i:a)b/;',
+					'Literal',
+					options(),
+				);
+
+				expect(literals.map((literal) => 'regex' in literal && literal.regex)).toEqual([
+					{ pattern: '[\\p{L}--[a-z]]', flags: 'v' },
+					{ pattern: '(?i:a)b', flags: '' },
+				]);
+			});
+		});
+
+		it('rejects a hashbang that does not start the file', () => {
+			for (const source of ['\n#!/usr/bin/env node\n', 'foo();\n#!/usr/bin/env node\n']) {
+				expect(() => parseModule(source, 'App.tsrx')).toThrow();
+			}
+		});
+
+		it('rejects a using declaration in a for...in head, as TypeScript does', () => {
+			/** @type {Array<[source: string, error: ErrorKind]>} */
+			const cases = [
+				['for (using item in items) {}', TS_ERRORS.FOR_IN_USING],
+				['async function f() { for (await using item in items) {} }', TS_ERRORS.FOR_IN_AWAIT_USING],
+			];
+			for (const [source, error] of cases) {
+				expect(() => parseModule(source, 'App.tsrx')).toThrow(error_with(error));
 			}
 		});
 	});
@@ -490,51 +660,29 @@ describe('TSRX parser', () => {
 		const cases = [
 			['<{Tag} />', 'Identifier', 'Tag'],
 			['<{something.prop} />', 'MemberExpression', 'something.prop'],
+			['<{Content.value.inner} />', 'MemberExpression', 'Content.value.inner'],
+			['<{this.tag} />', 'MemberExpression', 'this.tag'],
 			['<{arr[0]} />', 'MemberExpression', 'arr[0]'],
+			['<{registry[name]} />', 'MemberExpression', 'registry[name]'],
+			["<{registry['a-b']} />", 'MemberExpression', "registry['a-b']"],
+			['<{registry[props.kind].tag} />', 'MemberExpression', 'registry[props.kind].tag'],
 			["<{'div'} />", 'Literal', "'div'"],
-			['<{`div`} />', 'TemplateLiteral', '`div`'],
+			['<{/* c */ Tag /* d */} />', 'Identifier', 'Tag'],
 		];
 
 		for (const [tag, expressionType, expressionSource] of cases) {
 			const source = `function MyApp() { return ${tag}; }`;
-			const returned = getReturned(source);
-			const expression = dynamicName(as_type(returned, 'JSXElement'));
-			expect(as_type(returned, 'JSXElement').isDynamic).toBe(true);
-			expect(expression.type).toBe(expressionType);
-			expect(source.slice(expression.start, expression.end)).toBe(expressionSource);
-		}
-	});
-
-	it('rejects static non-string dynamic element names', () => {
-		for (const tag of [
-			'<{null} />',
-			'<{undefined} />',
-			'<{true} />',
-			'<{1} />',
-			'<{{}} />',
-			'<{[]} />',
-		]) {
-			expect(() => parseModule(`function MyApp() { return ${tag}; }`, 'App.tsrx')).toThrow(
-				'Dynamic element names must be',
-			);
-		}
-	});
-
-	it('rejects dynamic element call expressions, spreads, and string interpolation', () => {
-		for (const tag of [
-			'<{tagName()} />',
-			'<{condition ? tagName() : Tag} />',
-			'<{new TagName()} />',
-			'<{({ ...tags }).tag} />',
-			'<{({ tag }).tag} />',
-			'<{[Tag][0]} />',
-			"<{'hello' + 'by'} />",
-			'<{`d${kind}`} />',
-			'<{tag`div`} />',
-		]) {
-			expect(() => parseModule(`function MyApp() { return ${tag}; }`, 'App.tsrx')).toThrow(
-				'Dynamic element names must be',
-			);
+			for (const options of [undefined, { collect: true, errors: [] }]) {
+				const ast = parseModule(source, 'App.tsrx', options);
+				const returned = /** @type {AST.ReturnStatement} */ (
+					/** @type {AST.FunctionDeclaration} */ (ast.body[0]).body.body[0]
+				).argument;
+				const expression = dynamicName(as_type(returned, 'JSXElement'));
+				expect(as_type(returned, 'JSXElement').isDynamic, tag).toBe(true);
+				expect(expression.type, tag).toBe(expressionType);
+				expect(source.slice(expression.start, expression.end), tag).toBe(expressionSource);
+				expect(options?.errors ?? [], tag).toEqual([]);
+			}
 		}
 	});
 
@@ -578,6 +726,57 @@ describe('TSRX parser', () => {
 		expect(statement.argument?.type).toBe('JSXFragment');
 	});
 
+	it('parses a return or throw of an element after a semicolon-less element with children', () => {
+		for (const [previous, next] of [
+			['const a = <span>x</span>', 'return <div />'],
+			['const a = <span>{x}</span>', 'return <div />'],
+			['a = <span>x</span>', 'return <div />'],
+			['const a = <span>x</span>', 'return <div>{a}</div>'],
+			['const a = <span>x</span>', 'throw <div />'],
+		]) {
+			for (const close of ['\n}', ' }']) {
+				const ast = parseModule(
+					`function MyComponent() {\n  ${previous}\n  ${next}${close}`,
+					'App.tsrx',
+				);
+				const [first, statement] = functionBody(ast);
+				expect(first.type).toBe(
+					previous.startsWith('const') ? 'VariableDeclaration' : 'ExpressionStatement',
+				);
+				const argument =
+					statement.type === 'ThrowStatement'
+						? statement.argument
+						: as_type(statement, 'ReturnStatement').argument;
+				expect(argument?.type).toBe('JSXElement');
+			}
+		}
+	});
+
+	it('reads an element after an expression keyword that follows a semicolon-less element', () => {
+		const ast = parseModule(
+			`function* items(kind) {
+  let a = <span>x</span>
+  yield <li />
+  switch (kind) {
+    case 1: a = <span>y</span>
+    case <li />: break
+  }
+  if (kind) a = <span>z</span>
+  else <li />
+}`,
+			'App.tsrx',
+		);
+
+		const [, yielded, switched, branch] = functionBody(ast);
+		const yield_expression = as_type(
+			as_type(yielded, 'ExpressionStatement').expression,
+			'YieldExpression',
+		);
+		expect(yield_expression.argument?.type).toBe('JSXElement');
+		expect(as_type(switched, 'SwitchStatement').cases[1].test?.type).toBe('JSXElement');
+		expect(as_type(branch, 'IfStatement').alternate?.type).toBe('JSXElement');
+	});
+
 	it('honors ASI for returned tags after a newline', () => {
 		const ast = parseModule(
 			`function MyApp() {
@@ -594,6 +793,596 @@ describe('TSRX parser', () => {
 		expect(as_type(as_type(body[1], 'JSXElement').openingElement.name, 'JSXIdentifier').name).toBe(
 			'div',
 		);
+	});
+
+	it('starts an element after comments on the line after a semicolon-less statement', () => {
+		for (const comment of [
+			'/* render */',
+			'/* a */ /* b */',
+			'/* a /* b */',
+			'// note\n  /* render */',
+		]) {
+			const block = findNode(
+				`export function App() @{\n  const x = a\n  ${comment} <div />\n}`,
+				'JSXCodeBlock',
+			);
+			expect(block.body.map((node) => node.type)).toEqual(['VariableDeclaration']);
+			expect(declaratorInit(block.body[0]).type).toBe('Identifier');
+			expect(codeBlockRender(block).type).toBe('JSXElement');
+
+			const body = functionBody(
+				parseModule(`function f() {\n  const x = a\n  ${comment} <div />\n}`, 'App.tsrx'),
+			);
+			expect(body.map((node) => node.type)).toEqual(['VariableDeclaration', 'JSXElement']);
+
+			const program = parseModule(`a\n${comment} <div />\n`, 'App.tsrx');
+			expect(program.body.map((node) => node.type)).toEqual(['ExpressionStatement', 'JSXElement']);
+		}
+
+		// A comment that spans lines separates the statements like a line break.
+		const block = findNode(
+			'export function App() @{\n  const x = a /* a\n  b */ <div />\n}',
+			'JSXCodeBlock',
+		);
+		expect(codeBlockRender(block).type).toBe('JSXElement');
+	});
+
+	it('keeps a `<` after a comment on the same line as the previous value a comparison', () => {
+		for (const source of ['x = a /* note */ < b', 'x = a\n/* note */ < b']) {
+			const statement = firstStatement(parseModule(source, 'App.tsrx'), 'ExpressionStatement');
+			const assignment = as_type(statement.expression, 'AssignmentExpression');
+			expect(as_type(assignment.right, 'BinaryExpression').operator).toBe('<');
+		}
+		expect(() =>
+			parseModule('export function App() @{\n  const x = a /* note */ <div />\n}', 'App.tsrx'),
+		).toThrow();
+	});
+
+	it('reads an element with attributes after a semicolon-less element with children', () => {
+		for (const previous of [
+			'const render = (item) => <><Item /></>',
+			'const render = <b>x</b>',
+			'const render = <b>{x}</b>',
+		]) {
+			const body = functionBody(
+				parseModule(
+					`function Test(props) {\n  ${previous}\n  <List renderItem={render} key="a" />\n}`,
+					'App.tsrx',
+				),
+			);
+			const program = parseModule(
+				`${previous}\n<List renderItem={render} key="a" />\n`,
+				'App.tsrx',
+			);
+			for (const statements of [body, program.body]) {
+				expect(statements.map((node) => node.type)).toEqual(['VariableDeclaration', 'JSXElement']);
+				const list = as_type(statements[1], 'JSXElement');
+				expect(
+					list.openingElement.attributes.map(
+						(attribute) => as_type(as_type(attribute, 'JSXAttribute').name, 'JSXIdentifier').name,
+					),
+				).toEqual(['renderItem', 'key']);
+			}
+		}
+	});
+
+	it('ends the statement at an element before a template literal on the next line', () => {
+		for (const [element, type] of [
+			['<b>x</b>', 'JSXElement'],
+			['<>x</>', 'JSXFragment'],
+			['<b />', 'JSXElement'],
+		]) {
+			const source = `const a = ${element}\n\`t\${a}\``;
+			for (const ast of [
+				parseModule(`function f() {\n  ${source}\n}`, 'App.tsrx'),
+				parseModule(`${source}\n`, 'App.tsrx'),
+			]) {
+				const [declaration, statement] =
+					ast.body[0].type === 'FunctionDeclaration' ? functionBody(ast) : ast.body;
+				// An element isn't a left-hand-side expression, as in TypeScript, so
+				// the template literal isn't a tagged template on it and starts the
+				// next statement (#426). Babel reads a tagged template here.
+				expect(declaratorInit(declaration).type).toBe(type);
+				const template = as_type(
+					as_type(statement, 'ExpressionStatement').expression,
+					'TemplateLiteral',
+				);
+				expect(template.quasis.map((quasi) => quasi.value.raw)).toEqual(['t', '']);
+				expect(template.expressions.map((node) => node.type)).toEqual(['Identifier']);
+			}
+		}
+	});
+
+	it('divides after an element outside a template', () => {
+		for (const [element, type] of [
+			['<span />', 'JSXElement'],
+			['<span>x</span>', 'JSXElement'],
+			['<>x</>', 'JSXFragment'],
+			['<{tag}>\n  <b>x</b>\n</{tag}>', 'JSXElement'],
+		]) {
+			const declaration = firstStatement(
+				parseModule(`const half = ${element} / 2\n`, 'App.tsrx'),
+				'VariableDeclaration',
+			);
+			const [returned] = functionBody(
+				parseModule(`function f() {\n  return ${element} / 2\n}`, 'App.tsrx'),
+			);
+			for (const expression of [
+				declaratorInit(declaration),
+				found(as_type(returned, 'ReturnStatement').argument),
+			]) {
+				const division = as_type(expression, 'BinaryExpression');
+				expect(division.operator).toBe('/');
+				expect(division.left.type).toBe(type);
+				expect(as_type(division.right, 'Literal').value).toBe(2);
+			}
+		}
+
+		// A regular expression on the next line divides too, as in TypeScript.
+		const declaration = firstStatement(
+			parseModule('const b = <b>x</b>\n/re/g\n', 'App.tsrx'),
+			'VariableDeclaration',
+		);
+		const outer = as_type(declaratorInit(declaration), 'BinaryExpression');
+		const inner = as_type(outer.left, 'BinaryExpression');
+		expect([inner.left.type, inner.operator, outer.operator]).toEqual(['JSXElement', '/', '/']);
+		expect(as_type(outer.right, 'Identifier').name).toBe('g');
+
+		// Inside a template, a `/` after an element is still text.
+		const container = firstStatement(
+			parseModule('<div><span /> / 2<b>x</b>/3</div>\n', 'App.tsrx'),
+			'JSXElement',
+		);
+		expect(
+			container.children.map((node) =>
+				node.type === 'JSXText' ? node.value : openingName(as_type(node, 'JSXElement')).name,
+			),
+		).toEqual(['span', ' / 2', 'b', '/3']);
+
+		// The `}` after a code block's rendered dynamic element closes the block.
+		const block = findNode(
+			'export function Panel() @{\n  <{tag} class="panel">\n    <h2>{title}</h2>\n  </{tag}>\n}',
+			'JSXCodeBlock',
+		);
+		expect(dynamicName(as_type(codeBlockRender(block), 'JSXElement')).type).toBe('Identifier');
+	});
+
+	it('reads an element after await as the awaited value', () => {
+		const [declaration, statement] = functionBody(
+			parseModule(
+				'async function load() {\n  const view = await <div>a</div>\n  await <div />\n}',
+				'App.tsrx',
+			),
+		);
+		const top_level = firstStatement(
+			parseModule('await <></>\n', 'App.tsrx'),
+			'ExpressionStatement',
+		);
+		for (const [expression, type] of [
+			[declaratorInit(declaration), 'JSXElement'],
+			[as_type(statement, 'ExpressionStatement').expression, 'JSXElement'],
+			[top_level.expression, 'JSXFragment'],
+		]) {
+			expect(as_type(expression, 'AwaitExpression').argument.type).toBe(type);
+		}
+
+		// Where `await` is a name, `<` after it still compares.
+		const [returned] = functionBody(
+			parseModule('async function f() {\n  return x.await < y\n}', 'App.tsrx'),
+		);
+		const comparison = as_type(
+			found(as_type(returned, 'ReturnStatement').argument),
+			'BinaryExpression',
+		);
+		expect(comparison.operator).toBe('<');
+	});
+
+	it('divides after the first token of a code block setup statement', () => {
+		for (const statement of ['total / count > 1 && log();', 'a / b;', '(a) / b;']) {
+			for (const setup of [[statement], ['const q = 1;', statement]]) {
+				const block = findNode(
+					`export function App() @{\n  ${setup.join('\n  ')}\n  <span />\n}`,
+					'JSXCodeBlock',
+				);
+				const directive = findNode(
+					`export function App() @{\n  <>\n    @if (x) {\n      ${setup.join('\n      ')}\n      <span />\n    }\n  </>\n}`,
+					'JSXIfExpression',
+				);
+				const directive_body = blockBody(directive.consequent);
+				expect(directive_body.at(-1)?.type).toBe('JSXElement');
+				for (const body of [block.body, directive_body.slice(0, -1)]) {
+					const division = find_first(
+						as_type(body.at(-1), 'ExpressionStatement').expression,
+						(node) => node.type === 'BinaryExpression' && node.operator === '/',
+					);
+					expect(as_type(division, 'BinaryExpression').left.type).toBe('Identifier');
+				}
+				expect(codeBlockRender(block).type).toBe('JSXElement');
+			}
+		}
+
+		// A statement that starts with a regular expression still reads it.
+		const block = findNode(
+			'export function App() @{\n  /a/.test(s);\n  <span />\n}',
+			'JSXCodeBlock',
+		);
+		const call = as_type(
+			as_type(block.body[0], 'ExpressionStatement').expression,
+			'CallExpression',
+		);
+		expect(regexLiteral(as_type(call.callee, 'MemberExpression').object).pattern).toBe('a');
+
+		// A `/` after a name on the next line divides, as in a function body, so
+		// `a / b / .test(s)` is a syntax error.
+		expect(() =>
+			parseModule('export function App() @{\n  a\n  /b/.test(s)\n  <span />\n}', 'App.tsrx'),
+		).toThrow();
+
+		// A code block used as a value divides after its `}`, with or without
+		// setup statements before its render node.
+		for (const setup of ['', 'const q = 1; ']) {
+			const declaration = firstStatement(
+				parseModule(`const a = @{ ${setup}<b /> } / 2\n`, 'App.tsrx'),
+				'VariableDeclaration',
+			);
+			const division = as_type(declaratorInit(declaration), 'BinaryExpression');
+			expect([division.left.type, division.operator]).toEqual(['JSXCodeBlock', '/']);
+		}
+	});
+
+	it('starts an element after a semicolon-less statement that ends with a type', () => {
+		for (const [statement, type] of [
+			['const x = y as Foo', 'VariableDeclaration'],
+			['const x = y satisfies Foo', 'VariableDeclaration'],
+			['const x = y as Map<A, B>', 'VariableDeclaration'],
+			['const x = y as () => void', 'VariableDeclaration'],
+			['let x: Foo', 'VariableDeclaration'],
+			['let x: Foo[]', 'VariableDeclaration'],
+			['type T = Foo', 'TSTypeAliasDeclaration'],
+		]) {
+			const block = findNode(
+				`export function App() @{\n  ${statement}\n  <Bar a={1} />\n}`,
+				'JSXCodeBlock',
+			);
+			expect(block.body.map((node) => node.type)).toEqual([type]);
+			expect(codeBlockRender(block).type).toBe('JSXElement');
+
+			const body = functionBody(
+				parseModule(`function f() {\n  ${statement}\n  <Bar a={1} />\n}`, 'App.tsrx'),
+			);
+			const program = parseModule(`${statement}\n/* note */ <Bar a={1} />\n`, 'App.tsrx');
+			for (const statements of [body, program.body]) {
+				expect(statements.map((node) => node.type)).toEqual([type, 'JSXElement']);
+			}
+		}
+	});
+
+	it('keeps a `<` that starts a line inside a type, or that a type can end at, a type operator', () => {
+		const alias = firstStatement(
+			parseModule('type F =\n  <T>(x: T) => T\n', 'App.tsrx'),
+			'TSTypeAliasDeclaration',
+		);
+		expect(as_type(alias.typeAnnotation, 'TSFunctionType').typeParameters?.params).toHaveLength(1);
+
+		const signatures = [
+			firstStatement(
+				parseModule('interface I {\n  a: Foo\n  <T>(x: T): void\n}\n', 'App.tsrx'),
+				'TSInterfaceDeclaration',
+			).body.body,
+			as_type(
+				firstStatement(
+					parseModule('type L = {\n  a: Foo\n  <T>(x: T): void\n}\n', 'App.tsrx'),
+					'TSTypeAliasDeclaration',
+				).typeAnnotation,
+				'TSTypeLiteral',
+			).members,
+		];
+		for (const members of signatures) {
+			expect(members.map((node) => node.type)).toEqual([
+				'TSPropertySignature',
+				'TSCallSignatureDeclaration',
+			]);
+		}
+
+		const comparison = firstStatement(
+			parseModule('const b = x as number\n< y\n', 'App.tsrx'),
+			'VariableDeclaration',
+		);
+		expect(as_type(declaratorInit(comparison), 'BinaryExpression').operator).toBe('<');
+
+		const program = parseModule('let x: Foo\n<T,>(a: T) => a\n', 'App.tsrx');
+		const arrow = as_type(
+			as_type(program.body[1], 'ExpressionStatement').expression,
+			'ArrowFunctionExpression',
+		);
+		expect(arrow.typeParameters?.params).toHaveLength(1);
+	});
+
+	it('continues an expression after an element that starts a statement', () => {
+		/** @type {Array<[string, NodeTypeName, string | null]>} */
+		const cases = [
+			['<div /> > 5;', 'BinaryExpression', '>'],
+			['<div></div> >= 5;', 'BinaryExpression', '>='],
+			['<div /> + 1;', 'BinaryExpression', '+'],
+			['<div /> - 1;', 'BinaryExpression', '-'],
+			['<div /> / 2;', 'BinaryExpression', '/'],
+			['<div /> ** 2;', 'BinaryExpression', '**'],
+			['<div /> === b;', 'BinaryExpression', '==='],
+			['<div /> && b;', 'LogicalExpression', '&&'],
+			['<></> ?? b;', 'LogicalExpression', '??'],
+			['<div /> ? a : "b";', 'ConditionalExpression', null],
+			['<div />, b;', 'SequenceExpression', null],
+			['<div /> as any;', 'TSAsExpression', null],
+		];
+		for (const [source, type, operator] of cases) {
+			for (const options of [undefined, { collect: true, comments: [] }]) {
+				const program = parseModule(source, 'App.tsrx', options);
+				const wrapped = `function f() {\n  ${source}\n}`;
+				const body = functionBody(parseModule(wrapped, 'App.tsrx', options));
+				for (const [statements, start] of /** @type {const} */ ([
+					[program.body, 0],
+					[body, wrapped.indexOf(source)],
+				])) {
+					expect(statements).toHaveLength(1);
+					const statement = as_type(statements[0], 'ExpressionStatement');
+					expect([statement.start, statement.end]).toEqual([start, start + source.length]);
+					const expression = as_type(statement.expression, type);
+					if (operator !== null) {
+						expect(/** @type {AST.BinaryExpression} */ (expression).operator).toBe(operator);
+					}
+					// The element is the leftmost operand.
+					const element = find_first(
+						expression,
+						(node) => node.type === 'JSXElement' || node.type === 'JSXFragment',
+					);
+					expect(element?.start).toBe(statement.start);
+				}
+			}
+		}
+
+		// The element is an operand like any other: operators bind by precedence.
+		const [statement] = parseModule('<div /> > 5 && <b>x</b>;', 'App.tsrx').body;
+		const logical = as_type(
+			as_type(statement, 'ExpressionStatement').expression,
+			'LogicalExpression',
+		);
+		expect(as_type(logical.left, 'BinaryExpression').left.type).toBe('JSXElement');
+		expect(logical.right.type).toBe('JSXElement');
+
+		// Without a semicolon, an element on the next line starts the next statement.
+		expect(
+			parseModule('<div /> > 5\n<span />\n', 'App.tsrx').body.map((node) => node.type),
+		).toEqual(['ExpressionStatement', 'JSXElement']);
+	});
+
+	it('continues an expression after an element across a line break, as TSX does', () => {
+		/** @type {Array<[string, NodeTypeName, string | null]>} */
+		const cases = [
+			['<div />\n> 5;', 'BinaryExpression', '>'],
+			['<div></div>\n>= 5;', 'BinaryExpression', '>='],
+			['<div />\n+ 1;', 'BinaryExpression', '+'],
+			['<div />\n- -1;', 'BinaryExpression', '-'],
+			['<div />\n/ 2;', 'BinaryExpression', '/'],
+			['<div />\n** 2;', 'BinaryExpression', '**'],
+			['<div />\n=== b;', 'BinaryExpression', '==='],
+			['<div />\n<= 5;', 'BinaryExpression', '<='],
+			['<div />\n<< 2;', 'BinaryExpression', '<<'],
+			['<div />\ninstanceof X;', 'BinaryExpression', 'instanceof'],
+			['<div />\n&& b;', 'LogicalExpression', '&&'],
+			['<></>\n?? b;', 'LogicalExpression', '??'],
+			['<div />\n? a : "b";', 'ConditionalExpression', null],
+			['<div />\n, b;', 'SequenceExpression', null],
+			['<div /> // note\n> 5;', 'BinaryExpression', '>'],
+		];
+		for (const [source, type, operator] of cases) {
+			for (const options of [undefined, { collect: true, comments: [] }]) {
+				const program = parseModule(source, 'App.tsrx', options);
+				const wrapped = `function f() {\n  ${source}\n}`;
+				const body = functionBody(parseModule(wrapped, 'App.tsrx', options));
+				for (const [statements, start] of /** @type {const} */ ([
+					[program.body, 0],
+					[body, wrapped.indexOf(source)],
+				])) {
+					expect(statements).toHaveLength(1);
+					const statement = as_type(statements[0], 'ExpressionStatement');
+					expect([statement.start, statement.end]).toEqual([start, start + source.length]);
+					const expression = as_type(statement.expression, type);
+					if (operator !== null) {
+						expect(/** @type {AST.BinaryExpression} */ (expression).operator).toBe(operator);
+					}
+					const element = find_first(
+						expression,
+						(node) => node.type === 'JSXElement' || node.type === 'JSXFragment',
+					);
+					expect(element?.start).toBe(statement.start);
+				}
+			}
+		}
+
+		// The statement before the element still ends where it did.
+		const [declaration, statement] = parseModule('const a = 1;\n<div />\n=== x;', 'App.tsrx').body;
+		expect(declaration.type).toBe('VariableDeclaration');
+		expect(as_type(statement, 'ExpressionStatement').expression.type).toBe('BinaryExpression');
+	});
+
+	it('ends an element statement before `as` on the next line, a tag start, or a code block render node', () => {
+		/** @param {string} source */
+		const statementTypes = (source) =>
+			parseModule(source, 'App.tsrx').body.map((node) =>
+				node.type === 'ExpressionStatement' ? node.expression.type : node.type,
+			);
+		// TypeScript reads `as` and `satisfies` as operators only on the element's line.
+		expect(() => parseModule('<div />\nas any;', 'App.tsrx')).toThrow(
+			error_with(TS_ERRORS.UNEXPECTED_TOKEN),
+		);
+		expect(() => parseModule('<div />\nsatisfies any;', 'App.tsrx')).toThrow(
+			error_with(TS_ERRORS.UNEXPECTED_TOKEN),
+		);
+		// A tag start is the next element, not a comparison, and so is any `<`
+		// that starts the next line.
+		expect(statementTypes('<div /> <span />\n')).toEqual(['JSXElement', 'JSXElement']);
+		expect(statementTypes('<div />\n<span />\n')).toEqual(['JSXElement', 'JSXElement']);
+		expect(statementTypes('<div />\n<T,>(x: T) => x;\n')).toEqual([
+			'JSXElement',
+			'ArrowFunctionExpression',
+		]);
+		// Parentheses and `!` start the next statement, as in TypeScript.
+		expect(statementTypes('<div />\n(a);\n')).toEqual(['JSXElement', 'Identifier']);
+		expect(statementTypes('<div />\n!a;\n')).toEqual(['JSXElement', 'UnaryExpression']);
+
+		// A code block's render node is an element, never an operand, on its line
+		// or the next one.
+		for (const source of [
+			'export function App() @{ <div /> > 5 }',
+			'export function App() @{\n  <div />\n  > 5\n}',
+			'export function App() @{\n  @if (x) {\n    <div />\n    > 5\n  }\n}',
+			'export function App() @{\n  @switch (x) {\n    @case 1: {\n      <div />\n      > 5\n    }\n  }\n}',
+		]) {
+			expect(() => parseModule(source, 'App.tsrx'), source).toThrow(
+				error_with(TS_ERRORS.UNEXPECTED_TOKEN),
+			);
+		}
+		for (const source of [
+			'export function App() @{\n  const a = 1\n  <div /> + 1\n}',
+			'export function App() @{\n  const a = 1\n  <div />\n  + 1\n}',
+		]) {
+			expect(() => parseModule(source, 'App.tsrx')).toThrow(
+				error_with(TSRX_ERRORS.CODE_BLOCK_STATEMENT_AFTER_OUTPUT),
+			);
+			/** @type {CompileError[]} */
+			const errors = [];
+			const program = parseModule(source, 'App.tsrx', { loose: true, errors });
+			const loose_block = codeBlock(
+				as_type(
+					as_type(
+						firstStatement(program, 'ExportNamedDeclaration').declaration,
+						'FunctionDeclaration',
+					).body,
+					'JSXCodeBlock',
+				),
+			);
+			expect(loose_block.body.map((node) => node.type)).toEqual([
+				'VariableDeclaration',
+				'JSXElement',
+				'ExpressionStatement',
+			]);
+			expect(errors.map((error) => error.code)).toEqual([
+				TSRX_ERRORS.CODE_BLOCK_STATEMENT_AFTER_OUTPUT.code,
+			]);
+		}
+
+		// A plain block in a setup statement holds statements, as a function body does.
+		const setup = codeBlock(
+			as_type(
+				as_type(
+					firstStatement(
+						parseModule(
+							'export function App() @{\n  if (x) {\n    <div />\n    > 5\n  }\n  <span />\n}',
+							'App.tsrx',
+						),
+						'ExportNamedDeclaration',
+					).declaration,
+					'FunctionDeclaration',
+				).body,
+				'JSXCodeBlock',
+			),
+		);
+		const [inner] = blockBody(as_type(setup.body[0], 'IfStatement').consequent);
+		expect(as_type(inner, 'ExpressionStatement').expression.type).toBe('BinaryExpression');
+
+		// Inside a template, what follows an element is text.
+		for (const source of ['<div><span /> > 5</div>', '<div>\n  <span />\n  > 5\n</div>']) {
+			const container = firstStatement(parseModule(source, 'App.tsrx'), 'JSXElement');
+			expect(contentChildren(container).map((node) => node.type)).toEqual([
+				'JSXElement',
+				'JSXText',
+			]);
+		}
+	});
+
+	it('starts an element or fragment at its `<` when whitespace or a comment follows it', () => {
+		const elements = [
+			'< div>x</div>',
+			'<  >x</>',
+			'<\n  // note\n>\n  x\n</>',
+			'</* note */div id="a" />',
+			'<\n  /* note */\n  div\n>\n  x\n</div>',
+		];
+		/** @type {Array<(element: string) => string>} */
+		const positions = [
+			(element) => `const a = ${element};`,
+			(element) => `${element};`,
+			(element) => `function f() {\n  return ${element};\n}`,
+			(element) => `function f() {\n  ${element}\n  > 5;\n}`,
+			(element) => `export function App() @{\n  ${element}\n}`,
+			(element) => `export function App() @{\n  @if (x) {\n    ${element}\n  }\n}`,
+		];
+		for (const element of elements) {
+			for (const position of positions) {
+				const source = position(element);
+				const start = source.indexOf(element);
+				for (const options of [undefined, { collect: true, comments: [] }]) {
+					const node = find_first(
+						parseModule(source, 'App.tsrx', options),
+						(node) => node.type === 'JSXElement' || node.type === 'JSXFragment',
+					);
+					if (node?.type !== 'JSXElement' && node?.type !== 'JSXFragment') {
+						throw new Error(`No element in ${JSON.stringify(source)}`);
+					}
+					const opening = node.type === 'JSXElement' ? node.openingElement : node.openingFragment;
+					for (const located of [node, opening]) {
+						expect(located.start, source).toBe(start);
+						expect(located.loc?.start, source).toEqual(acorn.getLineInfo(source, start));
+					}
+				}
+			}
+		}
+	});
+
+	it('reads type parameters on the line after a declaration name', () => {
+		/**
+		 * @param {AST.Node} node
+		 * @returns {unknown}
+		 */
+		const typeParameters = (node) =>
+			/** @type {{ typeParameters?: { params: unknown[] } }} */ (node).typeParameters?.params;
+		/** @type {Array<[string, (program: AST.Program) => AST.Node]>} */
+		const cases = [
+			['class G\n<T> {}', (program) => program.body[0]],
+			['class G // comment\n<T> implements I<T> {}', (program) => program.body[0]],
+			['const C = class\n<T> {};', (program) => declaratorInit(program.body[0])],
+			['interface I\n<T> {}', (program) => program.body[0]],
+			['type A\n<T> = T;', (program) => program.body[0]],
+			['function f\n<T>() {}', (program) => program.body[0]],
+			['const f = function\n<T>() {};', (program) => declaratorInit(program.body[0])],
+			[
+				'class A {\n  m\n  <T>() {}\n}',
+				(program) => firstStatement(program, 'ClassDeclaration').body.body[0],
+			],
+			[
+				'const o = {\n  m\n  <T>() {}\n};',
+				(program) =>
+					as_type(
+						as_type(declaratorInit(program.body[0]), 'ObjectExpression').properties[0],
+						'Property',
+					).value,
+			],
+		];
+		for (const [source, declaration] of cases) {
+			for (const options of [undefined, { collect: true, comments: [] }]) {
+				const program = parseModule(source, 'App.tsrx', options);
+				expect(program.body).toHaveLength(1);
+				expect(typeParameters(declaration(program))).toHaveLength(1);
+			}
+		}
+
+		// After a declaration's body, an element on the next line starts a new statement.
+		for (const source of ['class G {}\n<div />\n', 'function f() {}\n<div />\n']) {
+			expect(parseModule(source, 'App.tsrx').body.map((node) => node.type)).toEqual([
+				source.startsWith('class') ? 'ClassDeclaration' : 'FunctionDeclaration',
+				'JSXElement',
+			]);
+		}
 	});
 
 	it('parses mixed scalar and JSX return branches', () => {
@@ -918,10 +1707,19 @@ abc
 		expect(child(fragment, 2, 'JSXText').value).toBe('   ');
 	});
 
-	it('drops layout whitespace before a code block in a fragment', () => {
+	it('keeps layout whitespace before a code block in a fragment as text', () => {
 		const fragment = findNode('let a = <>\n   @{<b>123</b>}\n</>;', 'JSXFragment');
 
-		expect(fragment.children.map((child) => child.type)).toEqual(['JSXCodeBlock']);
+		// As in TSX, the line breaks and indentation are text that renders nothing
+		expect(fragment.children.map((child) => child.type)).toEqual([
+			'JSXText',
+			'JSXCodeBlock',
+			'JSXText',
+		]);
+		expect(child(fragment, 0, 'JSXText').value).toBe('\n   ');
+		expect(child(fragment, 2, 'JSXText').value).toBe('\n');
+		expect(isLayoutWhitespace(child(fragment, 0, 'JSXText'))).toBe(true);
+		expect(isLayoutWhitespace(child(fragment, 2, 'JSXText'))).toBe(true);
 	});
 
 	it('parses an @if directive inside an element nested in an expression container', () => {
@@ -1180,9 +1978,10 @@ abc
 		}
 	});
 
-	it('still drops layout indentation before a directive', () => {
-		// Whitespace containing a newline is layout, not content — the JSX
-		// significant-whitespace rule removes it in every position.
+	it('keeps layout indentation around a directive as text', () => {
+		// Whitespace containing a newline is layout, not content: the parser keeps
+		// it as text, as TSX parsers do, and the JSX significant-whitespace rule
+		// renders nothing for it in every position.
 		const element = findElement(
 			`function App({ ok, c }) @{
 				const v = @switch (c) { @case 1: { <h1><a />
@@ -1193,7 +1992,16 @@ abc
 			'h1',
 		);
 
-		expect(element.children.map((child) => child.type)).toEqual(['JSXElement', 'JSXIfExpression']);
+		expect(element.children.map((child) => child.type)).toEqual([
+			'JSXElement',
+			'JSXText',
+			'JSXIfExpression',
+			'JSXText',
+		]);
+		expect(child(element, 1, 'JSXText').value).toBe('\n\t\t\t\t\t');
+		expect(child(element, 3, 'JSXText').value).toBe('\n\t\t\t\t');
+		expect(isLayoutWhitespace(child(element, 1, 'JSXText'))).toBe(true);
+		expect(isLayoutWhitespace(child(element, 3, 'JSXText'))).toBe(true);
 	});
 
 	it('keeps text around `=` inside a container-nested element', () => {
@@ -1265,7 +2073,7 @@ abc
 		assert_type(returned, 'ConditionalExpression');
 		expect(returned.consequent.type).toBe('JSXElement');
 		expect(returned.alternate.type).toBe('JSXFragment');
-		expect(node_children(returned.alternate).map((child) => child.type)).toEqual(['JSXElement']);
+		expect(contentChildren(returned.alternate).map((child) => child.type)).toEqual(['JSXElement']);
 	});
 
 	it('parses a return ternary from a self-closing element to an array', () => {
@@ -1337,8 +2145,8 @@ abc
 			}`,
 		);
 
-		expect(node_children(returned).map((child) => child.type)).toEqual(['JSXElement', 'JSXText']);
-		expect(child(returned, 1, 'JSXText').value).toContain('tail');
+		expect(contentChildren(returned).map((child) => child.type)).toEqual(['JSXElement', 'JSXText']);
+		expect(contentChild(returned, 1, 'JSXText').value).toContain('tail');
 	});
 
 	it('parses a ternary with JSX element branches inside an expression container', () => {
@@ -1431,10 +2239,21 @@ abc
 		);
 
 		const value = as_type(declaratorInit(exportedDeclaration(ast)), 'ArrowFunctionExpression').body;
-		expect(node_children(value).map((child) => child.type)).toEqual(['JSXElement']);
-		expect(as_type(child(value, 0, 'JSXElement').openingElement.name, 'JSXIdentifier').name).toBe(
-			'div',
+		// The comment is in an empty `{}` of its own, not in the text
+		expect(contentChildren(value).map((child) => child.type)).toEqual([
+			'JSXExpressionContainer',
+			'JSXElement',
+		]);
+		const comment = as_type(
+			contentChild(value, 0, 'JSXExpressionContainer').expression,
+			'JSXEmptyExpression',
 		);
+		expect(comment.innerComments?.map((c) => c.value)).toEqual([
+			' This is a JS comment, not text.',
+		]);
+		expect(
+			as_type(contentChild(value, 1, 'JSXElement').openingElement.name, 'JSXIdentifier').name,
+		).toBe('div');
 	});
 
 	it('treats JS-looking fragment content as JSXText', () => {
@@ -1506,12 +2325,12 @@ abc
 		]);
 	});
 
-	it('strips a block comment between words of template text', () => {
+	it('splits template text at a block comment between words', () => {
 		const { texts, comments } = parseTemplateTextsAndComments(`function App() @{
 	<div>hello /* note */ world</div>
 }`);
 
-		expect(texts).toEqual(['hello  world']);
+		expect(texts).toEqual(['hello ', ' world']);
 		expect(comments.map((comment) => comment.value)).toEqual([' note ']);
 	});
 
@@ -1547,13 +2366,27 @@ abc
 		expect(comments).toEqual([]);
 	});
 
-	it('keeps // after text on the same line as literal text', () => {
+	// A `//` that touches text is text; after whitespace, it's a comment that
+	// runs to the end of the line.
+	it('keeps // that touches text as literal text', () => {
 		const { texts, comments } = parseTemplateTextsAndComments(`function App() @{
-	<div>hi // note</div>
+	<div>see https://x.dev and a//b</div>
 }`);
 
-		expect(texts).toEqual(['hi // note']);
+		expect(texts).toEqual(['see https://x.dev and a//b']);
 		expect(comments).toEqual([]);
+	});
+
+	it('reads // after whitespace in text as a comment', () => {
+		const { texts, comments } = parseTemplateTextsAndComments(`function App() @{
+	<div>hi // note
+	</div>
+}`);
+
+		// The line break after it is text that renders nothing, as after
+		// `{/* … */}` in TSX
+		expect(texts).toEqual(['hi ', '\n\t']);
+		expect(comments.map((comment) => comment.type + ':' + comment.value)).toEqual(['Line: note']);
 	});
 
 	it('parses a trailing line comment after a `@{ }` code block on the same line', () => {
@@ -1563,7 +2396,9 @@ abc
 	</>
 }`);
 
-		expect(texts).toEqual(['hello ']);
+		// The spaces before the comment render, as before `{/* … */}` in TSX, and
+		// the layout line breaks around the code block are text too.
+		expect(texts).toEqual(['\n\t\t', 'hello ', '  ', '\n\t']);
 		expect(comments.map((comment) => comment.type + ':' + comment.value)).toEqual([
 			'Line: <-- depth 4',
 		]);
@@ -1575,7 +2410,9 @@ abc
 	tail</div>
 }`);
 
-		expect(texts).toEqual(['z', 'tail']);
+		// The text starts at the closing tag, as after a self-closing tag, and
+		// the comment splits it
+		expect(texts).toEqual(['z', ' ', '\n\ttail']);
 		expect(comments.map((comment) => comment.type + ':' + comment.value)).toEqual(['Line: note']);
 	});
 
@@ -1585,7 +2422,7 @@ abc
 	tail</div>
 }`);
 
-		expect(texts).toEqual([' \n\ttail']);
+		expect(texts).toEqual([' ', '\n\ttail']);
 		expect(comments.map((comment) => comment.type + ':' + comment.value)).toEqual(['Line: note']);
 	});
 
@@ -1636,28 +2473,22 @@ abc
 		);
 
 		assert_type(ast, 'Program');
-		expect(
-			errors
-				.map(function (error) {
-					return error.message;
-				})
-				.join('\n'),
-		).not.toContain('Expected identifier');
+		expect(errors).toEqual([]);
 
 		const fragment = find_first(ast, function (node) {
 			return node.type === 'JSXFragment';
 		});
 		assert_type(fragment, 'JSXFragment');
 		expect(
-			fragment.children.map(function (child) {
+			contentChildren(fragment).map(function (child) {
 				return child.type;
 			}),
 		).toEqual(['JSXStyleElement', 'JSXElement']);
-		const style = child(fragment, 0, 'JSXStyleElement');
+		const style = contentChild(fragment, 0, 'JSXStyleElement');
 		expect(style.css?.trim()).toBe('');
 		expect(style.unclosed).toBe(true);
 		expect(style.closingElement).toBeNull();
-		expect(openingName(child(fragment, 1, 'JSXElement')).name).toBe('div');
+		expect(openingName(contentChild(fragment, 1, 'JSXElement')).name).toBe('div');
 	});
 
 	it('captures partial CSS after an unclosed style up to the next sibling', function () {
@@ -1681,12 +2512,12 @@ abc
 		});
 		assert_type(fragment, 'JSXFragment');
 		expect(
-			fragment.children.map(function (child) {
+			contentChildren(fragment).map(function (child) {
 				return child.type;
 			}),
 		).toEqual(['JSXStyleElement', 'JSXElement']);
 
-		const style = child(fragment, 0, 'JSXStyleElement');
+		const style = contentChild(fragment, 0, 'JSXStyleElement');
 		expect(style.unclosed).toBe(true);
 		expect(style.css).toBe('\n\t\t\t.foo { color: red; }\n\t\t\t.bar {\n\t\t');
 		expect(style.end).toBe(source.indexOf('<div />'));
@@ -1698,7 +2529,7 @@ abc
 		expect(sheet.type).toBe('StyleSheet');
 		expect(sheet.children.map((rule) => rule.type)).toEqual(['Rule']);
 
-		const div = child(fragment, 1, 'JSXElement');
+		const div = contentChild(fragment, 1, 'JSXElement');
 		expect(openingName(div).name).toBe('div');
 		expect(div.loc?.start.line).toBe(6);
 		expect(div.loc?.start.column).toBe(2);
@@ -1725,12 +2556,14 @@ export function App() @{
 		});
 		assert_type(fragment, 'JSXFragment');
 		expect(
-			fragment.children.map(function (child) {
+			contentChildren(fragment).map(function (child) {
 				return child.type;
 			}),
 		).toEqual(['JSXStyleElement', 'JSXElement']);
-		expect(child(fragment, 0, 'JSXStyleElement').css).toBe('\n\t\t\t.foo { color: red; }\n\t\t');
-		expect(child(fragment, 1, 'JSXElement').isDynamic).toBe(true);
+		expect(contentChild(fragment, 0, 'JSXStyleElement').css).toBe(
+			'\n\t\t\t.foo { color: red; }\n\t\t',
+		);
+		expect(contentChild(fragment, 1, 'JSXElement').isDynamic).toBe(true);
 	});
 
 	it('keeps a `<` inside CSS text in the unclosed style body', function () {
@@ -1754,15 +2587,15 @@ export function App() @{
 		});
 		assert_type(fragment, 'JSXFragment');
 		expect(
-			fragment.children.map(function (child) {
+			contentChildren(fragment).map(function (child) {
 				return child.type;
 			}),
 		).toEqual(['JSXStyleElement', 'JSXElement']);
-		const style = child(fragment, 0, 'JSXStyleElement');
+		const style = contentChild(fragment, 0, 'JSXStyleElement');
 		expect(style.css).toContain('content: "<";');
 		expect(style.css).toContain('/* < is not a tag */');
 		expect(style.end).toBe(source.indexOf('<div />'));
-		expect(openingName(child(fragment, 1, 'JSXElement')).name).toBe('div');
+		expect(openingName(contentChild(fragment, 1, 'JSXElement')).name).toBe('div');
 	});
 
 	it('captures the rest of the file after an unclosed module-scope style', function () {
@@ -1806,17 +2639,17 @@ export function App() @{ <div /> }`;
 		});
 		assert_type(fragment, 'JSXFragment');
 		expect(
-			fragment.children.map(function (child) {
+			contentChildren(fragment).map(function (child) {
 				return child.type;
 			}),
 		).toEqual(['JSXElement', 'JSXElement']);
 
-		const script = child(fragment, 0, 'JSXElement');
+		const script = contentChild(fragment, 0, 'JSXElement');
 		expect(openingName(script).name).toBe('script');
 		expect(script.unclosed).toBe(true);
 		expect(script.content).toBe('\n\t\t\tconsole.log(1);\n\t\t');
 		expect(script.end).toBe(source.indexOf('<div />'));
-		expect(openingName(child(fragment, 1, 'JSXElement')).name).toBe('div');
+		expect(openingName(contentChild(fragment, 1, 'JSXElement')).name).toBe('div');
 	});
 
 	it('keeps an unclosed style inside an element so later siblings stay JSX children', function () {
@@ -1834,13 +2667,7 @@ export function App() @{ <div /> }`;
 		);
 
 		assert_type(ast, 'Program');
-		expect(
-			errors
-				.map(function (error) {
-					return error.message;
-				})
-				.join('\n'),
-		).not.toContain('Expected identifier');
+		expect(errors).toEqual([]);
 
 		const section = find_first(ast, function (node) {
 			return (
@@ -1851,12 +2678,12 @@ export function App() @{ <div /> }`;
 		});
 		assert_type(section, 'JSXElement');
 		expect(
-			section.children.map(function (child) {
+			contentChildren(section).map(function (child) {
 				return child.type;
 			}),
 		).toEqual(['JSXStyleElement', 'JSXElement']);
-		expect(child(section, 0, 'JSXStyleElement').unclosed).toBe(true);
-		expect(openingName(child(section, 1, 'JSXElement')).name).toBe('span');
+		expect(contentChild(section, 0, 'JSXStyleElement').unclosed).toBe(true);
+		expect(openingName(contentChild(section, 1, 'JSXElement')).name).toBe('span');
 		expect(section.unclosed).toBeFalsy();
 	});
 
@@ -1868,13 +2695,7 @@ export function App() @{ <div /> }`;
 		const ast = parseModule(source, 'App.tsrx', { loose: true, collect: true, errors });
 
 		assert_type(ast, 'Program');
-		expect(
-			errors
-				.map(function (error) {
-					return error.message;
-				})
-				.join('\n'),
-		).not.toContain('Expected identifier');
+		expect(errors).toEqual([]);
 
 		const fragment = find_first(ast, function (node) {
 			return node.type === 'JSXFragment';
@@ -1899,20 +2720,7 @@ export function App() @{ <div /> }`;
 		const ast = parseModule(source, 'App.tsrx', { loose: true, collect: true, errors });
 
 		assert_type(ast, 'Program');
-		expect(
-			errors
-				.map(function (error) {
-					return error.message;
-				})
-				.join('\n'),
-		).not.toContain('Expected identifier');
-		expect(
-			errors
-				.map(function (error) {
-					return error.message;
-				})
-				.join('\n'),
-		).not.toContain('Unterminated regular expression');
+		expect(errors).toEqual([]);
 
 		const div = find_first(ast, function (node) {
 			return (
@@ -1954,6 +2762,50 @@ export function App() @{ <div /> }`;
 		assert_type(style, 'JSXStyleElement');
 		expect(style.end).toBe(source.indexOf('</style>') + '</style>'.length);
 		expect(style.css).toContain('.card');
+	});
+
+	it('ends an assigned style block declarator after the closing tag', () => {
+		for (const terminator of ['', ';']) {
+			const source = `const theme = <style>\n  .card {\n    color: red;\n  }\n</style>${terminator}\nexport { theme }\n`;
+			const ast = parseModule(source, 'App.tsrx');
+			const declaration = firstStatement(ast, 'VariableDeclaration');
+			const [declarator] = declaration.declarations;
+			const style = as_type(declarator.init, 'JSXStyleElement');
+			const style_end = source.indexOf('</style>') + '</style>'.length;
+
+			expect(style.end).toBe(style_end);
+			expect(declarator.end).toBe(style_end);
+			expect(found(declarator.loc).end).toEqual(found(style.loc).end);
+			expect(declaration.end).toBe(style_end + terminator.length);
+			expect(found(declaration.loc).end).toEqual({ line: 5, column: 8 + terminator.length });
+		}
+
+		const object = findNode(
+			'const themes = {\n  card: <style>\n    .card { color: red; }\n  </style>,\n};',
+			'Property',
+		);
+		expect(object.end).toBe(as_type(object.value, 'JSXStyleElement').end);
+	});
+
+	it('parses top-level markup holding a style or script block before a final newline', () => {
+		for (const [tag, type] of [
+			['style', 'JSXStyleElement'],
+			['script', 'JSXElement'],
+		]) {
+			for (const body of ['p { color: red; }', '']) {
+				for (const sibling of ['', '\n  <span>x</span>']) {
+					const ast = parseModule(
+						`<div>\n  <${tag}>${body}</${tag}>${sibling}\n</div>\n`,
+						'App.tsrx',
+					);
+					const element = firstStatement(ast, 'JSXElement');
+					expect(ast.body).toHaveLength(1);
+					expect(
+						element.children.filter((node) => node.type !== 'JSXText').map((node) => node.type),
+					).toEqual(sibling ? [type, 'JSXElement'] : [type]);
+				}
+			}
+		}
 	});
 
 	it('does not add component style scope metadata to head styles', () => {
@@ -2005,7 +2857,7 @@ export function App() @{ <div /> }`;
 					break;
 				}
 				case 'JSXFragment':
-					assert_shapes(as_type(actual, 'JSXFragment').children, shape.children);
+					assert_shapes(contentChildren(as_type(actual, 'JSXFragment')), shape.children);
 					break;
 				case 'JSXCodeBlock': {
 					const block = codeBlock(actual);
@@ -2032,7 +2884,7 @@ export function App() @{ <div /> }`;
 					directive.cases.forEach((switch_case, index) => {
 						const expected_case = shape.cases[index];
 						expect(switch_case.test?.type ?? null).toBe(expected_case.test);
-						assert_shapes(switch_case.consequent, expected_case.consequent);
+						assert_shapes(caseBody(switch_case), expected_case.consequent);
 					});
 					break;
 				}
@@ -2114,7 +2966,7 @@ export function App() @{ <div /> }`;
 				const ast = parseModule(spec.source, 'App.tsrx', { collect: true, errors, comments: [] });
 
 				if ('error' in spec && spec.error) {
-					expect(errors.map((error) => error.message)).toEqual([spec.error.message]);
+					expect(errors.map((error) => error.code)).toEqual([spec.error.code]);
 					if (spec.error.start !== undefined) expect(errors[0].pos).toBe(spec.error.start);
 					if (spec.error.end !== undefined) expect(errors[0].end).toBe(spec.error.end);
 				} else {
@@ -2205,11 +3057,13 @@ export function App() @{ <div /> }`;
 		const block = child(returned, 0, 'JSXCodeBlock');
 		expect(codeBlock(block).body.map((child) => child.type)).toEqual(['VariableDeclaration']);
 		expect(codeBlockRender(block).type).toBe('JSXFragment');
-		expect(node_children(codeBlockRender(block)).map((child) => child.type)).toEqual([
+		expect(contentChildren(codeBlockRender(block)).map((child) => child.type)).toEqual([
 			'JSXText',
 			'JSXElement',
 		]);
-		expect(child(codeBlockRender(block), 0, 'JSXText').value).toContain('for switching to if');
+		expect(contentChild(codeBlockRender(block), 0, 'JSXText').value).toContain(
+			'for switching to if',
+		);
 	});
 
 	it('parses a nested element that earns its own `@{ }` block', () => {
@@ -2253,12 +3107,12 @@ export function App() @{ <div /> }`;
 		);
 		const fragment = codeBlockRender(firstStatement(ast, 'FunctionDeclaration').body);
 
-		expect(node_children(found(fragment)).map((child) => child.type)).toEqual([
+		expect(contentChildren(found(fragment)).map((child) => child.type)).toEqual([
 			'JSXText',
 			'JSXCodeBlock',
 		]);
-		expect(child(found(fragment), 0, 'JSXText').value).toContain('Hello ');
-		const block = node_children(found(fragment))[1];
+		expect(contentChild(found(fragment), 0, 'JSXText').value).toContain('Hello ');
+		const block = contentChildren(found(fragment))[1];
 		expect(codeBlock(block).body.map((child) => child.type)).toEqual(['ExpressionStatement']);
 		expect(
 			as_type(
@@ -2328,6 +3182,48 @@ foo();`;
 		expect(ast.body[1].start).toBe(source.indexOf('foo()'));
 	});
 
+	// An `@case` or `@default` body is a block from its `{` to its `}`, as in
+	// `case 1: { … }`, with a comment in an empty one as its inner comment (#842)
+	it('gives each @case and @default arm a BlockStatement body', () => {
+		const source = `function App() @{
+  @switch (x) {
+    @case 1: /* c */ {
+      const y = 1;
+      <b>{y}</b>
+    }
+    @default: {
+      // only a comment
+    }
+  }
+}`;
+		const ast = parseModule(source, 'App.tsrx', { collect: true, errors: [], comments: [] });
+		const directive = as_type(
+			find_first(ast, (node) => node.type === 'JSXSwitchExpression'),
+			'JSXSwitchExpression',
+		);
+		const [first, fallback] = directive.cases.map((switch_case) => {
+			expect(switch_case.consequent).toHaveLength(1);
+			return as_type(switch_case.consequent[0], 'BlockStatement');
+		});
+		const firstOpen = source.indexOf('{\n      const');
+		expect([first.start, first.end]).toEqual([
+			firstOpen,
+			source.indexOf('}', source.indexOf('</b>')) + 1,
+		]);
+		expect(first.body.map((node) => node.type)).toEqual(['VariableDeclaration', 'JSXElement']);
+		const fallbackOpen = source.indexOf('{', source.indexOf('@default'));
+		expect(source.slice(found(fallback.start), found(fallback.end))).toBe(
+			'{\n      // only a comment\n    }',
+		);
+		expect(fallback.start).toBe(fallbackOpen);
+		expect(fallback.body).toEqual([]);
+		expect(
+			/** @type {AST.NodeWithMaybeComments} */ (fallback).innerComments?.map(
+				(comment) => comment.value,
+			),
+		).toEqual([' only a comment']);
+	});
+
 	it('parses switch cases with JSX children', () => {
 		const switchExpression = findNode(
 			`function App() { return <>@{
@@ -2349,14 +3245,14 @@ foo();`;
 		);
 
 		expect(switchExpression.cases).toHaveLength(2);
-		const spread = as_type(switchExpression.cases[0].consequent[0], 'JSXElement').openingElement
+		const spread = as_type(caseBody(switchExpression.cases[0])[0], 'JSXElement').openingElement
 			.attributes[0];
 		expect(as_type(spread, 'JSXSpreadAttribute').argument.type).toBe('Identifier');
 		expect(as_type(as_type(spread, 'JSXSpreadAttribute').argument, 'Identifier').name).toBe(
 			'attrs',
 		);
-		expect(switchExpression.cases[0].consequent.map((node) => node.type)).toEqual(['JSXElement']);
-		expect(switchExpression.cases[1].consequent.map((node) => node.type)).toEqual(['JSXElement']);
+		expect(caseBody(switchExpression.cases[0]).map((node) => node.type)).toEqual(['JSXElement']);
+		expect(caseBody(switchExpression.cases[1]).map((node) => node.type)).toEqual(['JSXElement']);
 	});
 
 	it('rejects break statements inside JSX switch cases', () => {
@@ -2370,7 +3266,7 @@ foo();`;
 				}; }`,
 				'App.tsrx',
 			),
-		).toThrow('`break` is invalid inside `@switch` cases.');
+		).toThrow(error_with(TSRX_ERRORS.SWITCH_CASE_BREAK_STATEMENT));
 	});
 
 	it('rejects return statements inside JSX switch cases', () => {
@@ -2383,7 +3279,7 @@ foo();`;
 				}; }`,
 				'App.tsrx',
 			),
-		).toThrow('`return` is invalid inside `@switch` cases.');
+		).toThrow(error_with(TSRX_ERRORS.SWITCH_CASE_RETURN_STATEMENT));
 		expect(() =>
 			parseModule(
 				`function App() { return @switch (tag) {
@@ -2393,7 +3289,102 @@ foo();`;
 				}; }`,
 				'App.tsrx',
 			),
-		).toThrow('`return` is invalid inside `@switch` cases.');
+		).toThrow(error_with(TSRX_ERRORS.SWITCH_CASE_RETURN_STATEMENT));
+	});
+
+	it('scopes switch case setup locals to their own case block', () => {
+		expect(() =>
+			parseModule(
+				`function App({ tag }) @{
+					const label = 'outer';
+					@switch (tag) {
+						@case 'a': {
+							const label = 'A';
+							<p>{label}</p>
+						}
+						@case 'b': {
+							const label = 'B';
+							<p>{label}</p>
+						}
+						@default: {
+							const label = 'Other';
+							<p>{label}</p>
+						}
+					}
+				}`,
+				'App.tsrx',
+			),
+		).not.toThrow();
+		expect(() =>
+			parseModule(
+				`function App({ tag }) @{
+					@switch (tag) {
+						@case 'a': {
+							const label = 'A';
+							const label = 'B';
+							<p>{label}</p>
+						}
+					}
+				}`,
+				'App.tsrx',
+			),
+		).toThrow(error_with(TS_ERRORS.BLOCK_SCOPED_VARIABLE_REDECLARED));
+	});
+
+	it('parses regex, division, template literal, and parenthesized statements in case bodies', () => {
+		const switchExpression = findNode(
+			`export function App() @{
+  <>
+    @switch (x) {
+      @case 1: {
+        /a/.test(s);
+        const half = total / 2;
+        \`x\`;
+        (a || b).run();
+        <span />
+      }
+      @default: {
+        \`y\${s}\`.trim();
+        /b/g.test(s);
+        <i />
+      }
+    }
+  </>
+}`,
+			'JSXSwitchExpression',
+		);
+
+		const [first, fallback] = switchExpression.cases;
+		expect(caseBody(first).map((node) => node.type)).toEqual([
+			'ExpressionStatement',
+			'VariableDeclaration',
+			'ExpressionStatement',
+			'ExpressionStatement',
+			'JSXElement',
+		]);
+		const [regexTest, half, template] = caseBody(first);
+		const regexCall = as_type(
+			as_type(regexTest, 'ExpressionStatement').expression,
+			'CallExpression',
+		);
+		expect(regexLiteral(as_type(regexCall.callee, 'MemberExpression').object).pattern).toBe('a');
+		expect(as_type(declaratorInit(half), 'BinaryExpression').operator).toBe('/');
+		expect(
+			as_type(as_type(template, 'ExpressionStatement').expression, 'TemplateLiteral').quasis[0]
+				.value.raw,
+		).toBe('x');
+
+		expect(caseBody(fallback).map((node) => node.type)).toEqual([
+			'ExpressionStatement',
+			'ExpressionStatement',
+			'JSXElement',
+		]);
+		const trimCall = as_type(
+			as_type(caseBody(fallback)[0], 'ExpressionStatement').expression,
+			'CallExpression',
+		);
+		const trimmed = as_type(as_type(trimCall.callee, 'MemberExpression').object, 'TemplateLiteral');
+		expect(trimmed.expressions.map((node) => node.type)).toEqual(['Identifier']);
 	});
 
 	it('requires switch case and default bodies to be blocks', () => {
@@ -2415,6 +3406,92 @@ foo();`;
 				'App.tsrx',
 			),
 		).toThrow();
+	});
+
+	describe('input that ends inside an @switch arm', () => {
+		// Parsed in a worker, so a parse that never returns fails the test instead
+		// of stalling the run.
+		/** @type {Array<ParseOptions | undefined>} */
+		const modes = [undefined, { collect: true }, { loose: true }];
+
+		it('reports the missing `}` at the end of the input in every parse mode', async () => {
+			const sources = [
+				'function App({ mode }) @{\n  @switch (mode) {\n    @case 1: {',
+				'function App({ mode }) @{\n  @switch (mode) {\n    @default: {',
+				"function App({ mode }) @{\n  @switch (mode) {\n    @case 1: {\n      const label = 'one';",
+				'function App({ mode }) @{\n  @switch (mode) {\n    @case 1: {\n      <b>one</b>',
+				'function App({ mode }) @{\n  @switch (mode) {\n    @case 1: {\n      <b>one</b>\n    }\n    @default: {\n      ',
+				'function App({ mode }) @{\n  const node = @switch (mode) { @case 1: {',
+				'function App({ mode }) { return <div>@switch (mode) { @case 1: {',
+			];
+			const inputs = sources.flatMap((source) => modes.map((options) => ({ source, options })));
+
+			const outcomes = await parse_in_worker(inputs);
+
+			expect(outcomes).toEqual(
+				inputs.map(({ source }) => thrown(TS_ERRORS.TOKEN_EXPECTED, source.length)),
+			);
+		});
+
+		it('reports an unclosed element before the missing `}`', async () => {
+			const sources = [
+				'function App({ mode }) @{\n  @switch (mode) {\n    @case 1: {\n      <section>',
+				'function App({ mode }) @{\n  @switch (mode) {\n    @default: {\n      <section>',
+			];
+			const inputs = sources.flatMap((source) => modes.map((options) => ({ source, options })));
+
+			const outcomes = await parse_in_worker(inputs);
+
+			// As in an `@if` body: the default mode throws the unclosed tag, and
+			// collect and loose mode, which keep parsing past it, then stop at the
+			// missing `}` at the end of the input.
+			expect(outcomes).toEqual(
+				inputs.map(({ source, options }) =>
+					thrown(options ? TS_ERRORS.TOKEN_EXPECTED : TSRX_ERRORS.UNCLOSED_TAG, source.length),
+				),
+			);
+		});
+
+		it('returns for every prefix of a template with @switch arms', async () => {
+			const source = `function App({ mode, items }) @{
+	const label = @switch (mode) { @case 'a': { <b>a</b> } @default: { <i>b</i> } };
+	<div>
+		@switch (mode) {
+			@case 'list': {
+				const first = items[0];
+				<ul>
+					@for (const item of items) {
+						<li>{item}</li>
+					}
+				</ul>
+			}
+			@case 'one': {
+				@if (items[0]) { <p>{items[0]}</p> }
+			}
+			@default: {
+				doThing();
+				<>{label} none</>
+			}
+		}
+	</div>
+}`;
+			/** @type {Array<{ source: string, options: ParseOptions | undefined }>} */
+			const inputs = [];
+			for (let end = 0; end <= source.length; end++) {
+				for (const options of modes) {
+					inputs.push({ source: source.slice(0, end), options });
+				}
+			}
+
+			const outcomes = await parse_in_worker(inputs);
+
+			expect(outcomes).toHaveLength(inputs.length);
+			expect(outcomes.slice(-modes.length)).toEqual([
+				{ ok: true, errors: undefined },
+				{ ok: true, errors: [] },
+				{ ok: true, errors: [] },
+			]);
+		});
 	});
 
 	it('treats keyword and symbol-looking element children as JSXText', () => {
@@ -2451,7 +3528,7 @@ foo();`;
 		const block = child(returned, 0, 'JSXCodeBlock');
 		expect(codeBlock(block).body.map((child) => child.type)).toEqual(['VariableDeclaration']);
 		expect(declaratorInit(block.body[0]).type).toBe('JSXElement');
-		expect(node_children(codeBlockRender(block)).map((child) => child.type)).toEqual([
+		expect(contentChildren(codeBlockRender(block)).map((child) => child.type)).toEqual([
 			'JSXElement',
 			'JSXExpressionContainer',
 		]);
@@ -2536,9 +3613,10 @@ foo();`;
 		expect(regexLiteral(declaratorInit(block.body[0])).pattern).toBe('<span>');
 	});
 
-	it('reads `<value> /…/` in the setup section as a less-than against a regex', () => {
+	it('reads `<value> < /…/` in the setup section as a less-than against a regex', () => {
+		// Without the space, `</` starts a closing tag, as in TSX (#586).
 		const returned = getReturned(`function App() { return <div>@{
-			const x = 3</div>/
+			const x = 3 < /div>/
 			<>{x}</>
 		}</div>; }`);
 
@@ -2950,13 +4028,13 @@ foo();`;
 
 	it('parses a text-then-element sibling after newline-separated elements', () => {
 		const pre = findElement('let a = <pre><b>2</b>\n<b>3</b>1<b>4</b></pre>;', 'pre');
-		expect(pre.children.map((child) => child.type)).toEqual([
+		expect(contentChildren(pre).map((child) => child.type)).toEqual([
 			'JSXElement',
 			'JSXElement',
 			'JSXText',
 			'JSXElement',
 		]);
-		expect(child(pre, 2, 'JSXText').value).toBe('1');
+		expect(contentChild(pre, 2, 'JSXText').value).toBe('1');
 	});
 
 	it('parses indented multi-line markup with a text-then-element sibling', () => {
@@ -2967,7 +4045,9 @@ foo();`;
 		const text = pre.children.find(
 			(child) => child.type === 'JSXText' && child.value.includes('1'),
 		);
-		expect(as_type(text, 'JSXText').value).toBe('1');
+		// The text keeps the whitespace after the closing tag before it, which
+		// JSX trims as layout
+		expect(as_type(text, 'JSXText').value).toBe(' \n    \n    1');
 	});
 
 	it('parses parenthesized conditional JSX spread attributes in render output', () => {
@@ -3347,12 +4427,16 @@ foo();`;
 			'JSXFragment',
 		);
 
-		const directive = fragment.children.find((child) => child.type === 'JSXIfExpression');
-		const text = fragment.children.find((child) => child.type === 'JSXText');
+		expect(fragment.children.map((child) => child.type)).toEqual([
+			'JSXText',
+			'JSXIfExpression',
+			'JSXText',
+		]);
+		const directive = child(fragment, 1, 'JSXIfExpression');
 
-		assert_type(directive, 'JSXIfExpression');
 		expect(directive.alternate).toBe(null);
-		expect(as_type(text, 'JSXText').value).toBe(' else\n');
+		expect(child(fragment, 0, 'JSXText').value).toBe('\n');
+		expect(child(fragment, 2, 'JSXText').value).toBe(' else\n');
 	});
 
 	it('parses same-line trailing text after an @if block closed by a tag', () => {
@@ -3403,7 +4487,7 @@ foo();`;
 			getReturned(`function App() { return <div>
 					@if (visible) <div class="status">Visible: {String(visible)}</div>
 			</div>; }`),
-		).toThrow(/Expected `\{` after JSX control-flow directive/);
+		).toThrow(error_with(TSRX_ERRORS.DIRECTIVE_BODY_EXPECTED));
 	});
 
 	it('rejects unprefixed template continuation clauses', () => {
@@ -3415,7 +4499,7 @@ foo();`;
 					<>Waiting</>
 				}
 			</div>; }`),
-		).toThrow(/Expected `@else` after `@if` block/);
+		).toThrow(error_with(TSRX_ERRORS.DIRECTIVE_BRANCH_EXPECTED));
 
 		expect(() =>
 			getReturned(`function App() { return <ul>
@@ -3425,7 +4509,7 @@ foo();`;
 					<li>Empty</li>
 				}
 			</ul>; }`),
-		).toThrow(/Expected `@empty` after `@for` block/);
+		).toThrow(error_with(TSRX_ERRORS.DIRECTIVE_BRANCH_EXPECTED));
 
 		expect(() =>
 			getReturned(`function App() { return <div>
@@ -3438,7 +4522,7 @@ foo();`;
 					}
 				}
 			</div>; }`),
-		).toThrow(/Unexpected token/);
+		).toThrow(error_with(TS_ERRORS.UNEXPECTED_TOKEN));
 
 		expect(() =>
 			getReturned(`function App() { return <div>
@@ -3448,7 +4532,7 @@ foo();`;
 					<>Loading</>
 				}
 			</div>; }`),
-		).toThrow(/Expected `@pending` after `@try` block/);
+		).toThrow(error_with(TSRX_ERRORS.DIRECTIVE_BRANCH_EXPECTED));
 
 		expect(() =>
 			getReturned(`function App() { return <div>
@@ -3460,7 +4544,7 @@ foo();`;
 					<>Failed</>
 				}
 			</div>; }`),
-		).toThrow(/Expected `@catch` after `@try` block/);
+		).toThrow(error_with(TSRX_ERRORS.DIRECTIVE_BRANCH_EXPECTED));
 	});
 
 	it('parses code-only @if bodies', () => {
@@ -3538,6 +4622,136 @@ foo();`;
 		expect(directive.empty).toBeNull();
 	});
 
+	it('ends an element body of if, else, a loop or a label at its `;` (#924)', () => {
+		/** @type {Array<[source: string, types: string[]]>} */
+		const cases = [
+			[
+				`function f(x) {
+	if (x) <div />;
+	else <b />;
+}`,
+				['IfStatement'],
+			],
+			[
+				`function f(x) {
+	do <i />; while (x);
+	label: <i />;
+	g();
+}`,
+				['DoWhileStatement', 'LabeledStatement', 'ExpressionStatement'],
+			],
+			[
+				`const a = 1;
+if (x) <div />;
+else <b />;`,
+				['VariableDeclaration', 'IfStatement'],
+			],
+			// In a statement list, a `;` after an element is still an empty statement.
+			[
+				`function f(x) {
+	if (x) <div />;;
+}`,
+				['IfStatement', 'EmptyStatement'],
+			],
+		];
+		for (const [source, types] of cases) {
+			for (const options of [undefined, { collect: true, errors: [], comments: [] }]) {
+				const ast = parseModule(source, 'App.tsrx', options);
+				const last = /** @type {any} */ (ast.body.at(-1));
+				const body = last.type === 'FunctionDeclaration' ? last.body.body : ast.body;
+				expect(
+					body.map((/** @type {AST.Node} */ node) => node.type),
+					source,
+				).toEqual(types);
+			}
+		}
+
+		const template = parseModule(
+			`export function C({ x }) @{
+	if (x) <div />;
+	else <b />;
+	<span />
+}`,
+			'App.tsrx',
+		);
+		const statement = find_first(template, (node) => node.type === 'IfStatement');
+		expect(statement).toMatchObject({
+			consequent: { type: 'JSXElement' },
+			alternate: { type: 'JSXElement' },
+		});
+	});
+
+	it("reads `index` and `key` only in @for's own head (#896)", () => {
+		// A regular `for…of` has no such clauses: TypeScript reports the `;` as
+		// `')' expected.` (TS1005), in every mode. That includes a regular loop in
+		// an @for's body or in a function in its head.
+		/** @type {Array<[source: string, at: string]>} */
+		const cases = [
+			[
+				`const test = () => {
+	for (const item of []; index i) {}
+};`,
+				'; index i',
+			],
+			['for (const item of items; key item.id) {}', '; key'],
+			[
+				`export function App() @{
+	<ul>
+		@for (const item of items; index i) {
+			@{
+				for (const x of item.list; index j) {}
+				<li>{i}</li>
+			}
+		}
+	</ul>
+}`,
+				'; index j',
+			],
+			[
+				`export function App() @{
+	<ul>
+		@for (const item of items.filter((x) => {
+			for (const y of x; index k) {}
+			return true;
+		}); index i) {
+			<li>{i}</li>
+		}
+	</ul>
+}`,
+				'; index k',
+			],
+		];
+		for (const [source, at] of cases) {
+			for (const options of [undefined, { collect: true, errors: [], comments: [] }]) {
+				/** @type {any} */
+				let error;
+				try {
+					parseModule(source, 'App.tsrx', options);
+				} catch (caught) {
+					error = caught;
+				}
+				// `')' expected.`
+				expect(error?.code, source).toBe(TS_ERRORS.TOKEN_EXPECTED.code);
+				expect(error.pos, source).toBe(source.indexOf(at));
+			}
+		}
+
+		const loop = find_first(
+			parseModule(
+				`export function App() @{
+	<ul>
+		@for (const item of items; index i; key item.id) {
+			<li>{i}</li>
+		}
+	</ul>
+}`,
+				'App.tsrx',
+			),
+			(node) => node.type === 'JSXForExpression',
+		);
+		expect(loop).toMatchObject({ index: { name: 'i' }, key: { type: 'MemberExpression' } });
+	});
+
 	it('parses @for inside a statement-container fragment output with JSX siblings', () => {
 		const ast = parseModule(
 			`export function App({ items }: { items: string[] }) @{
@@ -3558,14 +4772,14 @@ foo();`;
 		).body;
 		assert_type(block, 'JSXCodeBlock');
 		expect(codeBlockRender(block).type).toBe('JSXFragment');
-		expect(node_children(codeBlockRender(block)).map((child) => child.type)).toEqual([
+		expect(contentChildren(codeBlockRender(block)).map((child) => child.type)).toEqual([
 			'JSXElement',
 			'JSXElement',
 			'JSXForExpression',
 		]);
-		expect(
-			as_type(node_children(codeBlockRender(block))[2], 'JSXForExpression').body.body[0].type,
-		).toBe('JSXElement');
+		expect(contentChild(codeBlockRender(block), 2, 'JSXForExpression').body.body[0].type).toBe(
+			'JSXElement',
+		);
 	});
 
 	it('parses @for empty fallbacks as template blocks', () => {
@@ -3600,7 +4814,7 @@ foo();`;
 					<li>{item.label}</li>
 				} @empty <li>No items</li>
 			</ul>; }`),
-		).toThrow(/Expected `\{` after JSX control-flow directive/);
+		).toThrow(error_with(TSRX_ERRORS.DIRECTIVE_BODY_EXPECTED));
 	});
 
 	it('parses code-only @for bodies', () => {
@@ -3635,12 +4849,12 @@ foo();`;
 		expect(as_type(directive.discriminant, 'Identifier').name).toBe('value');
 		expect(directive.cases).toHaveLength(3);
 		expect(as_type(directive.cases[0].test, 'Literal').value).toBe('a');
-		expect(directive.cases[0].consequent[0].type).toBe('JSXFragment');
-		expect(as_type(node_children(directive.cases[0].consequent[0])[0], 'JSXText').value).toContain(
+		expect(caseBody(directive.cases[0])[0].type).toBe('JSXFragment');
+		expect(as_type(node_children(caseBody(directive.cases[0])[0])[0], 'JSXText').value).toContain(
 			'Case A',
 		);
 		expect(directive.cases[2].test).toBeNull();
-		expect(as_type(node_children(directive.cases[2].consequent[0])[0], 'JSXText').value).toContain(
+		expect(as_type(node_children(caseBody(directive.cases[2])[0])[0], 'JSXText').value).toContain(
 			'Fallback',
 		);
 	});
@@ -3891,7 +5105,7 @@ foo();`;
 	it('parses a `@{ }` body on a generic function with a return type', () => {
 		const ast = parseModule(`function Test<T>(value: T): T @{}`, 'App.tsrx');
 		const fn = firstStatement(ast, 'FunctionDeclaration');
-		expect(found(fn.typeParameters).params.map((p) => p.name)).toEqual(['T']);
+		expect(found(fn.typeParameters).params.map((p) => p.name.name)).toEqual(['T']);
 		expect(found(fn.returnType).typeAnnotation.type).toBe('TSTypeReference');
 		expect(codeBlock(fn.body).type).toBe('JSXCodeBlock');
 	});
@@ -3937,7 +5151,7 @@ foo();`;
 		const ast = parseModule(`function Test<T>(items: T[]): T | undefined @{}`, 'App.tsrx');
 		const fn = firstStatement(ast, 'FunctionDeclaration');
 		expect(
-			found(as_type(fn, 'FunctionDeclaration').typeParameters).params.map((p) => p.name),
+			found(as_type(fn, 'FunctionDeclaration').typeParameters).params.map((p) => p.name.name),
 		).toEqual(['T']);
 		const union = found(as_type(fn, 'FunctionDeclaration').returnType).typeAnnotation;
 		assert_type(union, 'TSUnionType');
@@ -3951,7 +5165,7 @@ foo();`;
 
 	it('rejects an arrow token between a function return type and a `@{ }` body', () => {
 		expect(() => parseModule(`function App(): JSX.Element => @{}`, 'App.tsrx')).toThrow(
-			/Unexpected token/,
+			error_with(TS_ERRORS.UNEXPECTED_TOKEN),
 		);
 	});
 
@@ -3970,14 +5184,14 @@ foo();`;
 
 	it('rejects duplicate params in a `@{ }` function body after a return type', () => {
 		expect(() => parseModule(`function App(a, a): JSX.Element @{}`, 'App.tsrx')).toThrow(
-			/Argument name clash/,
+			error_with(TS_ERRORS.ARGUMENT_NAME_CLASH),
 		);
 	});
 
 	it('rejects non-code-block directives as function bodies after a return type', () => {
 		expect(() =>
 			parseModule(`function App(): JSX.Element @if (show) { <div/> }`, 'App.tsrx'),
-		).toThrow(/Unexpected token/);
+		).toThrow(error_with(TS_ERRORS.UNEXPECTED_TOKEN));
 	});
 
 	it('assigns each @-control directive directly to a variable', () => {
@@ -4029,9 +5243,70 @@ foo();`;
 		const ast = parseModule(`const X = @dec class {};`, 'App.tsrx');
 		const init = declaratorInit(firstStatement(ast, 'VariableDeclaration'));
 		assert_type(init, 'ClassExpression');
-		// estree has no decorators on class nodes; the parser emits the TS shape.
-		const decorators = /** @type {{ decorators?: TSESTree.Decorator[] }} */ (init).decorators;
-		expect(as_type(found(decorators)[0].expression, 'Identifier').name).toBe('dec');
+		expect(as_type(init.decorators[0].expression, 'Identifier').name).toBe('dec');
+	});
+
+	it('gives every class and class member an ESTree decorators array', () => {
+		const ast = parseModule(
+			`class Plain { method() {} field = 1; accessor stored = 1; }
+			const Expression = class { method() {} };
+			@dec class Decorated { @member method() {} field = 1; }`,
+			'App.tsrx',
+		);
+		/** @param {AST.ClassDeclaration | AST.ClassExpression} node */
+		const decorator_names = (node) =>
+			[node, ...node.body.body].map((part) =>
+				'decorators' in part
+					? part.decorators.map((decorator) => as_type(decorator.expression, 'Identifier').name)
+					: null,
+			);
+
+		expect(decorator_names(as_type(ast.body[0], 'ClassDeclaration'))).toEqual([[], [], [], []]);
+		expect(
+			decorator_names(
+				as_type(declaratorInit(as_type(ast.body[1], 'VariableDeclaration')), 'ClassExpression'),
+			),
+		).toEqual([[], []]);
+		expect(decorator_names(as_type(ast.body[2], 'ClassDeclaration'))).toEqual([
+			['dec'],
+			['member'],
+			[],
+		]);
+	});
+
+	it("reads a trailing comma in a decorator's arguments, as in any call (#773)", () => {
+		/** @type {Array<[source: string, pick: (ast: AST.Program) => AST.Decorator]>} */
+		const cases = [
+			['@dec(a,)\nclass A {}', (ast) => as_type(ast.body[0], 'ClassDeclaration').decorators[0]],
+			[
+				'class A {\n\t@dec(a,)\n\tm() {}\n}',
+				(ast) =>
+					as_type(as_type(ast.body[0], 'ClassDeclaration').body.body[0], 'MethodDefinition')
+						.decorators[0],
+			],
+			[
+				'class A {\n\tm(@dec(a,) b) {}\n}',
+				(ast) =>
+					/** @type {AST.Identifier & { decorators: AST.Decorator[] }} */ (
+						as_type(as_type(ast.body[0], 'ClassDeclaration').body.body[0], 'MethodDefinition').value
+							.params[0]
+					).decorators[0],
+			],
+			['@dec<T>(a,)\nclass A {}', (ast) => as_type(ast.body[0], 'ClassDeclaration').decorators[0]],
+		];
+		for (const [source, pick] of cases) {
+			const call = as_type(pick(parseModule(source, 'App.tsrx')).expression, 'CallExpression');
+			expect(
+				call.arguments.map((argument) => as_type(argument, 'Identifier').name),
+				source,
+			).toEqual(['a']);
+			expect(source.slice(/** @type {number} */ (call.end) - 3, call.end), source).toBe('a,)');
+		}
+		for (const source of ['@dec(,)\nclass A {}', '@dec(a,,)\nclass A {}']) {
+			expect(() => parseModule(source, 'App.tsrx'), source).toThrow(
+				error_with(TS_ERRORS.UNEXPECTED_TOKEN),
+			);
+		}
 	});
 
 	it('reports an error for two bare render nodes in a code block', () => {
@@ -4040,7 +5315,7 @@ foo();`;
 				`function App() { return <div>@{ const a = 5; <span/> <b/> }</div>; }`,
 				'App.tsrx',
 			),
-		).toThrow(/single node/);
+		).toThrow(error_with(TSRX_ERRORS.CODE_BLOCK_SINGLE_OUTPUT));
 	});
 
 	it('reports an error for a statement after the render node', () => {
@@ -4049,7 +5324,7 @@ foo();`;
 				`function App() { return <div>@{ const a = 5; <span/> doThing(); }</div>; }`,
 				'App.tsrx',
 			),
-		).toThrow(/statements cannot follow/);
+		).toThrow(error_with(TSRX_ERRORS.CODE_BLOCK_STATEMENT_AFTER_OUTPUT));
 	});
 
 	it('reports an error for bare text inside a code block', () => {
@@ -4108,11 +5383,70 @@ foo();`;
 		}
 
 		// Both authoring-rule diagnostics still land on the correct source lines.
-		const messages = errors.map((e) => `${e.loc?.start?.line}:${e.message}`);
-		expect(messages.some((m) => m.startsWith('8:') && /statements cannot follow/.test(m))).toBe(
-			true,
+		const lines = errors.map((e) => `${e.loc?.start?.line}:${e.code}`);
+		expect(lines).toContain(`8:${TSRX_ERRORS.CODE_BLOCK_STATEMENT_AFTER_OUTPUT.code}`);
+		expect(lines).toContain(`10:${TSRX_ERRORS.CODE_BLOCK_SINGLE_OUTPUT.code}`);
+	});
+
+	// An enum's members are in a TSEnumBody that spans its braces, as in
+	// typescript-estree, after any comments between the name and the `{`
+	it.each([
+		['enum E { A, B = 2 }', 2],
+		['enum E /* c */ { A }', 1],
+		['enum E // c\n{ A }', 1],
+		['declare const enum E {}', 0],
+	])('gives %j a TSEnumBody', (source, count) => {
+		const declaration = as_type(parseModule(source, 'App.ts').body[0], 'TSEnumDeclaration');
+		const body = declaration.body;
+		expect(body.type).toBe('TSEnumBody');
+		expect(source.slice(found(body.start), found(body.end))).toBe(
+			source.slice(source.indexOf('{')),
 		);
-		expect(messages.some((m) => m.startsWith('10:') && /single node/.test(m))).toBe(true);
+		expect(body.loc?.start).toEqual(acorn.getLineInfo(source, source.indexOf('{')));
+		expect(body.members).toHaveLength(count);
+		expect('members' in declaration).toBe(false);
+	});
+
+	// A type parameter's name is the Identifier acorn-typescript reads, with its
+	// position, as in typescript-estree (#873)
+	it.each([
+		['a type parameter', 'function f<T>(x: T) {}', 'T'],
+		['a type parameter after modifiers and a comment', 'class A<in /* c */ out T> {}', 'T'],
+		['a const type parameter with a constraint', 'function f<const T extends string>() {}', 'T'],
+		['a mapped type key', 'type M = { [K in keyof X]: X[K] };', 'K'],
+		['an infer type', 'type I = X extends Array<infer U> ? U : never;', 'U'],
+	])('gives %s its name as an Identifier', (_label, source, name) => {
+		const parameter = find_first(
+			parseModule(source, 'App.tsrx'),
+			(node) => node.type === 'TSTypeParameter',
+		);
+		assert_type(parameter, 'TSTypeParameter');
+		const identifier = as_type(parameter.name, 'Identifier');
+		const start = source.lastIndexOf(
+			name,
+			source.indexOf(name === 'T' ? '>' : name === 'K' ? ' in' : ' ?'),
+		);
+		expect(identifier.name).toBe(name);
+		expect([identifier.start, identifier.end]).toEqual([start, start + name.length]);
+		expect(identifier.loc?.start).toEqual(acorn.getLineInfo(source, start));
+	});
+
+	// The comments around a type parameter's name stay on the type parameter,
+	// which prints them around the name, as when the name was a string (#873)
+	it.each([
+		'function f<const /* c */ T extends string>() {}',
+		'function h<T /* c */ extends string>() {}',
+		'type M = { [/* c */ K in keyof X]: X[K] };',
+		'type I = X extends Array<infer /* c */ U> ? U : never;',
+	])('gives no comment to the type parameter name in %j', (source) => {
+		const parameter = find_first(
+			parseModule(source, 'App.tsrx', { collect: true, errors: [], comments: [] }),
+			(node) => node.type === 'TSTypeParameter',
+		);
+		assert_type(parameter, 'TSTypeParameter');
+		const name = /** @type {AST.Identifier & AST.NodeWithMaybeComments} */ (parameter.name);
+		expect(name.leadingComments ?? []).toEqual([]);
+		expect(name.trailingComments ?? []).toEqual([]);
 	});
 
 	it('keeps shorthand attribute locations aligned across every JavaScript line terminator', () => {
@@ -4141,6 +5475,31 @@ foo();`;
 			);
 			expect(node.loc?.end, `${node.type} end`).toEqual(acorn.getLineInfo(source, found(node.end)));
 		}
+	});
+
+	// A comment in a shorthand attribute's braces is inside them, as in the
+	// long form's `name={…}`: the braces end at the `}` (#592)
+	it.each([
+		['a block comment after the name', 'const a = <div {name /* c */} />;', 'trailing'],
+		['a line comment after the name', 'const a = <div {name\n// c\n} x="1" />;', 'trailing'],
+		['a block comment on its own line', 'const a = <div {name\n/* c */\n} x="1" />;', 'trailing'],
+		['a block comment before the name', 'const a = <div {/* c */ name} />;', 'leading'],
+	])('ends a shorthand attribute at its `}` with %s', (_label, source, side) => {
+		const attribute = find_first(
+			parseModule(source, 'App.tsrx', { collect: true, errors: [], comments: [] }),
+			(node) => node.type === 'JSXAttribute' && node.shorthand === true,
+		);
+		assert_type(attribute, 'JSXAttribute');
+		const container = as_type(attribute.value, 'JSXExpressionContainer');
+		const expression = as_type(container.expression, 'Identifier');
+		const open = source.indexOf('{');
+		const close = source.indexOf('}') + 1;
+		expect([attribute.start, attribute.end]).toEqual([open, close]);
+		expect([container.start, container.end]).toEqual([open, close]);
+		expect(source.slice(found(expression.start), found(expression.end))).toBe('name');
+		const comments = side === 'trailing' ? expression.trailingComments : expression.leadingComments;
+		expect(comments?.map((comment) => comment.value.trim())).toEqual(['c']);
+		expect(container.trailingComments ?? []).toEqual([]);
 	});
 
 	it.each([
@@ -4301,11 +5660,11 @@ foo();`;
 			</main>;
 		}`);
 
-		expect(node_children(returned).map((child) => child.type)).toEqual([
+		expect(contentChildren(returned).map((child) => child.type)).toEqual([
 			'JSXCodeBlock',
 			'JSXCodeBlock',
 		]);
-		const [first, second] = node_children(returned);
+		const [first, second] = contentChildren(returned);
 		expect(codeBlock(first).body.map((child) => child.type)).toEqual(['VariableDeclaration']);
 		expect(openingName(as_type(codeBlockRender(first), 'JSXElement')).name).toBe('span');
 		expect(codeBlock(second).body.map((child) => child.type)).toEqual(['VariableDeclaration']);
@@ -4376,7 +5735,7 @@ foo();`;
 				}`,
 				'App.tsrx',
 			),
-		).toThrow(/single node/);
+		).toThrow(error_with(TSRX_ERRORS.CODE_BLOCK_SINGLE_OUTPUT));
 	});
 
 	it('reports an error for a nested `@{ }` block following a render node', () => {
@@ -4397,7 +5756,7 @@ foo();`;
 				}`,
 				'App.tsrx',
 			),
-		).toThrow(/single node/);
+		).toThrow(error_with(TSRX_ERRORS.CODE_BLOCK_SINGLE_OUTPUT));
 	});
 
 	it('parses a nested `@if` with its own setup when siblings are wrapped in a fragment', () => {
@@ -4426,7 +5785,7 @@ foo();`;
 			(child) => /** @type {AST.Node} */ (child).type === 'JSXFragment',
 		);
 		assert_found(fragment);
-		expect(node_children(fragment).map((child) => child.type)).toEqual([
+		expect(contentChildren(fragment).map((child) => child.type)).toEqual([
 			'JSXElement',
 			'JSXIfExpression',
 		]);
@@ -4461,7 +5820,7 @@ foo();`;
 				}`,
 				'App.tsrx',
 			),
-		).toThrow(/single node/);
+		).toThrow(error_with(TSRX_ERRORS.CODE_BLOCK_SINGLE_OUTPUT));
 	});
 
 	it('parses a single nested `@{ }` block as a code block render output', () => {
@@ -4501,7 +5860,7 @@ foo();`;
 
 		// Non-fatal: parsing still produces an AST.
 		assert_type(ast, 'Program');
-		expect(errors.map((error) => error.message)).toEqual([expect.stringMatching(/single node/)]);
+		expect(errors.map((error) => error.code)).toEqual([TSRX_ERRORS.CODE_BLOCK_SINGLE_OUTPUT.code]);
 	});
 
 	it('parses nested `@{ }` blocks when wrapped in a fragment render output', () => {
@@ -4525,11 +5884,11 @@ foo();`;
 		assert_type(block, 'JSXCodeBlock');
 		expect(codeBlock(block).body.map((child) => child.type)).toEqual(['VariableDeclaration']);
 		expect(codeBlockRender(block).type).toBe('JSXFragment');
-		expect(node_children(found(block.render)).map((child) => child.type)).toEqual([
+		expect(contentChildren(found(block.render)).map((child) => child.type)).toEqual([
 			'JSXCodeBlock',
 			'JSXCodeBlock',
 		]);
-		const [first, second] = node_children(found(block.render));
+		const [first, second] = contentChildren(found(block.render));
 		expect(openingName(as_type(codeBlockRender(first), 'JSXElement')).name).toBe('span');
 		expect(openingName(as_type(codeBlockRender(second), 'JSXElement')).name).toBe('span');
 	});
@@ -4723,14 +6082,14 @@ foo();`;
 	it('rejects a braceless `@if` render after the setup `;`', () => {
 		expect(() =>
 			getReturned(`function App() { return @{ const foo = 123; @if (foo) <div>{foo}</div> }; }`),
-		).toThrow(/Expected `\{` after JSX control-flow directive/);
+		).toThrow(error_with(TSRX_ERRORS.DIRECTIVE_BODY_EXPECTED));
 	});
 
 	it('rejects a braceless `@if` render whose consequent begins on the next line', () => {
 		expect(() =>
 			getReturned(`function App() { return @{ const foo = 123; @if (foo)
 				<div>{foo}</div> }; }`),
-		).toThrow(/Expected `\{` after JSX control-flow directive/);
+		).toThrow(error_with(TSRX_ERRORS.DIRECTIVE_BODY_EXPECTED));
 	});
 
 	it('parses a braced `@if` render after the setup `;` on the same line', () => {
@@ -4789,7 +6148,7 @@ foo();`;
 			getReturned(
 				`function App() { return @{ const xs = [1, 2]; @for (const x of xs) <li>{x}</li> }; }`,
 			),
-		).toThrow(/Expected `\{` after JSX control-flow directive/);
+		).toThrow(error_with(TSRX_ERRORS.DIRECTIVE_BODY_EXPECTED));
 	});
 
 	it('rejects a braceless `@try` render after the setup `;`', () => {
@@ -4797,7 +6156,7 @@ foo();`;
 			getReturned(
 				`function App() { return @{ const foo = 123; @try <div>{foo}</div> catch (e) { <span /> } }; }`,
 			),
-		).toThrow(/Unexpected keyword 'try'|Expected token `\{/);
+		).toThrow(error_with('TS1359', '1:45'));
 	});
 
 	it('allows and ignores a trailing `;` after a render node', () => {
@@ -4816,6 +6175,171 @@ foo();`;
 
 		expect(block.body).toEqual([]);
 		expect(codeBlockRender(block).type).toBe('JSXFragment');
+	});
+});
+
+// A dynamic tag expression is an identifier, a member access, or a string
+// literal (#737). Any other expression parses, and is reported at the part that
+// isn't one of those: thrown in a strict parse, recorded when collecting.
+describe('dynamic tag expression rule (#737)', () => {
+	const modes = [
+		undefined,
+		{ collect: true },
+		{ collect: true, preserveParens: true },
+		{ loose: true },
+	];
+
+	/** @type {Array<[string, string]>} Each tag expression, and the part reported. */
+	const reported = [
+		['c ? A : B', 'c ? A : B'],
+		['c ? Child : null', 'c ? Child : null'],
+		["props.as ?? 'div'", "props.as ?? 'div'"],
+		['a || b', 'a || b'],
+		['c && Tag', 'c && Tag'],
+		['(tag)', '(tag)'],
+		['((tag) /* c */)', '((tag) /* c */)'],
+		['tag as any', 'tag as any'],
+		['tag satisfies Tag', 'tag satisfies Tag'],
+		['tag!', 'tag!'],
+		['(a).b', '(a)'],
+		['a!.b', 'a!'],
+		['props?.as', 'props?.as'],
+		['registry[getName()]', 'getName()'],
+		['registry[(name)]', '(name)'],
+		['registry[`a`]', '`a`'],
+		['items[-1]', '-1'],
+		['items[0n]', '0n'],
+		['getTag().x', 'getTag()'],
+		['({ tag }).tag', '({ tag })'],
+		['[Tag][0]', '[Tag]'],
+		['import.meta.tag', 'import.meta'],
+		['this', 'this'],
+		['null', 'null'],
+		['undefined', 'undefined'],
+		['true', 'true'],
+		['1', '1'],
+		['{}', '{}'],
+		['[]', '[]'],
+		['/div/', '/div/'],
+		['() => <b>x</b>', '() => <b>x</b>'],
+		['function () {}', 'function () {}'],
+		['class {}', 'class {}'],
+		['<b>x</b>', '<b>x</b>'],
+		['<>x</>', '<>x</>'],
+		["c ? () => <b>x</b> : 'i'", "c ? () => <b>x</b> : 'i'"],
+		['c || <b>x</b>', 'c || <b>x</b>'],
+		['getTag()', 'getTag()'],
+		['condition ? tagName() : Tag', 'condition ? tagName() : Tag'],
+		['new TagName()', 'new TagName()'],
+		['[...tags][0]', '[...tags]'],
+		["'h' + level", "'h' + level"],
+		['`div`', '`div`'],
+		['`d${kind}`', '`d${kind}`'],
+		['tag`div`', 'tag`div`'],
+		['Tag = A', 'Tag = A'],
+		['a, Tag', 'a, Tag'],
+		['!tag', '!tag'],
+		['await tag', 'await tag'],
+	];
+
+	it.each(reported)('reports <{%s} /> at %s', async (tag, part) => {
+		const prefix = 'export async function App() @{\n\t<{';
+		const source = `${prefix}${tag}} />\n}`;
+		const start = prefix.length + tag.indexOf(part);
+		const outcomes = await parse_in_worker_with_ast(modes.map((options) => ({ source, options })));
+
+		const [strict, ...collected] = outcomes;
+		expect(strict).toEqual(thrown(TSRX_ERRORS.DYNAMIC_TAG_EXPRESSION, start));
+		for (const [index, outcome] of collected.entries()) {
+			const label = JSON.stringify(modes[index + 1]);
+			if (!outcome.ok) throw new Error(`${label} threw ${outcome.message}`);
+			expect(outcome.errors, label).toEqual([
+				{ code: TSRX_ERRORS.DYNAMIC_TAG_EXPRESSION.code, pos: start, end: start + part.length },
+			]);
+			const element = /** @type {AST.Node} */ (
+				find_first(
+					outcome.ast,
+					(node) =>
+						node.type === 'JSXElement' &&
+						/** @type {AST.TSRXJSXElement} */ (node).isDynamic === true,
+				)
+			);
+			expect(element, label).toBeDefined();
+		}
+	});
+
+	it('records the error in `collect` mode and parses the rest of the file', async () => {
+		const source = `export function App({ c, A, B }) @{
+	<main>
+		<{c ? A : B}>
+			<p>{c}</p>
+		</{c ? A : B}>
+		<{getTag()} />
+		<{Tag} />
+	</main>
+}
+
+export const after = <{props?.as}>x</{props?.as}>;
+
+export function Later() @{
+	<p>later</p>
+}`;
+		const outcomes = await parse_in_worker_with_ast(
+			[{ collect: true }, { loose: true }].map((options) => ({ source, options })),
+		);
+
+		for (const outcome of outcomes) {
+			if (!outcome.ok) throw new Error(outcome.message);
+			// Once per element: the closing tag repeats the expression.
+			expect(outcome.errors?.map(({ code, pos, end }) => [code, source.slice(pos, end)])).toEqual([
+				[TSRX_ERRORS.DYNAMIC_TAG_EXPRESSION.code, 'c ? A : B'],
+				[TSRX_ERRORS.DYNAMIC_TAG_EXPRESSION.code, 'getTag()'],
+				[TSRX_ERRORS.DYNAMIC_TAG_EXPRESSION.code, 'props?.as'],
+			]);
+			expect(outcome.ast.body.map((node) => node.type)).toEqual([
+				'ExportNamedDeclaration',
+				'ExportNamedDeclaration',
+				'ExportNamedDeclaration',
+			]);
+			const main = /** @type {AST.Node} */ (
+				find_first(
+					outcome.ast,
+					(node) =>
+						node.type === 'JSXElement' &&
+						/** @type {{ name?: string }} */ (
+							/** @type {ESTreeJSX.JSXElement} */ (node).openingElement.name
+						).name === 'main',
+				)
+			);
+			expect(
+				node_children(main)
+					.filter((node) => node.type !== 'JSXText')
+					.map((node) => source.slice(node.start, node.end).split('\n')[0]),
+			).toEqual(['<{c ? A : B}>', '<{getTag()} />', '<{Tag} />']);
+		}
+	});
+
+	it('reports a dynamic tag in a dynamic tag once for each element', async () => {
+		const source = 'const x = <{c ? <{d ? X : Y} /> : B} />;';
+		const [outcome] = await parse_in_worker_with_ast([{ source, options: { collect: true } }]);
+
+		if (!outcome.ok) throw new Error(outcome.message);
+		expect(outcome.errors?.map(({ pos, end }) => source.slice(pos, end))).toEqual([
+			'd ? X : Y',
+			'c ? <{d ? X : Y} /> : B',
+		]);
+	});
+
+	it.each([
+		['const x = <{...a} />;', 11],
+		['const x = <{} />;', 12],
+		['const x = <{/* c */} />;', 12],
+	])('rejects %s in every mode, which is no expression', async (source, pos) => {
+		const outcomes = await parse_in_worker(modes.map((options) => ({ source, options })));
+
+		for (const outcome of outcomes) {
+			expect(outcome).toEqual(thrown(TSRX_ERRORS.DYNAMIC_TAG_EXPRESSION, pos));
+		}
 	});
 });
 
@@ -4898,18 +6422,145 @@ describe('division and private fields in template JS positions', () => {
 });
 
 describe('raw-text <script> elements', () => {
-	it('captures the body verbatim as `content` and mirrors it as a single JSXText child', () => {
+	it('captures the body verbatim as `content`, with no children', () => {
 		const script = findElement(
 			`function App() @{ <head><script>const x = 1; foo();</script></head> }`,
 			'script',
 		);
 		assert_type(script, 'JSXElement');
 		expect(script.content).toBe('const x = 1; foo();');
-		// The body is mirrored as one JSXText child (like JSXStyleElement's css +
-		// parsed children) so generic element consumers emit it verbatim.
-		expect(script.children).toHaveLength(1);
-		expect(script.children[0].type).toBe('JSXText');
-		expect(child(script, 0, 'JSXText').value).toBe('const x = 1; foo();');
+		// `content` is the only body: a JSXText child would be read with JSX
+		// text's rules, which join its lines and decode its references (#708).
+		expect(script.children).toEqual([]);
+	});
+
+	// The body is raw text, in templates and in plain JSX: no comments, no
+	// character references, no `{…}` expressions, and its line breaks stay.
+	it('reads comments, character references, and braces in the body as text', async () => {
+		const body = `
+	// c
+	{code}
+	/* d */ x = "&amp;" < 1;
+`;
+		const sources = [
+			`export function App() @{
+	<div><script>${body}</script></div>
+}`,
+			`export function App() {
+	return <div><script>${body}</script></div>;
+}`,
+			`export const s = <script>${body}</script>;`,
+		];
+		const outcomes = await parse_in_worker_with_ast(
+			sources.map((source) => ({ source, options: { collect: true } })),
+		);
+
+		for (const [index, outcome] of outcomes.entries()) {
+			if (!outcome.ok) throw new Error(`${sources[index]} threw ${outcome.message}`);
+			const script = /** @type {AST.TSRXJSXElement | undefined} */ (
+				find_first(
+					outcome.ast,
+					(node) =>
+						node.type === 'JSXElement' &&
+						/** @type {AST.TSRXJSXElement} */ (node).openingElement.name.type === 'JSXIdentifier' &&
+						/** @type {ESTreeJSX.JSXIdentifier} */ (
+							/** @type {AST.TSRXJSXElement} */ (node).openingElement.name
+						).name === 'script',
+				)
+			);
+			expect(script?.content, sources[index]).toBe(body);
+			expect(script?.children, sources[index]).toEqual([]);
+			expect(outcome.errors, sources[index]).toEqual([]);
+			// The comments in the body are text, attached to no node.
+			const commented = find_first(outcome.ast, (node) =>
+				['leadingComments', 'trailingComments', 'innerComments'].some(
+					(key) =>
+						/** @type {Record<string, unknown[] | undefined>} */ (/** @type {unknown} */ (node))[
+							key
+						]?.length,
+				),
+			);
+			expect(commented, sources[index]).toBeUndefined();
+		}
+	});
+
+	// HTML ends a script at `</script`, optional whitespace, and `>`, and at any
+	// other `</script`, in any letter case, too. So a body ends at the first,
+	// and every other `</script` is an error.
+	it('ends the body where HTML does', async () => {
+		/** @type {Array<[string, string]>} */
+		const closings = [
+			['</script>', 'a = 1;'],
+			['</script >', 'a = 1;'],
+			['</script\n\t>', 'a = 1;'],
+			['</script\t\f\r >', 'a = 1;'],
+		];
+		const sources = closings.map(
+			([closing]) => `export function App() @{
+	<div><script>a = 1;${closing}</div>
+}`,
+		);
+		const outcomes = await parse_in_worker_with_ast(sources.map((source) => ({ source })));
+
+		for (const [index, outcome] of outcomes.entries()) {
+			const [closing, content] = closings[index];
+			if (!outcome.ok) throw new Error(`${JSON.stringify(closing)} threw ${outcome.message}`);
+			const script = /** @type {AST.TSRXJSXElement} */ (
+				find_first(
+					outcome.ast,
+					(node) => node.type === 'JSXElement' && node !== null && 'content' in node,
+				)
+			);
+			expect(script.content).toBe(content);
+			const source = sources[index];
+			const closing_element = /** @type {AST.NodeWithLocation} */ (
+				/** @type {unknown} */ (script.closingElement)
+			);
+			expect(source.slice(closing_element.start, closing_element.end)).toBe(closing);
+			expect(source.slice(/** @type {AST.NodeWithLocation} */ (script).end - 1)).toMatch(/^>/);
+		}
+	});
+
+	it('reports every other `</script` in the body, in any letter case', async () => {
+		/** @type {Array<[string, string]>} */
+		const cases = [
+			['a = 1;</SCRIPT>b = 2;', '</SCRIPT'],
+			['a = 1;</Script >b = 2;', '</Script'],
+			['a = 1;</script/>b = 2;', '</script'],
+			['a = 1;</script foo>b = 2;', '</script'],
+			['s = "</scripts>";', '</script'],
+		];
+		const sources = cases.map(
+			([body]) => `export function App() @{
+	<script>${body}</script>
+}`,
+		);
+		const collected = await parse_in_worker_with_ast(
+			sources.map((source) => ({ source, options: { collect: true } })),
+		);
+		const strict = await parse_in_worker(sources.map((source) => ({ source })));
+
+		for (const [index, [body, written]] of cases.entries()) {
+			const pos = sources[index].indexOf(written, sources[index].indexOf('a = 1;') - 10);
+			const outcome = collected[index];
+			if (!outcome.ok) throw new Error(`${body} threw ${outcome.message}`);
+			expect(outcome.errors, body).toEqual([
+				{ code: TSRX_ERRORS.SCRIPT_END_TAG_IN_BODY.code, pos, end: pos + 8 },
+			]);
+			const script = /** @type {AST.TSRXJSXElement} */ (
+				find_first(outcome.ast, (node) => node.type === 'JSXElement' && 'content' in node)
+			);
+			expect(script.content, body).toBe(body);
+			expect(strict[index], body).toEqual(thrown(TSRX_ERRORS.SCRIPT_END_TAG_IN_BODY, pos));
+		}
+	});
+
+	it('reads `<\\/script` in the body as text', () => {
+		const script = findElement(
+			`function App() @{ <script>const tag = "<\\/script>";</script> }`,
+			'script',
+		);
+		expect(script.content).toBe('const tag = "<\\/script>";');
 	});
 
 	it('reads JS with markup-significant characters (`<`, `{`, `}`) that would otherwise break parsing', () => {
@@ -5013,6 +6664,1764 @@ const p: Point = { x: 1 }; // trailing`,
 		expect(b.trailingComments).toBeUndefined();
 		expect(c.leadingComments?.map((comment) => comment.value)).toEqual([' before c ']);
 		expect(c.trailingComments?.map((comment) => comment.value)).toEqual([' c ']);
+	});
+});
+
+// The import attributes of an import type go on `options`, as acorn's
+// `ImportExpression` and typescript-estree store them, and as
+// sveltejs/acorn-typescript#110 does upstream (#422).
+describe('import attributes in import types', () => {
+	/** @type {Array<[string, () => ParseOptions | undefined]>} */
+	const option_sets = [
+		['without options', () => undefined],
+		[
+			'with the formatter options',
+			() => ({ collect: true, errors: [], comments: [], preserveParens: true }),
+		],
+		['in loose mode', () => ({ loose: true, errors: [], comments: [] })],
+	];
+
+	/**
+	 * Every import type in the parsed source, in source order, with the source
+	 * text of its import attributes.
+	 *
+	 * @param {string} source
+	 * @param {ParseOptions} [options]
+	 */
+	function import_types(source, options) {
+		/** @type {AST.TSImportType[]} */
+		const found = [];
+		find_first(parseModule(source, 'App.tsrx', options), (node) => {
+			if (node.type === 'TSImportType') found.push(/** @type {AST.TSImportType} */ (node));
+			return false;
+		});
+		return found.map((node) => ({
+			node,
+			options:
+				node.options &&
+				source.slice(
+					/** @type {number} */ (node.options.start),
+					/** @type {number} */ (node.options.end),
+				),
+		}));
+	}
+
+	describe.each(option_sets)('%s', (_, options) => {
+		it('parses import attributes as an object expression on `options`', () => {
+			const [a, b, c] = import_types(
+				`type A = import("foo", { with: { type: "json" } });
+type B = import("foo", { with: { "resolution-mode": "import" } }).Bar;
+let c: typeof import("foo", { with: { type: "json" } });`,
+				options(),
+			);
+
+			expect(a.options).toBe('{ with: { type: "json" } }');
+			expect(as_type(a.node.argument, 'Literal').value).toBe('foo');
+			const attributes = as_type(a.node.options, 'ObjectExpression');
+			const with_property = as_type(attributes.properties[0], 'Property');
+			expect(as_type(with_property.key, 'Identifier').name).toBe('with');
+			const type_property = as_type(
+				as_type(with_property.value, 'ObjectExpression').properties[0],
+				'Property',
+			);
+			expect(as_type(type_property.key, 'Identifier').name).toBe('type');
+			expect(as_type(type_property.value, 'Literal').value).toBe('json');
+			expect(a.node.qualifier).toBeUndefined();
+
+			expect(b.options).toBe('{ with: { "resolution-mode": "import" } }');
+			const resolution_mode = as_type(
+				as_type(
+					as_type(as_type(b.node.options, 'ObjectExpression').properties[0], 'Property').value,
+					'ObjectExpression',
+				).properties[0],
+				'Property',
+			);
+			expect(as_type(resolution_mode.key, 'Literal').value).toBe('resolution-mode');
+			expect(as_type(b.node.qualifier, 'Identifier').name).toBe('Bar');
+
+			expect(c.options).toBe('{ with: { type: "json" } }');
+		});
+
+		it('parses import attributes with trailing commas and line breaks inside them', () => {
+			const [single, multiple] = import_types(
+				`type A = import("foo", { with: { type: "json", }, });
+type B = import("foo", {
+  with: {
+    type: "json",
+  },
+});`,
+				options(),
+			);
+
+			expect(single.options).toBe('{ with: { type: "json", }, }');
+			expect(multiple.options).toBe('{\n  with: {\n    type: "json",\n  },\n}');
+		});
+
+		it('parses a qualifier and type arguments after the import attributes', () => {
+			const [qualified, query] = import_types(
+				`type A = import("foo", { with: { "resolution-mode": "require" } }).ns.Bar<string, number>;
+type B = typeof import("foo", { with: { type: "json" } }).value;`,
+				options(),
+			);
+
+			expect(qualified.options).toBe('{ with: { "resolution-mode": "require" } }');
+			const qualifier = as_type(qualified.node.qualifier, 'TSQualifiedName');
+			expect(as_type(qualifier.left, 'Identifier').name).toBe('ns');
+			expect(as_type(qualifier.right, 'Identifier').name).toBe('Bar');
+			expect(qualified.node.typeArguments?.params.map((param) => param.type)).toEqual([
+				'TSStringKeyword',
+				'TSNumberKeyword',
+			]);
+
+			expect(query.options).toBe('{ with: { type: "json" } }');
+			expect(as_type(query.node.qualifier, 'Identifier').name).toBe('value');
+		});
+
+		it('parses import attributes in a template body', () => {
+			const [data] = import_types(
+				`export function App() @{
+	const data: import("./data.json", { with: { type: "json" } }).Data = load();
+	<div>{data.name}</div>
+}`,
+				options(),
+			);
+
+			expect(data.options).toBe('{ with: { type: "json" } }');
+		});
+
+		it('gives an import type without import attributes `options: null`', () => {
+			const [plain, qualified] = import_types(
+				`type A = import("foo");
+type B = import("foo").Bar<string>;`,
+				options(),
+			);
+
+			expect(plain.node.options).toBeNull();
+			expect(plain.node.qualifier).toBeUndefined();
+			expect(qualified.node.options).toBeNull();
+			expect(as_type(qualified.node.qualifier, 'Identifier').name).toBe('Bar');
+			expect(qualified.node.typeArguments?.params.map((param) => param.type)).toEqual([
+				'TSStringKeyword',
+			]);
+		});
+
+		// Like TypeScript (microsoft/TypeScript#61489), unlike `import()`. Where
+		// the options' `{` is missing, TypeScript reports it (TS1005, #717).
+		it.each([
+			['type A = import("foo",);', TS_ERRORS.TOKEN_EXPECTED],
+			['type A = import("foo", { with: { type: "json" } },);', TS_ERRORS.UNEXPECTED_TOKEN],
+			['type A = import("foo", attributes);', TS_ERRORS.TOKEN_EXPECTED],
+		])('rejects what TypeScript rejects: %s', (source, error) => {
+			expect(() => parseModule(source, 'App.tsrx', options())).toThrow(error_with(error));
+		});
+	});
+});
+
+describe('comments in statement lists', () => {
+	// A block comment on the next statement's line leads that statement, so a
+	// JSDoc cast stays with the parentheses it casts. The semicolon-less form
+	// is what the formatter prints with `semi: false`.
+	it.each([
+		['a function body', 'function f() { a; /** @type {Foo} */ (x).y(); }'],
+		['a static block', 'class C { static { a; /** @type {Foo} */ (x).y(); } }'],
+		['a namespace', 'namespace N { a; /** @type {Foo} */ (x).y(); }'],
+		['a code block', 'function App() @{ const a = 1; /** @type {Foo} */ (x).y(); <div /> }'],
+		['a semicolon-less static block', 'class C { static { a\n;/** @type {Foo} */ (x).y() } }'],
+		['a semicolon-less namespace', 'namespace N { a\n;/** @type {Foo} */ (x).y() }'],
+		[
+			'a semicolon-less code block',
+			'function App() @{ const a = 1\n;/** @type {Foo} */ (x).y()\n<div /> }',
+		],
+	])('leads the next statement with a block comment on its line in %s', (_, source) => {
+		const ast = parseModule(source, 'App.tsrx');
+		const block = /** @type {AST.Node & { body: AST.Node[] }} */ (
+			find_first(
+				ast,
+				(node) =>
+					node.type === 'BlockStatement' ||
+					node.type === 'StaticBlock' ||
+					node.type === 'TSModuleBlock' ||
+					node.type === 'JSXCodeBlock',
+			)
+		);
+		const [previous, cast] = block.body;
+
+		expect(source.slice(cast.start, cast.end)).toMatch(/^\(x\)\.y\(\);?$/);
+		expect(previous.trailingComments).toBeUndefined();
+		expect(cast.leadingComments?.map((comment) => comment.value)).toEqual(['* @type {Foo} ']);
+	});
+
+	it('leads the render output of a code block with a block comment on its line', () => {
+		const ast = parseModule('function App() @{ const a = 1; /* output */ <div /> }', 'App.tsrx');
+		const block = find_first(ast, (node) => node.type === 'JSXCodeBlock');
+		assert_type(block, 'JSXCodeBlock');
+
+		expect(block.body[0].trailingComments).toBeUndefined();
+		expect(block.render?.leadingComments?.map((comment) => comment.value)).toEqual([' output ']);
+	});
+
+	it('keeps comments after the last statement inside a static block or namespace', () => {
+		const ast = parseModule(
+			`class C {
+	static {
+		a; // a
+		// after a
+	}
+}
+namespace N {
+	a; // a
+	// after a
+}`,
+			'App.ts',
+		);
+		const staticBlock = find_first(ast, (node) => node.type === 'StaticBlock');
+		const moduleBlock = find_first(ast, (node) => node.type === 'TSModuleBlock');
+		assert_type(staticBlock, 'StaticBlock');
+		assert_type(moduleBlock, 'TSModuleBlock');
+
+		for (const block of [staticBlock, moduleBlock]) {
+			expect(block.body[0].trailingComments?.map((comment) => comment.value)).toEqual([
+				' a',
+				' after a',
+			]);
+		}
+	});
+
+	it('keeps the comments of an empty static block or namespace as inner comments', () => {
+		const ast = parseModule(
+			`class C {
+	static {
+		// static
+	}
+	x = 1;
+}
+namespace N {
+	// namespace
+}`,
+			'App.ts',
+		);
+		const staticBlock = find_first(ast, (node) => node.type === 'StaticBlock');
+		const moduleBlock = find_first(ast, (node) => node.type === 'TSModuleBlock');
+
+		expect(staticBlock?.innerComments?.map((comment) => comment.value)).toEqual([' static']);
+		expect(moduleBlock?.innerComments?.map((comment) => comment.value)).toEqual([' namespace']);
+	});
+});
+
+describe('comments in member lists', () => {
+	/**
+	 * @param {AST.Node | undefined} node
+	 * @returns {AST.Node[]}
+	 */
+	function members(node) {
+		if (node?.type === 'TSInterfaceDeclaration') return node.body.body;
+		if (node?.type === 'TSEnumDeclaration') return node.body.members;
+		if (node?.type === 'TSTypeAliasDeclaration') {
+			return as_type(node.typeAnnotation, 'TSTypeLiteral').members;
+		}
+		throw new Error(`No member list in ${node?.type}`);
+	}
+
+	// A JSDoc tag on the next member's line documents that member, not the one
+	// before it.
+	it.each([
+		['an interface', 'interface I { a: 1; /** @deprecated */ b: 2; }'],
+		['an enum', 'enum E { A, /** @deprecated */ B }'],
+		['a type literal', 'type T = { a: 1; /** @deprecated */ b: 2; };'],
+	])('leads the next member with a block comment on its line in %s', (_, source) => {
+		const [previous, next] = members(parseModule(source, 'App.ts').body[0]);
+
+		expect(previous.trailingComments).toBeUndefined();
+		expect(next.leadingComments?.map((comment) => comment.value)).toEqual(['* @deprecated ']);
+	});
+
+	it.each([
+		['an interface', 'interface I {\n\ta: 1; // a\n\t// after a\n}'],
+		['an enum', 'enum E {\n\tA, // a\n\t// after a\n}'],
+		['a type literal', 'type T = {\n\ta: 1; // a\n\t// after a\n};'],
+	])('keeps comments after the last member inside %s', (_, source) => {
+		const [last] = members(parseModule(source, 'App.ts').body[0]);
+
+		expect(last.trailingComments?.map((comment) => comment.value)).toEqual([' a', ' after a']);
+	});
+
+	it('keeps the comments of an empty interface, enum, or type literal as inner comments', () => {
+		const ast = parseModule(
+			`interface I {
+	// interface
+}
+enum E {
+	// enum
+}
+type T = {
+	// type
+};`,
+			'App.ts',
+		);
+		const iface = as_type(ast.body[0], 'TSInterfaceDeclaration');
+		const enumeration = as_type(ast.body[1], 'TSEnumDeclaration');
+		const alias = as_type(ast.body[2], 'TSTypeAliasDeclaration');
+
+		expect(iface.body.innerComments?.map((comment) => comment.value)).toEqual([' interface']);
+		// The enum's name is not in its body, so it doesn't take the body's comments.
+		expect(enumeration.id.trailingComments).toBeUndefined();
+		expect(enumeration.body.innerComments?.map((comment) => comment.value)).toEqual([' enum']);
+		expect(alias.typeAnnotation.innerComments?.map((comment) => comment.value)).toEqual([' type']);
+	});
+});
+
+describe('comments after the `<` of an element or fragment', () => {
+	it('keeps them inside the opening tag, as Prettier attaches them', () => {
+		for (const source of [
+			'</* note */>x</>;',
+			'</* note */></>;',
+			'const a = <\n  // note\n>\n  x\n</>;',
+			'function f() {\n  return </* note */>\n    <b />\n  </>;\n}',
+		]) {
+			const fragment = find_first(
+				parseModule(source, 'App.tsrx'),
+				(node) => node.type === 'JSXFragment',
+			);
+			assert_type(fragment, 'JSXFragment');
+			expect(fragment.leadingComments, source).toBeUndefined();
+			// Between the `<` and the `>`, they dangle on the opening fragment.
+			expect(
+				fragment.openingFragment.innerComments?.map((comment) => comment.value.trim()),
+				source,
+			).toEqual(['note']);
+		}
+
+		const element = find_first(
+			parseModule('</* a */ /* b */div id="a" />;', 'App.tsrx'),
+			(node) => node.type === 'JSXElement',
+		);
+		assert_type(element, 'JSXElement');
+		expect(element.leadingComments).toBeUndefined();
+		// Before the tag name, they lead it.
+		expect(element.openingElement.name.leadingComments?.map((comment) => comment.value)).toEqual([
+			' a ',
+			' b ',
+		]);
+	});
+});
+
+describe('comments in element bodies and closing tags', () => {
+	/**
+	 * @param {unknown} node
+	 * @returns {{ leading?: string[], trailing?: string[], inner?: string[] }}
+	 */
+	function commentsOf(node) {
+		const withComments = /** @type {AST.NodeWithMaybeComments | undefined} */ (node);
+		/** @param {AST.Comment[] | undefined} list */
+		const values = (list) => list?.map((comment) => comment.value);
+		return {
+			leading: values(withComments?.leadingComments),
+			trailing: values(withComments?.trailingComments),
+			inner: values(withComments?.innerComments),
+		};
+	}
+
+	/**
+	 * @param {string} source
+	 * @returns {any}
+	 */
+	function firstTemplate(source) {
+		return find_first(
+			parseModule(source, 'App.tsrx'),
+			(node) => node.type === 'JSXElement' || node.type === 'JSXFragment',
+		);
+	}
+
+	/**
+	 * The comments in `node` when it is an empty `{}`, the `{}` every comment
+	 * between children gets.
+	 *
+	 * @param {any} node
+	 * @returns {string[] | undefined}
+	 */
+	function emptyContainerComments(node) {
+		expect(node?.type).toBe('JSXExpressionContainer');
+		expect(node.expression.type).toBe('JSXEmptyExpression');
+		expect(commentsOf(node)).toEqual({});
+		return commentsOf(node.expression).inner;
+	}
+
+	it('gives a comment right after an opening tag its own `{}` in the body, not the tag', () => {
+		for (const source of [
+			'<div>/* note */x</div>;',
+			'<>/* note */ x</>;',
+			'const a = <p>/* note */{name}</p>;',
+		]) {
+			const element = firstTemplate(source);
+			expect(commentsOf(element.openingElement ?? element.openingFragment), source).toEqual({});
+			expect(emptyContainerComments(element.children[0]), source).toEqual([' note ']);
+			expect(commentsOf(element.children[1]), source).toEqual({});
+		}
+	});
+
+	it('gives a comment in JSX text its own `{}`, not the text or the closing tag', () => {
+		// As `{/* note */}` is in TSX, whether text renders around it or not
+		for (const source of [
+			'const a = <div>\n  /* note */\n  text\n</div>;',
+			'const a = <div>\n  text\n  // note\n  more\n</div>;',
+			'const a = <div>text /* note */ more</div>;',
+		]) {
+			const element = firstTemplate(source);
+			expect(commentsOf(element.closingElement), source).toEqual({});
+			expect(commentsOf(element.children[0]), source).toEqual({});
+			expect(
+				emptyContainerComments(element.children[1])?.map((value) => value.trim()),
+				source,
+			).toEqual(['note']);
+			expect(commentsOf(element.children[2]), source).toEqual({});
+		}
+	});
+
+	it("gives a comment between two children its own `{}`, even on a child's line", () => {
+		for (const source of [
+			'const a = <div>{a} /* note */ text</div>;',
+			'const a = <div><b /> /* note */ <i /></div>;',
+		]) {
+			const element = firstTemplate(source);
+			expect(commentsOf(element.children[0]), source).toEqual({});
+			expect(emptyContainerComments(element.children[2]), source).toEqual([' note ']);
+		}
+
+		// With nothing that renders on one side, it still has its own `{}`
+		const touching = firstTemplate('const a = <div><b />/* note */text</div>;');
+		expect(touching.children.map((/** @type {AST.Node} */ node) => node.type)).toEqual([
+			'JSXElement',
+			'JSXExpressionContainer',
+			'JSXText',
+		]);
+		expect(commentsOf(touching.children[0])).toEqual({});
+		expect(emptyContainerComments(touching.children[1])).toEqual([' note ']);
+
+		const ignored = firstTemplate(
+			'const a = <div>\n  text\n  // prettier-ignore\n  <b />\n</div>;',
+		);
+		expect(commentsOf(ignored.children[0])).toEqual({});
+		expect(emptyContainerComments(ignored.children[1])).toEqual([' prettier-ignore']);
+		expect(commentsOf(ignored.children[3])).toEqual({});
+
+		// After a `{" "}`, too
+		const element = firstTemplate('const a = <div>x{" "}/* note */ y</div>;');
+		expect(commentsOf(element.children[1])).toEqual({});
+		expect(emptyContainerComments(element.children[2])).toEqual([' note ']);
+	});
+
+	// Inside a `{…}` container, the parser recorded a comment in an element's
+	// body as before its first child until a child was finished, which a `{…}`
+	// child isn't until the token after its `}` is read. The comment went to the
+	// element's body, which the formatter printed before the closing tag (#637).
+	// Now it is in its own `{}` where it is written.
+	it('gives a comment in the body of an element in a container its own `{}`', () => {
+		for (const source of [
+			'export function App() @{\n  <main>{x && <div>{" "}\n/* c */ <i /></div>}</main>\n}',
+			'export function App() @{\n  <main a={<div>{" "}\n/* c */ <i /></div>} />\n}',
+			'export function App() @{\n  <main>{x && <div>{y}\n/* c */\n<i /></div>}</main>\n}',
+			'export function App() @{\n  <main>{x && <div>\n/* c */\n<i /></div>}</main>\n}',
+			'export function App() @{\n  <main>{x && <p>{y && <div>{z}\n/* c */\n<i /></div>}</p>}</main>\n}',
+		]) {
+			const div = findElement(source, 'div');
+			const comment_start = source.indexOf('/* c */');
+			const container = div.children.find((node) => node.start === comment_start);
+			expect(container?.end, source).toBe(comment_start + '/* c */'.length);
+			expect(emptyContainerComments(container), source).toEqual([' c ']);
+			for (const node of div.children) {
+				if (node !== container) expect(commentsOf(node), source).toEqual({});
+			}
+		}
+
+		// After the last child, too, not on the closing tag
+		const source = 'export function App() @{\n  {x && <div>{y}\n// c\n</div>}\n}';
+		const div = findElement(source, 'div');
+		expect(commentsOf(div.closingElement)).toEqual({});
+		expect(emptyContainerComments(div.children[2])).toEqual([' c']);
+	});
+
+	it("keeps a comment between a closing fragment's `</` and `>` on it, as Prettier does", () => {
+		const program = parseModule('<>x</ /* note */>;\nfoo();', 'App.tsrx');
+		const fragment = find_first(program, (node) => node.type === 'JSXFragment');
+		assert_type(fragment, 'JSXFragment');
+		expect(commentsOf(fragment.closingFragment).inner).toEqual([' note ']);
+		expect(commentsOf(program.body.at(-1))).toEqual({});
+	});
+});
+
+describe('comments in empty arrays and objects', () => {
+	it('keeps the comments of an empty array or object as inner comments', () => {
+		const ast = parseModule(
+			`const a = [
+	// array
+];
+const o = {/* object */};
+const [/* pattern */] = a;
+foo({
+	// argument
+});`,
+			'App.ts',
+		);
+		const [array, object, pattern, argument] = [
+			find_first(ast, (node) => node.type === 'ArrayExpression'),
+			find_first(ast, (node) => node.type === 'ObjectExpression'),
+			find_first(ast, (node) => node.type === 'ArrayPattern'),
+			find_first(ast, (node) => node.type === 'CallExpression'),
+		];
+
+		expect(array?.innerComments?.map((comment) => comment.value)).toEqual([' array']);
+		expect(object?.innerComments?.map((comment) => comment.value)).toEqual([' object ']);
+		expect(pattern?.innerComments?.map((comment) => comment.value)).toEqual([' pattern ']);
+		const [objectArgument] = as_type(argument, 'CallExpression').arguments;
+		expect(objectArgument.innerComments?.map((comment) => comment.value)).toEqual([' argument']);
+	});
+
+	it("keeps an empty container's comments inside it after a comment before it (#741)", () => {
+		// The comment before the container leads it, and the walk reached that
+		// comment as a node and gave it the container's comments as trailing ones.
+		/** @type {Array<[source: string, container: (node: AST.Node) => boolean]>} */
+		const cases = [
+			['class A /* e */ {\n\t// c\n}', (node) => node.type === 'ClassBody'],
+			['function f() /* e */ {\n\t// c\n}', (node) => node.type === 'BlockStatement'],
+			['x = () => /* e */ {\n\t// c\n};', (node) => node.type === 'BlockStatement'],
+			['if (a) /* e */ {\n\t// c\n}', (node) => node.type === 'BlockStatement'],
+			['// e\n{\n\t// c\n}', (node) => node.type === 'BlockStatement'],
+			['interface I /* e */ {\n\t// c\n}', (node) => node.type === 'TSInterfaceBody'],
+			['namespace N /* e */ {\n\t// c\n}', (node) => node.type === 'TSModuleBlock'],
+			['type T = /* e */ {\n\t// c\n};', (node) => node.type === 'TSTypeLiteral'],
+			['const a = /* e */ [/* c */];', (node) => node.type === 'ArrayExpression'],
+			['f(a, /* e */ [\n\t// c\n]);', (node) => node.type === 'ArrayExpression'],
+			['x = // e\n[\n\t// c\n];', (node) => node.type === 'ArrayExpression'],
+		];
+		for (const [source, is_container] of cases) {
+			const container = find_first(parseModule(source, 'App.ts'), is_container);
+			expect(
+				container?.innerComments?.map((comment) => comment.value.trim()),
+				source,
+			).toEqual(['c']);
+			const [before] = /** @type {Array<AST.Comment & AST.NodeWithMaybeComments>} */ (
+				container?.leadingComments ?? []
+			);
+			expect(before?.trailingComments, source).toBeUndefined();
+		}
+	});
+
+	it('leaves a comment before an empty array in a template child to its attribute', () => {
+		const ast = parseModule(
+			`export function App() @{
+	<div title={/* title */ title}>{[]}</div>
+}`,
+			'App.tsrx',
+		);
+		const array = find_first(ast, (node) => node.type === 'ArrayExpression');
+
+		expect(array?.innerComments).toBeUndefined();
+	});
+});
+
+describe('comments in import and export specifier lists', () => {
+	/**
+	 * @param {string} source
+	 * @returns {AST.ImportDeclaration | AST.ExportNamedDeclaration}
+	 */
+	function lastDeclaration(source) {
+		const declaration = parseModule(source, 'App.ts').body.at(-1);
+		if (
+			declaration?.type !== 'ImportDeclaration' &&
+			declaration?.type !== 'ExportNamedDeclaration'
+		) {
+			throw new Error(`Expected an import or export, got ${declaration?.type}`);
+		}
+		return declaration;
+	}
+
+	// Like the last element of an array or object, the last specifier keeps the
+	// comments before `}`, so the formatter prints them inside the braces.
+	it.each([
+		['an import', "import {\n\ta,\n\tb,\n\t// after b\n} from 'mod';"],
+		['a re-export', "export {\n\ta,\n\tb,\n\t// after b\n} from 'mod';"],
+		['a local export list', 'const a = 1;\nconst b = 2;\nexport {\n\ta,\n\tb,\n\t// after b\n};'],
+	])('keeps a comment after the last specifier of %s with that specifier', (_, source) => {
+		const declaration = lastDeclaration(source);
+		const [first, last] = declaration.specifiers;
+
+		expect(first.trailingComments).toBeUndefined();
+		expect(last.trailingComments?.map((comment) => comment.value)).toEqual([' after b']);
+		expect(declaration.source?.leadingComments).toBeUndefined();
+	});
+
+	it('keeps a comment before `from` with the last specifier and one after it with the source', () => {
+		const declaration = lastDeclaration("import def, { a } /* before */ from /* after */ 'mod';");
+
+		expect(declaration.specifiers[1].trailingComments?.map((comment) => comment.value)).toEqual([
+			' before ',
+		]);
+		expect(declaration.source?.leadingComments?.map((comment) => comment.value)).toEqual([
+			' after ',
+		]);
+	});
+
+	// Like Prettier, which trails the node before a comment at the end of a
+	// line, a comment after the `{` of the named imports trails the default one
+	it('trails the default import with a line comment after the brace of the named ones', () => {
+		const declaration = lastDeclaration("import d, { // first\n\t// second\n\ta,\n} from 'mod';");
+
+		expect(declaration.specifiers[0].trailingComments?.map((comment) => comment.value)).toEqual([
+			' first',
+		]);
+		expect(declaration.specifiers[1].leadingComments?.map((comment) => comment.value)).toEqual([
+			' second',
+		]);
+	});
+
+	it('leaves a block comment before a comma with the specifier before it', () => {
+		const declaration = lastDeclaration("import def /* d */, { a } from 'mod';");
+
+		expect(declaration.specifiers[0].trailingComments?.map((comment) => comment.value)).toEqual([
+			' d ',
+		]);
+		expect(declaration.specifiers[1].leadingComments).toBeUndefined();
+	});
+
+	// Like Prettier, which ends the declaration before its `;`
+	it('gives the comments after the module source to the declaration', () => {
+		const declaration = lastDeclaration("import { a } from 'mod' /* source */; // declaration");
+
+		expect(declaration.specifiers[0].trailingComments).toBeUndefined();
+		expect(declaration.source?.trailingComments).toBeUndefined();
+		expect(declaration.trailingComments?.map((comment) => comment.value)).toEqual([
+			' source ',
+			' declaration',
+		]);
+	});
+});
+
+describe('comments around the commas of a list', () => {
+	/**
+	 * @param {string} source
+	 * @returns {any}
+	 */
+	function firstStatement(source) {
+		return parseModule(source, 'App.ts').body[0];
+	}
+
+	/** @type {Array<[string, string, (statement: any) => AST.Node[]]>} */
+	const lists = [
+		['an array', 'x = [a /* c */, b];', (statement) => statement.expression.right.elements],
+		['call arguments', 'foo(a /* c */, b);', (statement) => statement.expression.arguments],
+		['new arguments', 'new Foo(a /* c */, b);', (statement) => statement.expression.arguments],
+		[
+			'an object',
+			'x = { a: 1 /* c */, b: 2 };',
+			(statement) => statement.expression.right.properties,
+		],
+		['parameters', 'function f(a /* c */, b) {}', (statement) => statement.params],
+		[
+			'an object pattern',
+			'const { a /* c */, b } = o;',
+			(statement) => statement.declarations[0].id.properties,
+		],
+		['an enum', 'enum E { A /* c */, B }', (statement) => statement.body.members],
+		[
+			'import specifiers',
+			"import { a /* c */, b } from 'mod';",
+			(statement) => statement.specifiers,
+		],
+		[
+			'type arguments',
+			'type X = Foo<A /* c */, B>;',
+			(statement) => statement.typeAnnotation.typeArguments.params,
+		],
+		[
+			'type parameters',
+			'function f<A /* c */, B>() {}',
+			(statement) => statement.typeParameters.params,
+		],
+		[
+			'a tuple type',
+			'type X = [A /* c */, B];',
+			(statement) => statement.typeAnnotation.elementTypes,
+		],
+		[
+			'a tuple type with a type in parentheses',
+			'type X = [(A) /* c */, B];',
+			(statement) => statement.typeAnnotation.elementTypes,
+		],
+	];
+
+	it.each(lists)(
+		'keeps a comment before the comma with the element before it in %s',
+		(_, source, list) => {
+			const [first, second] = list(firstStatement(source));
+
+			expect(first.trailingComments?.map((comment) => comment.value)).toEqual([' c ']);
+			expect(second.leadingComments).toBeUndefined();
+		},
+	);
+
+	it.each(lists)(
+		'leads the next element with a comment after the comma in %s',
+		(_, source, list) => {
+			const [first, second] = list(firstStatement(source.replace(' /* c */,', ', /* c */')));
+
+			expect(first.trailingComments).toBeUndefined();
+			expect(second.leadingComments?.map((comment) => comment.value)).toEqual([' c ']);
+		},
+	);
+
+	it('keeps every comment before the comma with the element before it', () => {
+		/** @type {AST.Node[]} */
+		const [first, second] = firstStatement('x = [a /* c */ /* d */, b];').expression.right.elements;
+
+		expect(first.trailingComments?.map((comment) => comment.value)).toEqual([' c ', ' d ']);
+		expect(second.leadingComments).toBeUndefined();
+	});
+
+	// A callee or a function's name isn't in the argument or parameter list, so
+	// a comment before the first element stays with that element.
+	it('leads the first argument or parameter with a comment before it', () => {
+		/** @type {AST.CallExpression} */
+		const call = firstStatement('foo(/** @type {T} */ (x), y);').expression;
+		expect(call.callee.trailingComments).toBeUndefined();
+		expect(call.arguments[0].leadingComments?.map((comment) => comment.value)).toEqual([
+			'* @type {T} ',
+		]);
+
+		/** @type {AST.FunctionDeclaration} */
+		const fn = firstStatement('function f(\n\t// first\n\ta,\n) {}');
+		expect(fn.id.trailingComments).toBeUndefined();
+		expect(fn.params[0].leadingComments?.map((comment) => comment.value)).toEqual([' first']);
+	});
+
+	// The cast's `(` is on the comment's line, but the element it casts starts
+	// on the next one. The comment used to trail the element before the comma
+	// (#579).
+	/** @type {Array<[string, string, (statement: any) => AST.Node[]]>} */
+	const castLists = [
+		[
+			'an array',
+			'x = [a, /** @type {T} */ (\n\tb\n)];',
+			(statement) => statement.expression.right.elements,
+		],
+		[
+			'call arguments',
+			'foo(a, /** @type {T} */ (\n\tb\n));',
+			(statement) => statement.expression.arguments,
+		],
+	];
+
+	it.each(castLists)(
+		'leads the next element with a JSDoc cast whose parentheses break in %s',
+		(_, source, list) => {
+			const [first, second] = list(firstStatement(source));
+
+			expect(first.trailingComments).toBeUndefined();
+			expect(second.leadingComments?.map((comment) => comment.value)).toEqual(['* @type {T} ']);
+		},
+	);
+});
+
+// Ports of Prettier's comment handlers (`handle-comments.js`)
+describe('comments placed like Prettier', () => {
+	/**
+	 * @param {AST.Node | undefined} node
+	 * @returns {{ leading?: string[], trailing?: string[], inner?: string[] }}
+	 */
+	function commentsOf(node) {
+		const withComments = /** @type {AST.NodeWithMaybeComments | undefined} */ (node);
+		/** @param {AST.Comment[] | undefined} list */
+		const values = (list) => list?.map((comment) => comment.value);
+		return {
+			leading: values(withComments?.leadingComments),
+			trailing: values(withComments?.trailingComments),
+			inner: values(withComments?.innerComments),
+		};
+	}
+
+	/**
+	 * @param {string} source
+	 * @returns {any}
+	 */
+	function firstStatement(source) {
+		return parseModule(source, 'App.ts').body[0];
+	}
+
+	it('trails the operand before a comment at the end of an operator line', () => {
+		const { init } = firstStatement('const x =\n  a || // c\n  b;').declarations[0];
+
+		expect(commentsOf(init.left).trailing).toEqual([' c']);
+		expect(commentsOf(init.right).leading).toBeUndefined();
+	});
+
+	it('trails the last operand with a comment below it in the parentheses of a unary', () => {
+		const statement = firstStatement('x = !(\n  (\n    a ||\n    b\n  ) // c\n);');
+
+		expect(commentsOf(statement.expression.right.argument).trailing).toEqual([' c']);
+		expect(commentsOf(statement).trailing).toBeUndefined();
+	});
+
+	it('trails the condition with a comment before the ) of an if statement', () => {
+		const statement = firstStatement('if (\n  a\n  // c\n) {\n  b();\n}');
+
+		expect(commentsOf(statement.test).trailing).toEqual([' c']);
+		expect(commentsOf(statement.consequent).leading).toBeUndefined();
+	});
+
+	/**
+	 * Parse each source in a worker, and fail on any that throws
+	 * @param {string[]} sources
+	 * @returns {Promise<any[]>} Each source's AST
+	 */
+	async function parseAllInWorker(sources) {
+		const outcomes = await parse_in_worker_with_ast(sources.map((source) => ({ source })));
+		return outcomes.map((outcome, index) => {
+			if (!outcome.ok) {
+				throw new Error(`${JSON.stringify(sources[index])} threw ${outcome.message}`);
+			}
+			return outcome.ast;
+		});
+	}
+
+	// Like typescript-estree, the function starts at the type parameters. It
+	// started at its `(`, so the comment trailed the key or led the function
+	// (#458).
+	it('starts an object method at its type parameters, which keep the comments in them', async () => {
+		const sources = [
+			'const o = { m</* c */ T>(b: T) {} };',
+			'const o = { async m</* c */ T>(b: T) {} };',
+			'const o = { *m</* c */ T>(b: T) {} };',
+			'const o = { get m</* c */ T>() {} };',
+			'const o = { set m</* c */ T>(v: T) {} };',
+			'const o = { m<\n  // c\n  T,\n>(b: T) {} };',
+			'const o = { m\n  <T /* c */>(b: T) {} };',
+		];
+		const asts = await parseAllInWorker(sources);
+
+		for (const [index, ast] of asts.entries()) {
+			const property = ast.body[0].declarations[0].init.properties[0];
+			const { value } = property;
+			const { typeParameters } = value;
+			const [parameter] = typeParameters.params;
+			const label = sources[index];
+			expect(value.start, label).toBe(typeParameters.start);
+			expect(value.loc.start, label).toEqual(typeParameters.loc.start);
+			expect(value.end, label).toBe(sources[index].indexOf('{} }') + '{}'.length);
+			expect(
+				[...(parameter.leadingComments ?? []), ...(parameter.trailingComments ?? [])].map(
+					(/** @type {AST.Comment} */ comment) => comment.value.trim(),
+				),
+				label,
+			).toEqual(['c']);
+			expect(commentsOf(property.key).trailing, label).toBeUndefined();
+			expect(commentsOf(value).leading, label).toBeUndefined();
+		}
+	});
+
+	it('keeps a method function that has no type parameters, and a class method, where they start', async () => {
+		const [object, classDeclaration] = await parseAllInWorker([
+			'const o = { m(b) {}, async n(b) {}, get g() { return 1; } };',
+			'class A { m<T>(a: T) {} }',
+		]);
+		const source = 'const o = { m(b) {}, async n(b) {}, get g() { return 1; } };';
+
+		expect(
+			object.body[0].declarations[0].init.properties.map(
+				(/** @type {any} */ property) => property.value.start,
+			),
+		).toEqual([source.indexOf('(b)'), source.lastIndexOf('(b)'), source.indexOf('()')]);
+		const [method] = classDeclaration.body[0].body.body;
+		expect(method.value.start).toBe('class A { m<T>'.length);
+		expect(method.typeParameters.start).toBe('class A { m'.length);
+	});
+
+	// With no line break after the `;` that ends the file, the program ends at
+	// the `;`, and neither it nor the statement took the comment (#488)
+	it('trails the last statement with a comment before the ; that ends the file', async () => {
+		const sources = [
+			'const x = 1\n// c\n;',
+			'foo()\n// c\n;',
+			'if (a) b()\n// c\n;',
+			'a();\nconst x = 1\n/* c */\n;',
+		];
+		const asts = await parseAllInWorker([...sources, ...sources.map((source) => `${source}\n`)]);
+
+		for (const [index, source] of sources.entries()) {
+			const ast = asts[index];
+			const statement = ast.body.at(-1);
+			expect(
+				commentsOf(statement).trailing?.map((/** @type {string} */ value) => value.trim()),
+				JSON.stringify(source),
+			).toEqual(['c']);
+			expect(commentsOf(ast).inner, JSON.stringify(source)).toBeUndefined();
+			// As when a line break follows the `;`
+			expect(commentsOf(asts[index + sources.length].body.at(-1))).toEqual(commentsOf(statement));
+		}
+	});
+
+	// Like Prettier, the comment leads the argument, which the spread prints
+	// before its `...`. It trailed the spread, or led the next attribute (#489).
+	it('leads the argument of a spread attribute with a comment in its braces before it', async () => {
+		const sources = [
+			'x = <div {.../* c */b} />;',
+			'x = <div {/* c */ ...b} />;',
+			'x = <div {... /* c */ b} d="1" />;',
+			'x = <div {...\n  // c\n  b} />;',
+			'function App(b) @{\n  <div {.../* c */b} d="1" />\n}',
+		];
+		const asts = await parseAllInWorker(sources);
+
+		for (const [index, ast] of asts.entries()) {
+			const statement = ast.body[0];
+			const { attributes } = (
+				statement.type === 'FunctionDeclaration'
+					? statement.body.render
+					: statement.expression.right
+			).openingElement;
+			const label = sources[index];
+			expect(
+				commentsOf(attributes[0].argument).leading?.map((/** @type {string} */ value) =>
+					value.trim(),
+				),
+				label,
+			).toEqual(['c']);
+			expect(commentsOf(attributes[0]).trailing, label).toBeUndefined();
+			expect(commentsOf(attributes[1]?.name).leading, label).toBeUndefined();
+		}
+	});
+
+	// The next attribute's name took it, and the printer dropped it (#517)
+	it('trails the argument of a spread with a comment on its own line before its }', () => {
+		/** @param {string} source */
+		const element = (source) =>
+			/** @type {any} */ (parseModule(source, 'App.tsrx').body[0]).expression.right;
+		const { openingElement } = element('x = <div {...a\n  // c\n} b="1" />;');
+		const { children, closingElement } = element('x = <div>{...a\n  // c\n}</div>;');
+
+		expect(commentsOf(openingElement.attributes[0].argument).trailing).toEqual([' c']);
+		expect(commentsOf(openingElement.attributes[0]).trailing).toBeUndefined();
+		expect(commentsOf(openingElement.attributes[1].name).leading).toBeUndefined();
+		expect(commentsOf(children[0].expression).trailing).toEqual([' c']);
+		expect(commentsOf(closingElement).leading).toBeUndefined();
+	});
+
+	// The next child or attribute took it, and the printer moved it out of the
+	// braces (#574)
+	it('trails the expression of a {…} with a comment on its own line before its }', () => {
+		/** @param {string} source */
+		const element = (source) =>
+			/** @type {any} */ (parseModule(source, 'App.tsrx').body[0]).expression.right;
+		const { openingElement } = element('x = <div b={a\n  // c\n} d="1" />;');
+		const { children } = element('x = <div>{a\n  // c\n}text</div>;');
+		const dynamic = element('x = <{A\n  // c\n}>text</{A\n  // d\n}>;');
+
+		expect(commentsOf(openingElement.attributes[0].value.expression).trailing).toEqual([' c']);
+		expect(commentsOf(openingElement.attributes[1].name).leading).toBeUndefined();
+		expect(commentsOf(children[0].expression).trailing).toEqual([' c']);
+		expect(commentsOf(children[1]).leading).toBeUndefined();
+		expect(commentsOf(dynamic.openingElement.name.expression).trailing).toEqual([' c']);
+		expect(commentsOf(dynamic.children[0]).leading).toBeUndefined();
+		expect(commentsOf(dynamic.closingElement.name.expression).trailing).toEqual([' d']);
+	});
+
+	// Prettier's `canAttachComment` rejects a template element, and its
+	// `findExpressionIndexForComment` keeps a comment in its `${…}`
+	it('trails the expression with a comment after it in the ${…} of a template literal', () => {
+		const { expression } = firstStatement('x = `a ${\n  b\n  // c\n  /* d */\n} e ${f}`;');
+		const template = expression.right;
+
+		expect(commentsOf(template.expressions[0]).trailing).toEqual([' c', ' d ']);
+		expect(commentsOf(template.expressions[1]).leading).toBeUndefined();
+		expect(template.quasis.map(/** @param {any} quasi */ (quasi) => commentsOf(quasi))).toEqual([
+			{},
+			{},
+			{},
+		]);
+	});
+
+	it('leads the next type with a comment on its own line in a template literal type', () => {
+		const { literal } = firstStatement(
+			'type A = `${\n  B // b\n  // c\n}x${C}${\n  D\n  // d\n}`;',
+		).typeAnnotation;
+
+		expect(commentsOf(literal.expressions[0]).trailing).toEqual([' b']);
+		expect(commentsOf(literal.expressions[1]).leading).toEqual([' c']);
+		expect(commentsOf(literal.expressions[2]).trailing).toEqual([' d']);
+	});
+
+	it('leads the lookup with a comment on its own line before its name', () => {
+		const statement = firstStatement('item\n  // c\n  .foo();');
+		const member = statement.expression.callee;
+
+		expect(commentsOf(member).leading).toEqual([' c']);
+		expect(commentsOf(member.property).leading).toBeUndefined();
+	});
+
+	it('trails the union member before a comment on its own line', () => {
+		const union = firstStatement('type K =\n  | A\n  // c\n  | B;').typeAnnotation;
+
+		expect(commentsOf(union.types[0]).trailing).toEqual([' c']);
+		expect(commentsOf(union.types[1]).leading).toBeUndefined();
+	});
+
+	it('marks the union member after a prettier-ignore comment on its own line', () => {
+		const union = firstStatement('type K =\n  | A\n  // prettier-ignore\n  | B;').typeAnnotation;
+		const [comment] = /** @type {any[]} */ (union.types[0].trailingComments);
+
+		expect(comment.value).toBe(' prettier-ignore');
+		expect(comment.unignore).toBe(true);
+		expect(union.types[0].metadata?.prettierIgnore).toBeUndefined();
+		expect(union.types[1].metadata.prettierIgnore).toBe(true);
+	});
+
+	it('marks the first member of a union after a prettier-ignore comment on its own line', () => {
+		const union = firstStatement('type K =\n  // prettier-ignore\n  | A\n  | B;').typeAnnotation;
+
+		expect(commentsOf(union).leading).toEqual([' prettier-ignore']);
+		expect(union.types[0].metadata.prettierIgnore).toBe(true);
+		expect(union.types[1].metadata?.prettierIgnore).toBeUndefined();
+	});
+
+	// Prettier's parsers keep no node for a type's parentheses
+	it('marks the first member of a union in parentheses after a prettier-ignore comment on its own line', () => {
+		const type = firstStatement('type K =\n  // prettier-ignore\n  ((A | B));').typeAnnotation;
+		const union = type.typeAnnotation.typeAnnotation;
+
+		expect(type.leadingComments[0].unignore).toBe(true);
+		expect(union.types[0].metadata.prettierIgnore).toBe(true);
+		expect(union.types[1].metadata?.prettierIgnore).toBeUndefined();
+	});
+
+	it('leaves a prettier-ignore comment that ends a union member on that member', () => {
+		const union = firstStatement('type K =\n  | A // prettier-ignore\n  | B;').typeAnnotation;
+		const [comment] = /** @type {any[]} */ (union.types[0].trailingComments);
+
+		expect(comment.unignore).toBeUndefined();
+		expect(union.types[1].metadata?.prettierIgnore).toBeUndefined();
+	});
+
+	it('leads the first member of a union with a block comment right before it', () => {
+		const union = firstStatement('type K = /* c */ A | B;').typeAnnotation;
+
+		expect(commentsOf(union.types[0]).leading).toEqual([' c ']);
+		expect(commentsOf(union).leading).toBeUndefined();
+	});
+
+	it('moves a comment between a class heading and its body into the body', () => {
+		const withMember = firstStatement('class A extends B // c\n{\n  x = 1;\n}');
+		const empty = firstStatement('interface I extends J // c\n{}');
+
+		expect(commentsOf(withMember.superClass).trailing).toBeUndefined();
+		expect(commentsOf(withMember.body.body[0]).leading).toEqual([' c']);
+		expect(commentsOf(empty.extends[0]).trailing).toBeUndefined();
+		expect(commentsOf(empty.body).inner).toEqual([' c']);
+	});
+
+	it('trails the class name with a comment before the first implements type', () => {
+		const declaration = firstStatement('class C implements\n  // c\n  D, E {}');
+
+		expect(commentsOf(declaration.id).trailing).toEqual([' c']);
+		expect(commentsOf(declaration.implements[0]).leading).toBeUndefined();
+	});
+
+	// Prettier's dangling comment marked `implements`
+	it('keeps a comment before implements in a class with no name on the class', () => {
+		const { init } = firstStatement('const X = class\n  // c\n  implements D, E {};')
+			.declarations[0];
+
+		expect(commentsOf(init).inner).toEqual([' c']);
+		expect(commentsOf(init.implements[0]).leading).toBeUndefined();
+	});
+
+	// Without a `;`, the declaration ends at the `)`, and the parenthesized
+	// value ends before it
+	it('trails the declaration with a comment after the ) that ends it', () => {
+		const [first, second] = /** @type {any[]} */ (
+			parseModule('const x = a | (b >> 6) // c\nconst y = (a >> 6) // d\n', 'App.ts').body
+		);
+
+		expect(commentsOf(first).trailing).toEqual([' c']);
+		expect(commentsOf(first.declarations[0].init.right).trailing).toBeUndefined();
+		expect(commentsOf(second).trailing).toEqual([' d']);
+		expect(commentsOf(second.declarations[0].init).trailing).toBeUndefined();
+	});
+
+	// Like Prettier's `getSortedChildNodes`, the walker visits a node's
+	// children in source order, whatever order the parser adds their keys in
+	it.each([
+		['the type arguments of a call', 'f<\n  // c\n  A\n>(1);', 'expression.typeArguments.params.0'],
+		[
+			'the type arguments of a tagged template',
+			'tag</* c */ T>`x`;',
+			'expression.typeArguments.params.0',
+		],
+		['the test of a switch case', 'switch (x) {\n  case /* c */ 1:\n    y;\n}', 'cases.0.test'],
+		[
+			'the type parameters of an arrow function',
+			'const f = </* c */ T,>(a: T): T => a;',
+			'declarations.0.init.typeParameters.params.0',
+		],
+		[
+			'the parameters of a generic arrow function',
+			'const f = <T,>(/* c */ a: T): T => a;',
+			'declarations.0.init.params.0',
+		],
+	])('leads the node after a comment in %s', (_, source, path) => {
+		const statement = firstStatement(source);
+		const node = path.split('.').reduce((parent, key) => parent[key], statement);
+
+		expect(commentsOf(node).leading).toEqual([source.includes('//') ? ' c' : ' c ']);
+	});
+
+	it('keeps a comment in the type arguments of a call off its arguments', () => {
+		const { expression } = firstStatement('dual<\n  /** a */\n  A,\n  /** b */\n  B\n>(2, f);');
+
+		expect(commentsOf(expression.typeArguments.params[0]).leading).toEqual(['* a ']);
+		expect(commentsOf(expression.typeArguments.params[1]).leading).toEqual(['* b ']);
+		expect(commentsOf(expression.arguments[0]).leading).toBeUndefined();
+	});
+
+	// Prettier's `handleTryStatementComments`
+	it('moves a comment between the blocks of a try statement into the next block', () => {
+		const statement = firstStatement(
+			'try {\n  a();\n} // c\ncatch (e) {\n  b();\n}\n// d\nfinally {}',
+		);
+
+		expect(commentsOf(statement.block).trailing).toBeUndefined();
+		expect(commentsOf(statement.handler).leading).toBeUndefined();
+		expect(commentsOf(statement.handler.body.body[0]).leading).toEqual([' c']);
+		expect(commentsOf(statement.finalizer).inner).toEqual([' d']);
+	});
+
+	it('trails the catch parameter with a comment before the catch body', () => {
+		const statement = firstStatement('try {\n  a();\n} catch (e) // c\n{\n  b();\n}');
+
+		expect(commentsOf(statement.handler.param).trailing).toEqual([' c']);
+		expect(commentsOf(statement.handler.body.body[0]).leading).toBeUndefined();
+	});
+
+	it('moves a comment before a template @pending block into it', () => {
+		const [fn] = /** @type {any[]} */ (
+			parseModule(
+				'function A() @{\n  @try {\n    <B />\n  } // c\n  @pending {\n    <p />\n  }\n}',
+				'App.tsrx',
+			).body
+		);
+		const directive = fn.body.render;
+
+		expect(commentsOf(directive.block).trailing).toBeUndefined();
+		expect(commentsOf(directive.pending.body[0]).leading).toEqual([' c']);
+	});
+
+	it('trails the last parameter with the comments before a trailing comma', () => {
+		const [fn] = /** @type {any[]} */ (
+			parseModule('function f(\n  a,\n  b /* c */, /* d */\n) {}', 'App.ts').body
+		);
+
+		expect(commentsOf(fn.params[1]).trailing).toEqual([' c ', ' d ']);
+		expect(commentsOf(fn).inner).toBeUndefined();
+	});
+
+	// Prettier's `handleConditionalExpressionComments` and its default for a
+	// comment at the end of a line
+	it('trails the node before a comment at the end of the line of a ? or :', () => {
+		const { init } = firstStatement('const x = cond ? // a\n  b : // c\n  d;').declarations[0];
+		const type = firstStatement('type X = A extends B ? // a\n  C : D;').typeAnnotation;
+
+		expect(commentsOf(init.test).trailing).toEqual([' a']);
+		expect(commentsOf(init.consequent).trailing).toEqual([' c']);
+		expect(commentsOf(init.consequent).leading).toBeUndefined();
+		expect(commentsOf(type.extendsType).trailing).toEqual([' a']);
+	});
+
+	it('leads the branch after a comment on its own line in a conditional', () => {
+		const { init } = firstStatement('const x = cond ?\n  // a\n  b : c;').declarations[0];
+
+		expect(commentsOf(init.consequent).leading).toEqual([' a']);
+	});
+
+	// Prettier's export starts at the decorators written before it
+	it('trails the last decorator with a comment before the class keyword of an export', () => {
+		const [named, other] = /** @type {any[]} */ (
+			parseModule('@dec export /* c */ class A {}\n@dec\n// d\nexport class B {}', 'App.ts').body
+		);
+
+		expect(commentsOf(named.declaration.decorators[0]).trailing).toEqual([' c ']);
+		expect(commentsOf(named.declaration.id).leading).toBeUndefined();
+		expect(commentsOf(other.declaration.decorators[0]).trailing).toEqual([' d']);
+		expect(commentsOf(other).leading).toBeUndefined();
+	});
+
+	// Prettier's `handleMethodNameComments`
+	it('trails the decorator of a class member with a comment before its modifiers', () => {
+		const [field, accessor, method, inline] = firstStatement(
+			'class A {\n  @a\n  // b\n  static b;\n  @c\n  /* d */\n  accessor d;\n  @e // f\n  public static f() {}\n  @g /* h */ static h;\n}',
+		).body.body;
+
+		expect(commentsOf(field.decorators[0]).trailing).toEqual([' b']);
+		expect(commentsOf(field.key).leading).toBeUndefined();
+		expect(commentsOf(accessor.decorators[0]).trailing).toEqual([' d ']);
+		expect(commentsOf(method.decorators[0]).trailing).toEqual([' f']);
+		// A comment with code on both sides trails the decorator by the tie-break
+		expect(commentsOf(inline.decorators[0]).trailing).toEqual([' h ']);
+		expect(commentsOf(inline.key).leading).toBeUndefined();
+	});
+
+	it('leads the key of a class member with a comment between its modifiers and the key', () => {
+		const [field] = firstStatement('class A {\n  @a static /* b */ b;\n}').body.body;
+
+		expect(commentsOf(field.decorators[0]).trailing).toBeUndefined();
+		expect(commentsOf(field.key).leading).toEqual([' b ']);
+	});
+
+	// Prettier's `locStart` starts a node at its first decorator, which the
+	// parser keeps outside a parameter's span
+	it('keeps the comments after a parameter decorator in the parameter', () => {
+		const [method, ctor] = firstStatement(
+			'class A {\n  m(@a(/* a */ x) /* b */ y) {}\n  constructor(\n    @c\n    // c\n    private c: T,\n    @d /* d */ readonly d = 1,\n  ) {}\n}',
+		).body.body;
+		const [parameter] = method.value.params;
+		const [property, withDefault] = ctor.value.params;
+
+		expect(commentsOf(parameter.decorators[0].expression.arguments[0]).leading).toEqual([' a ']);
+		expect(commentsOf(parameter.decorators[0]).trailing).toEqual([' b ']);
+		expect(commentsOf(parameter).leading).toBeUndefined();
+		expect(commentsOf(property.parameter.decorators[0]).trailing).toEqual([' c']);
+		expect(commentsOf(property).leading).toBeUndefined();
+		expect(commentsOf(withDefault.parameter.decorators[0]).trailing).toEqual([' d ']);
+		expect(commentsOf(withDefault).leading).toBeUndefined();
+	});
+
+	// Prettier's tie-break, with the name after the comment
+	it('leads the parameter of a parameter property with a comment between its modifiers and name', () => {
+		const [ctor] = firstStatement(
+			'class A {\n  constructor(@a /* a */ private /* b */ readonly /* c */ x: T, @d private /* d */ y) {}\n}',
+		).body.body;
+		const [first, second] = ctor.value.params;
+
+		expect(commentsOf(first.parameter.decorators[0]).trailing).toEqual([' a ', ' b ']);
+		expect(commentsOf(first.parameter).leading).toEqual([' c ']);
+		expect(commentsOf(second.parameter.decorators[0]).trailing).toBeUndefined();
+		expect(commentsOf(second.parameter).leading).toEqual([' d ']);
+	});
+
+	it('leads the type annotation of an object pattern with a comment before its colon', () => {
+		const { id } = firstStatement('const { a } /* c */ : T = o;').declarations[0];
+
+		expect(commentsOf(id.typeAnnotation).leading).toEqual([' c ']);
+		expect(commentsOf(id.properties[0]).trailing).toBeUndefined();
+	});
+
+	// Prettier's `breakTies`: a comment with code on both sides leads the node
+	// after it when only whitespace or `(` sits between them, and trails the
+	// node before it otherwise
+	it('leads the node after a comment with only whitespace between them', () => {
+		const tagged = firstStatement('tag<T>/* c */`x`;').expression;
+		const sequence = firstStatement('x = (a, /* c */ b);').expression.right;
+		const property = firstStatement('class A {\n  x /* c */ : T;\n}').body.body[0];
+		const rest = firstStatement('function f(...x /* c */ : T) {}').params[0];
+		const signature = firstStatement('type F = (a: T) /* c */ => void;').typeAnnotation;
+
+		expect(commentsOf(tagged.quasi).leading).toEqual([' c ']);
+		expect(commentsOf(tagged.typeArguments).trailing).toBeUndefined();
+		expect(commentsOf(sequence.expressions[1]).leading).toEqual([' c ']);
+		expect(commentsOf(sequence.expressions[0]).trailing).toBeUndefined();
+		expect(commentsOf(property.typeAnnotation).leading).toEqual([' c ']);
+		expect(commentsOf(rest.typeAnnotation).leading).toEqual([' c ']);
+		expect(commentsOf(signature.typeAnnotation).leading).toEqual([' c ']);
+		expect(commentsOf(signature.parameters[0]).trailing).toBeUndefined();
+	});
+
+	it('trails the node before a comment with other code between it and the next node', () => {
+		const [def, named] = firstStatement("import def, /* c */ { b } from 'mod';").specifiers;
+		const { expression } = firstStatement('a /* a */ + /* b */ b;');
+		const property = firstStatement('interface I {\n  x /* c */ : T;\n}').body.body[0];
+
+		expect(commentsOf(def).trailing).toEqual([' c ']);
+		expect(commentsOf(named).leading).toBeUndefined();
+		expect(commentsOf(expression.left).trailing).toEqual([' a ']);
+		expect(commentsOf(expression.right).leading).toEqual([' b ']);
+		// Like Prettier's `canAttachComment`, the type annotation of a property
+		// signature takes no comments, so the next node is its type
+		expect(commentsOf(property.key).trailing).toEqual([' c ']);
+	});
+
+	// Like Prettier, whose `printCommentsForFunction` prints the comment inside
+	// the parentheses of a function called right away or used as a tag
+	it('trails a function called right away or used as a tag with a comment before its )', () => {
+		const arrow = firstStatement('(m => m /* c */)(x);').expression;
+		const fn = firstStatement('(function () {} /* a */ /* b */)(x);').expression;
+		const tag = firstStatement('(m => m /* c */)`x`;').expression;
+		const plain = firstStatement('(a /* c */)(x);').expression;
+
+		expect(commentsOf(arrow.callee).trailing).toEqual([' c ']);
+		expect(commentsOf(arrow.arguments[0]).leading).toBeUndefined();
+		expect(commentsOf(fn.callee).trailing).toEqual([' a ', ' b ']);
+		expect(commentsOf(tag.tag).trailing).toEqual([' c ']);
+		expect(commentsOf(tag.quasi).leading).toBeUndefined();
+		// Any other callee keeps the comment's place (see `breakTies`)
+		expect(commentsOf(plain.arguments[0]).leading).toEqual([' c ']);
+	});
+
+	it('trails the name of a function or method with a comment before its (', () => {
+		const fn = firstStatement('function f /* c */ (a) {}');
+		const { init } = firstStatement('const o = { m /* c */ (a) {} };').declarations[0];
+
+		expect(commentsOf(fn.id).trailing).toEqual([' c ']);
+		expect(commentsOf(fn.params[0]).leading).toBeUndefined();
+		expect(commentsOf(init.properties[0].key).trailing).toEqual([' c ']);
+	});
+
+	// Prettier's `handleAssignmentPatternComments` and its default for a
+	// comment at the end of a line
+	it('leads a default value pattern with a comment on its own line in it', () => {
+		const fn = firstStatement(
+			'function f(\n  a = (\n    // c\n    1\n  ),\n  b = // d\n  2,\n) {}',
+		);
+		const [first, second] = fn.params;
+
+		expect(commentsOf(first).leading).toEqual([' c']);
+		expect(commentsOf(first.right).leading).toBeUndefined();
+		expect(commentsOf(second.left).trailing).toEqual([' d']);
+		expect(commentsOf(second.right).leading).toBeUndefined();
+	});
+
+	it('leads a parameter property with a comment on its own line in its default value', () => {
+		const constructor = firstStatement(
+			'class A {\n  constructor(\n    private a = (\n      // c\n      1\n    ),\n  ) {}\n}',
+		).body.body[0];
+		const [param] = constructor.value.params;
+
+		expect(commentsOf(param).leading).toEqual([' c']);
+		expect(commentsOf(param.parameter).leading).toBeUndefined();
+	});
+
+	it('leaves the comments around the key of a shorthand property with a default value to the default', () => {
+		const { id } = firstStatement('const { a /* c */ = 1 } = x;').declarations[0];
+		const [property] = id.properties;
+
+		expect(commentsOf(property.key).trailing).toBeUndefined();
+		expect(commentsOf(property.value.left).trailing).toEqual([' c ']);
+	});
+
+	it('trails an arrow function body that is an element with a comment below it', () => {
+		const element = firstStatement('const f = () => (\n  <Note />\n  // c\n);').declarations[0];
+		const other = firstStatement('const f = () => (\n  a\n  // c\n);\n');
+
+		expect(commentsOf(element.init.body).trailing).toEqual([' c']);
+		expect(commentsOf(other.declarations[0].init.body).trailing).toBeUndefined();
+		expect(commentsOf(other).trailing).toEqual([' c']);
+	});
+
+	// Prettier's default for a comment at the end of a line
+	it('trails the last parameter with a comment at the end of the line after its )', () => {
+		const fn = firstStatement('function f(a) // c\n  : T {}');
+		const signature = firstStatement('interface I {\n  m(a: T) // c\n  : void;\n}').body.body[0];
+		const noParams = firstStatement('function f() // c\n  : T {}');
+
+		expect(commentsOf(fn.params[0]).trailing).toEqual([' c']);
+		expect(commentsOf(fn.returnType).leading).toBeUndefined();
+		expect(commentsOf(signature.parameters[0]).trailing).toEqual([' c']);
+		expect(commentsOf(noParams.id).trailing).toEqual([' c']);
+	});
+
+	// Prettier's `babel` parser keeps a JSDoc cast's parentheses as a
+	// `ParenthesizedExpression`, and the comments after its expression inside
+	// it trail that expression
+	it('trails the cast value with the comments inside the parentheses of its cast', () => {
+		const declaration = firstStatement('const a = /** @type {X} */ (foo /* c */) /* d */;');
+		const stacked = firstStatement(
+			'x = /** @type {A} */ (/** @type {B} */ (foo /* b */) /* a */);',
+		);
+		const awaited = firstStatement('x = /** @type {X} */ (await foo // c\n);');
+		const superClass = firstStatement('class A extends /** @type {X} */ (B // c\n) {}');
+
+		expect(commentsOf(declaration.declarations[0].init).trailing).toEqual([' c ']);
+		expect(commentsOf(declaration).trailing).toEqual([' d ']);
+		expect(commentsOf(stacked.expression.right).trailing).toEqual([' b ', ' a ']);
+		expect(commentsOf(awaited.expression.right).trailing).toEqual([' c']);
+		expect(commentsOf(awaited.expression.right.argument).trailing).toBeUndefined();
+		expect(commentsOf(awaited).trailing).toBeUndefined();
+		expect(commentsOf(superClass.superClass).trailing).toEqual([' c']);
+		expect(commentsOf(superClass.body).inner).toBeUndefined();
+	});
+
+	// Prettier's `handleCommentInEmptyParens`
+	it('keeps a comment in empty parameter parentheses on the function or signature', () => {
+		const fn = firstStatement('function f(/* c */): T {}');
+		const type = firstStatement('type F = (/* c */) => void;').typeAnnotation;
+		const signature = firstStatement('interface I {\n  m(/* c */);\n}').body.body[0];
+
+		expect(commentsOf(fn).inner).toEqual([' c ']);
+		expect(commentsOf(fn.returnType).leading).toBeUndefined();
+		expect(commentsOf(type).inner).toEqual([' c ']);
+		expect(commentsOf(signature).inner).toEqual([' c ']);
+		expect(commentsOf(signature.key).trailing).toBeUndefined();
+	});
+
+	it('trails the type parameter of a mapped type with a comment after the type its key ranges over', () => {
+		const type = firstStatement('type M = { [K in keyof T /* c */]: T[K] };').typeAnnotation;
+		const endOfLine = firstStatement('type M = {\n  [K in T] // c\n  : T[K];\n};').typeAnnotation;
+
+		expect(commentsOf(type.typeParameter).trailing).toEqual([' c ']);
+		const ownLine = firstStatement('type M = {\n  [K in T\n  // c\n  ]: T[K];\n};').typeAnnotation;
+
+		expect(commentsOf(endOfLine.typeParameter).trailing).toEqual([' c']);
+		expect(commentsOf(endOfLine.typeAnnotation).leading).toBeUndefined();
+		expect(commentsOf(ownLine.typeParameter).trailing).toEqual([' c']);
+	});
+
+	// Prettier's parsers keep a type parameter's name as a node, which takes
+	// the comments around it; this parser keeps it as a string
+	it('keeps the comments around the name of a type parameter on the type parameter', () => {
+		const [constrained, defaulted] = firstStatement(
+			'function f<const /* a */ T /* b */ extends /* c */ U, K // d\n  = V>() {}',
+		).typeParameters.params;
+		const [modifier] = firstStatement('type A<in out /* a */ T> = T;').typeParameters.params;
+		const mapped = firstStatement('type M = { [K /* a */ in /* b */ T]: T[K] };').typeAnnotation;
+
+		expect(commentsOf(constrained).inner).toEqual([' a ', ' b ']);
+		expect(commentsOf(constrained.constraint).leading).toEqual([' c ']);
+		expect(commentsOf(defaulted).inner).toEqual([' d']);
+		expect(commentsOf(defaulted.default).leading).toBeUndefined();
+		expect(commentsOf(modifier).inner).toEqual([' a ']);
+		expect(commentsOf(modifier).trailing).toBeUndefined();
+		expect(commentsOf(mapped.typeParameter).inner).toEqual([' a ']);
+		expect(commentsOf(mapped.typeParameter.constraint).leading).toEqual([' b ']);
+	});
+
+	it('leads the constraint with a block comment on its own line before the extends of a type parameter', () => {
+		const [parameter] = firstStatement('function f<\n  T\n  /* a */ extends U,\n>() {}')
+			.typeParameters.params;
+		const [lineComment] = firstStatement('function f<\n  T\n  // a\n  extends U,\n>() {}')
+			.typeParameters.params;
+
+		expect(commentsOf(parameter).inner).toBeUndefined();
+		expect(commentsOf(parameter.constraint).leading).toEqual([' a ']);
+		// Prettier moves a line comment there after the name on its next pass
+		expect(commentsOf(lineComment).inner).toEqual([' a']);
+		expect(commentsOf(lineComment.constraint).leading).toBeUndefined();
+	});
+
+	// Prettier prints the arrow function's body without its parentheses, and
+	// the comment after it before the `;`, where its next pass moves it after
+	it('trails the statement with a comment after a parenthesized arrow function body', () => {
+		const statement = firstStatement('const f = () => (\n  a /* c */\n);');
+		const conditional = firstStatement('const f = () => (a ? b : c /* c */);');
+
+		expect(commentsOf(statement).trailing).toEqual([' c ']);
+		expect(commentsOf(statement.declarations[0].init.body).trailing).toBeUndefined();
+		expect(commentsOf(conditional).trailing).toBeUndefined();
+	});
+
+	// Prettier's `handleParenthesizedExpressionTrailingComment`
+	it('trails the last expression of a parenthesized sequence or the right side of an assignment with a comment after it', () => {
+		const arrow = firstStatement('const f = () => (a = b /* c */);').declarations[0].init;
+		const declarator = firstStatement('const x = (a, b /* c */);').declarations[0];
+		const returned = firstStatement('function f() {\n  return (a, b /* c */);\n}').body.body[0];
+		const assigned = firstStatement('x = (a, b /* c */);');
+		const statement = firstStatement('(a, b /* c */);');
+
+		expect(commentsOf(arrow.body.right).trailing).toEqual([' c ']);
+		expect(commentsOf(declarator.init.expressions[1]).trailing).toEqual([' c ']);
+		expect(commentsOf(declarator.init).trailing).toBeUndefined();
+		expect(commentsOf(returned.argument.expressions[1]).trailing).toEqual([' c ']);
+		expect(commentsOf(assigned.expression.right.expressions[1]).trailing).toEqual([' c ']);
+		expect(commentsOf(statement).trailing).toEqual([' c ']);
+		expect(commentsOf(statement.expression).trailing).toBeUndefined();
+	});
+
+	// Prettier prints these after the parentheses, or the value without them,
+	// and its next pass moves them after the `;`
+	it('trails the statement with a comment after a parenthesized throw argument or chained assignment', () => {
+		const thrown = firstStatement('throw (a, b /* c */);');
+		const chained = firstStatement('x = (y = z /* c */);');
+		const lineComment = firstStatement('const x = (a, b // c\n);');
+
+		expect(commentsOf(thrown).trailing).toEqual([' c ']);
+		expect(commentsOf(chained).trailing).toEqual([' c ']);
+		expect(commentsOf(lineComment).trailing).toEqual([' c']);
+	});
+
+	// Prettier prints these before the `;`, after the parentheses around the
+	// operand, and its next pass moves them after it (#622)
+	it('trails the statement with a comment in the parentheses at the end of a binary or logical value', () => {
+		const declared = firstStatement('const x = a || (b /* c */);');
+		const nested = firstStatement('x = a * (b + (c /* c */));');
+		const lineComment = firstStatement('x = a + (b // c\n);');
+		const withoutSemicolon = firstStatement('const x = a || (b /* c */)\nfoo()');
+
+		expect(commentsOf(declared).trailing).toEqual([' c ']);
+		expect(commentsOf(declared.declarations[0].init.right).trailing).toBeUndefined();
+		expect(commentsOf(nested).trailing).toEqual([' c ']);
+		expect(commentsOf(lineComment).trailing).toEqual([' c']);
+		expect(commentsOf(withoutSemicolon).trailing).toEqual([' c ']);
+	});
+
+	// The printer prints these in the parentheses around the argument when it
+	// breaks, and after the `;` when it doesn't
+	it('trails a binary or logical return argument with a comment in the parentheses at its end', () => {
+		const returned = firstStatement('function f() {\n  return a || (b /* c */);\n}').body.body[0];
+		const own = firstStatement('function f() {\n  return (a || b /* c */) /* d */;\n}').body
+			.body[0];
+
+		expect(commentsOf(returned.argument).trailing).toEqual([' c ']);
+		expect(commentsOf(returned).trailing).toBeUndefined();
+		expect(commentsOf(own.argument).trailing).toEqual([' c ']);
+		expect(commentsOf(own).trailing).toEqual([' d ']);
+	});
+
+	it('keeps a comment in the parentheses of a JSDoc cast or an element at the end of a value', () => {
+		const cast = firstStatement('x = a || /** @type {T} */ (b /* c */);');
+		const element = firstStatement('x = a && (\n  <Note /> // c\n);');
+
+		expect(commentsOf(cast).trailing).toBeUndefined();
+		expect(commentsOf(element).trailing).toBeUndefined();
+		expect(commentsOf(element.expression.right.right).trailing).toEqual([' c']);
+	});
+
+	// Prettier's next passes find it after the parentheses, and a line
+	// comment after the operator that follows them (#626)
+	it('trails the left operand of the next operator with a comment before the ) of its last operand', () => {
+		const statement = firstStatement('x = 30 * (month - 1 // c\n) + day;');
+		const block = firstStatement('x = (a && (b /* c */)) || d;');
+		const call = firstStatement('x = f(a // c\n) + d;');
+
+		expect(commentsOf(statement.expression.right.left).trailing).toEqual([' c']);
+		expect(commentsOf(statement.expression.right.left.right).trailing).toBeUndefined();
+		expect(commentsOf(block.expression.right.left).trailing).toEqual([' c ']);
+		expect(commentsOf(call.expression.right.left.arguments[0]).trailing).toEqual([' c']);
+	});
+
+	// Prettier prints these before the `;`, after the parentheses around the
+	// alternate, and its next pass moves them after it (#674)
+	it('trails the statement with a comment in the parentheses at the end of a conditional value', () => {
+		const declared = firstStatement('const x = a ? b : (c /* c */);');
+		const lineComment = firstStatement('const x = a ? b : (c // c\n);');
+		const operand = firstStatement('x = a || (b ? c : (d /* c */));');
+		const arrow = firstStatement('const f = () => a ? b : (c // c\n);');
+
+		expect(commentsOf(declared).trailing).toEqual([' c ']);
+		expect(commentsOf(declared.declarations[0].init.alternate).trailing).toBeUndefined();
+		expect(commentsOf(lineComment).trailing).toEqual([' c']);
+		expect(commentsOf(operand).trailing).toEqual([' c ']);
+		expect(commentsOf(arrow).trailing).toEqual([' c']);
+	});
+
+	// Prettier prints a conditional arrow function body in parentheses when it
+	// doesn't break, and a JSX mode branch when it does
+	it('keeps a comment in the parentheses a conditional prints around its alternate or itself', () => {
+		const arrow = firstStatement('const f = () => a ? b : (c /* c */);');
+		const after = firstStatement('const f = () => a ? b : (c /* c */) // d\n;');
+		const jsx = firstStatement('const x = a ? <div /> : (c // c\n);');
+
+		expect(commentsOf(arrow).trailing).toBeUndefined();
+		expect(commentsOf(arrow.declarations[0].init.body.alternate).trailing).toEqual([' c ']);
+		expect(commentsOf(after).trailing).toEqual([' d']);
+		expect(commentsOf(after.declarations[0].init.body.alternate).trailing).toEqual([' c ']);
+		expect(commentsOf(jsx).trailing).toBeUndefined();
+		expect(commentsOf(jsx.declarations[0].init.alternate).trailing).toEqual([' c']);
+	});
+
+	// Prettier prints it after the `;`, on a line of its own, and its next
+	// pass joins the value it breaks (#691)
+	it('trails the statement with a comment on its own line in the parentheses at the end of its value', () => {
+		const declared = firstStatement('const x = a || (b\n/* c */);');
+		const both = firstStatement('x = a + (b // c\n// d\n);');
+		const returned = firstStatement('function f() {\n  return a || (b\n  // c\n  );\n}').body
+			.body[0];
+		const element = firstStatement('(<div />\n// c\n);');
+
+		expect(commentsOf(declared).trailing).toEqual([' c ']);
+		expect(commentsOf(declared.declarations[0].init.right).trailing).toBeUndefined();
+		expect(commentsOf(both).trailing).toEqual([' c', ' d']);
+		expect(commentsOf(returned.argument).trailing).toEqual([' c']);
+		expect(commentsOf(element).trailing).toBeUndefined();
+		expect(commentsOf(element.expression).trailing).toEqual([' c']);
+	});
+
+	// Prettier prints it after the `,`, and its next pass joins the value it
+	// breaks (#677)
+	it('trails a declarator with a line comment in the parentheses at the end of its value before a ,', () => {
+		const statement = firstStatement('const x = (a, b /* c */ // d\n), y = 1;');
+		const operand = firstStatement('const x = 1, y = a || (b // d\n), z = 2;');
+		const ownLine = firstStatement('const x = a || (b\n// d\n), y = 1;');
+
+		expect(commentsOf(statement.declarations[0]).trailing).toEqual([' d']);
+		expect(commentsOf(statement.declarations[0].init.expressions[1]).trailing).toEqual([' c ']);
+		expect(commentsOf(operand.declarations[1]).trailing).toEqual([' d']);
+		expect(commentsOf(ownLine.declarations[0]).trailing).toBeUndefined();
+	});
+
+	// Prettier's next pass moves the line comment alone after the `;` (#624)
+	it('trails the statement with a line comment after block comments at the end of a parenthesized sequence', () => {
+		const statement = firstStatement('const x = (a, b /* c */ // d\n);');
+
+		expect(commentsOf(statement.declarations[0].init.expressions[1]).trailing).toEqual([' c ']);
+		expect(commentsOf(statement).trailing).toEqual([' d']);
+	});
+
+	// Prettier's next pass finds it before the `)` around the arrow function,
+	// which takes it (#634)
+	it('trails an arrow function called right away with a comment after its parenthesized body', () => {
+		const called = firstStatement('((a) => (b /* c */))(1);');
+		const conditional = firstStatement('((a) => (a ? b : c /* c */))(1);');
+
+		expect(commentsOf(called.expression.callee).trailing).toEqual([' c ']);
+		expect(commentsOf(called.expression.callee.body).trailing).toBeUndefined();
+		expect(commentsOf(conditional.expression.callee.body).trailing).toEqual([' c ']);
+		expect(commentsOf(conditional.expression.callee).trailing).toBeUndefined();
+	});
+
+	// Prettier's next passes put it on a line of its own after the body, and
+	// then give it to the first argument, or, with no argument, never end
+	// (#676)
+	it('leads the first argument with a comment after the last body of a chain called right away', () => {
+		const called = firstStatement('((a) => (b) => (c /* c */))(1);').expression;
+		const unparenthesized = firstStatement('(\n  (a) => (b) =>\n    c /* c */\n)(1);').expression;
+		const bare = firstStatement('((a) => (b) => (c /* c */))();').expression;
+		const object = firstStatement('((a) => (b) => ({} /* c */))(1);').expression;
+
+		expect(commentsOf(called.arguments[0]).leading).toEqual([' c ']);
+		expect(called.arguments[0].leadingComments?.[0]?.ownLine).toBe(true);
+		expect(commentsOf(called.callee.body.body).trailing).toBeUndefined();
+		expect(commentsOf(unparenthesized.arguments[0]).leading).toEqual([' c ']);
+		expect(commentsOf(unparenthesized.callee).trailing).toBeUndefined();
+		expect(commentsOf(bare.callee.body).trailing).toEqual([' c ']);
+		expect(commentsOf(object.callee).trailing).toEqual([' c ']);
+	});
+
+	// Prettier's next pass finds it before the `)` around the arrow function,
+	// which prints it after its parentheses, where the pass after that gives
+	// it to the first argument of a `new` (#683, #760)
+	it('trails an arrow function in parentheses with a comment after its parenthesized body', () => {
+		const constructed = firstStatement('new ((a) => (b /* c */))(1);').expression;
+		const bare = firstStatement('new ((a) => (b /* c */))();').expression;
+		const member = firstStatement('((a) => (b /* c */)).call(x);').expression;
+		const chain = firstStatement('((a) => (b) => (c /* c */)).call(x);').expression;
+		const operand = firstStatement('((a) => (b /* c */)) || x;').expression;
+		const line = firstStatement('((a) => (b // c\n)).call(x);').expression;
+
+		expect(commentsOf(constructed.arguments[0]).leading).toEqual([' c ']);
+		expect(constructed.arguments[0].leadingComments?.[0]?.ownLine).toBeUndefined();
+		expect(commentsOf(bare.callee).trailing).toEqual([' c ']);
+		expect(commentsOf(member.callee.object).trailing).toEqual([' c ']);
+		expect(commentsOf(member.callee.object.body).trailing).toBeUndefined();
+		expect(commentsOf(chain.callee.object).trailing).toEqual([' c ']);
+		expect(commentsOf(operand.left).trailing).toEqual([' c ']);
+		expect(commentsOf(line.callee.object.body).trailing).toEqual([' c']);
+	});
+
+	// Like Prettier, which ends these statements before their `;`
+	it('trails the statement with a comment after a statement that is only its keyword, before its ;', () => {
+		const loop = firstStatement('for (;;) continue // c\n;\nfoo();');
+		const [, next] = parseModule('while (a) break /* c */\n;\nfoo();', 'App.ts').body;
+		const returned = firstStatement('function f() {\n  return // c\n  ;\n  foo();\n}').body.body[0];
+		const debug = firstStatement('debugger /* c */ /* d */\n;');
+
+		expect(commentsOf(loop).trailing).toEqual([' c']);
+		expect(commentsOf(loop.body).trailing).toBeUndefined();
+		expect(commentsOf(next).leading).toBeUndefined();
+		expect(commentsOf(returned).trailing).toEqual([' c']);
+		expect(commentsOf(debug).trailing).toEqual([' c ', ' d ']);
+	});
+
+	it('trails the constraint of a type parameter with a comment at the end of the line of its =', () => {
+		const [parameter] = firstStatement('type A<B extends C = // c\n  D> = R;').typeParameters
+			.params;
+		const [ignored] = firstStatement('type A<B extends C = // prettier-ignore\n  D> = R;')
+			.typeParameters.params;
+
+		expect(commentsOf(parameter.constraint).trailing).toEqual([' c']);
+		expect(commentsOf(parameter.default).leading).toBeUndefined();
+		expect(commentsOf(ignored.default).leading).toEqual([' prettier-ignore']);
+	});
+
+	// Prettier moves these after the constraint on its next pass
+	it('trails the constraint of a type parameter with a line comment on its own line around its =', () => {
+		const [after] = firstStatement('type A<B extends C =\n  // c\n  D> = R;').typeParameters.params;
+		const [second] = firstStatement('type A<B extends C = // a\n  // b\n  D> = R;').typeParameters
+			.params;
+
+		expect(commentsOf(after.constraint).trailing).toEqual([' c']);
+		expect(commentsOf(after.default).leading).toBeUndefined();
+		expect(commentsOf(second.constraint).trailing).toEqual([' a']);
+		expect(commentsOf(second.default).leading).toEqual([' b']);
+	});
+
+	// Prettier's `handleAssignmentLikeComments`
+	it('leads an object, array, or template value, or a type alias value, with a comment that ends the line of its =', () => {
+		const object = firstStatement('const a = // c\n  { a: 1 };').declarations[0];
+		const before = firstStatement('let a // c\n= [1];').declarations[0];
+		const assigned = firstStatement('a = // c\n  `x`;').expression;
+		const block = firstStatement('const a = /* c */\n  b;').declarations[0];
+		const alias = firstStatement('type A = // c\n  B;');
+		const aliasBefore = firstStatement('type A<T> // c\n= B;');
+		const aliasName = firstStatement('type A // c\n<T> = B;');
+		const union = firstStatement('type A = /* c */ B | C;');
+
+		expect(commentsOf(object.init).leading).toEqual([' c']);
+		expect(commentsOf(object.id).trailing).toBeUndefined();
+		expect(commentsOf(before.init).leading).toEqual([' c']);
+		expect(commentsOf(before.id).trailing).toBeUndefined();
+		expect(commentsOf(assigned.right).leading).toEqual([' c']);
+		expect(commentsOf(block.init).leading).toEqual([' c ']);
+		expect(commentsOf(alias.typeAnnotation).leading).toEqual([' c']);
+		// Prettier's default gives these to the name first, and its next pass
+		// to the value
+		expect(commentsOf(aliasBefore.typeAnnotation).leading).toEqual([' c']);
+		expect(commentsOf(aliasName.typeAnnotation).leading).toEqual([' c']);
+		expect(commentsOf(aliasName.id).trailing).toBeUndefined();
+		expect(commentsOf(union.typeAnnotation.types[0]).leading).toEqual([' c ']);
+	});
+
+	it('trails the left side with a line comment at the end of the line of an = before any other value', () => {
+		const call = firstStatement('const a = // c\n  foo();').declarations[0];
+		const logical = firstStatement('a = // c\n  b || c;').expression;
+		const cast = firstStatement('const a = // c\n  /** @type {X} */ ({});').declarations[0];
+		const both = firstStatement('const a = /* a */ // b\n  value;').declarations[0];
+		const field = firstStatement('class A {\n  f = // c\n    1;\n  g = /* c */\n    2;\n}').body
+			.body;
+
+		expect(commentsOf(call.id).trailing).toEqual([' c']);
+		expect(commentsOf(call.init).leading).toBeUndefined();
+		expect(commentsOf(logical.left).trailing).toEqual([' c']);
+		expect(commentsOf(cast.id).trailing).toEqual([' c']);
+		expect(commentsOf(both.id).trailing).toEqual([' b']);
+		expect(commentsOf(both.init).leading).toEqual([' a ']);
+		expect(commentsOf(field[0].key).trailing).toEqual([' c']);
+		expect(commentsOf(field[1].key).trailing).toEqual([' c ']);
+		expect(commentsOf(field[1].value).leading).toBeUndefined();
+	});
+
+	// Prettier's `handlePropertyComments`
+	it('leads an object property with a comment that ends a line inside it', () => {
+		const [line, block, method] = firstStatement(
+			'const o = {\n  a: // c\n    1,\n  b: /* c */\n    2,\n  m // c\n  () {},\n};',
+		).declarations[0].init.properties;
+		const [pattern] = firstStatement('const { a: // c\n  b } = x;').declarations[0].id.properties;
+		const [kept] = firstStatement('const o = { a: /* c */ 1 };').declarations[0].init.properties;
+
+		expect(commentsOf(line).leading).toEqual([' c']);
+		expect(commentsOf(line.value).leading).toBeUndefined();
+		expect(commentsOf(block).leading).toEqual([' c ']);
+		expect(commentsOf(method).leading).toBeUndefined();
+		expect(commentsOf(pattern).leading).toEqual([' c']);
+		expect(commentsOf(kept).leading).toBeUndefined();
+		expect(commentsOf(kept.value).leading).toEqual([' c ']);
+	});
+
+	it('trails an import attribute key or a for header clause with a comment that ends the line after it', () => {
+		const [attribute] = firstStatement(
+			'import a from "a" with { type: // c\n  "json" };',
+		).attributes;
+		const loop = firstStatement('for (let i = 0; // a\n  i < 1; // b\n  i++) {}');
+
+		expect(commentsOf(attribute.key).trailing).toEqual([' c']);
+		expect(commentsOf(attribute.value).leading).toBeUndefined();
+		expect(commentsOf(loop.init).trailing).toEqual([' a']);
+		expect(commentsOf(loop.test).leading).toBeUndefined();
+		expect(commentsOf(loop.test).trailing).toEqual([' b']);
+		expect(commentsOf(loop.update).leading).toBeUndefined();
 	});
 });
 
@@ -5389,6 +8798,112 @@ describe('expression-container children inside JSX attribute values', () => {
 	});
 });
 
+describe('JSX spread children', () => {
+	/** @type {Array<ParseOptions | undefined>} */
+	const parse_options = [undefined, { collect: true, comments: [] }];
+
+	/**
+	 * Every `JSXSpreadChild` in the parsed tree, in source order.
+	 *
+	 * @param {string} source
+	 * @param {ParseOptions} [options]
+	 * @returns {ESTreeJSX.JSXSpreadChild[]}
+	 */
+	function spreadChildren(source, options) {
+		const ast = parseModule(source, 'App.tsrx', options);
+		return allNodes(ast)
+			.filter((node) => node.type === 'JSXSpreadChild')
+			.map((node) => as_type(node, 'JSXSpreadChild'));
+	}
+
+	it.each(parse_options)(
+		'parses a spread child in statement, initializer, and return position (%o)',
+		(options) => {
+			for (const [source, text] of [
+				['<div>{...a}</div>;', '{...a}'],
+				['const x = <div>{...a}</div>;', '{...a}'],
+				['function f() {\n  return <div>{...children}</div>;\n}', '{...children}'],
+			]) {
+				const [spread, ...rest] = spreadChildren(source, options);
+				expect(rest, source).toEqual([]);
+				expect(source.slice(spread.start, spread.end), source).toBe(text);
+				const expression = as_type(spread.expression, 'Identifier');
+				expect(source.slice(expression.start, expression.end)).toBe(text.slice(4, -1));
+			}
+		},
+	);
+
+	it.each(parse_options)(
+		'parses spread children in template bodies next to other children (%o)',
+		(options) => {
+			const source = `export function App({ items, more }: { items: any[]; more: any[] }) @{
+	<div>
+		{...items}
+		text
+		{...more.map((item) => <b>{item}</b>)}
+		<span />
+	</div>
+}`;
+			const [first, second] = spreadChildren(source, options);
+			expect(source.slice(first.start, first.end)).toBe('{...items}');
+			expect(source.slice(second.start, second.end)).toBe('{...more.map((item) => <b>{item}</b>)}');
+			assert_type(second.expression, 'CallExpression');
+
+			const div = findElement(source, 'div');
+			expect(
+				node_children(div)
+					.filter((node) => node.type !== 'JSXText' || node.value.trim())
+					.map((node) => node.type),
+			).toEqual(['JSXSpreadChild', 'JSXText', 'JSXSpreadChild', 'JSXElement']);
+		},
+	);
+
+	it('parses spread children in fragments, nested containers, and attribute-value elements', () => {
+		for (const source of [
+			'function App({ items }: any) @{\n\t<>{...items}</>\n}',
+			'function App({ items }: any) @{\n\t<div>{<span>{...items}</span>}</div>\n}',
+			'function App({ items }: any) @{\n\t<Card content={<i>{...items}</i>} />\n}',
+			'const x = <ul>{...items}{...items}</ul>;',
+		]) {
+			const spreads = spreadChildren(source);
+			expect(spreads.length, source).toBeGreaterThan(0);
+			for (const spread of spreads) {
+				expect(source.slice(spread.start, spread.end), source).toBe('{...items}');
+			}
+		}
+	});
+
+	it('keeps a comment inside the braces on the spread expression', () => {
+		const source = 'const x = <div>{... /* c */ a}</div>;';
+		const [spread] = spreadChildren(source);
+		const expression = as_type(spread.expression, 'Identifier');
+		expect(expression.leadingComments?.map((comment) => comment.value)).toEqual([' c ']);
+	});
+
+	it.each(parse_options)('rejects a spread without an argument (%o)', (options) => {
+		expect(() => parseModule('const x = <div>{...}</div>;', 'App.tsrx', options)).toThrow(
+			error_with(TS_ERRORS.UNEXPECTED_TOKEN, '1:19'),
+		);
+	});
+
+	it.each(parse_options)('rejects a spread as an attribute value (%o)', (options) => {
+		for (const [source, position] of [
+			['const x = <a b={...c} />;', '1:15'],
+			['function App() @{\n\t<a b={...c} />\n}', '2:6'],
+		]) {
+			expect(() => parseModule(source, 'App.tsrx', options), source).toThrow(
+				error_with(TSRX_ERRORS.ATTRIBUTE_VALUE_SPREAD, position),
+			);
+		}
+	});
+
+	it.each(parse_options)('rejects a spread as a dynamic tag name (%o)', (options) => {
+		expect(() => parseModule('const x = <{...a} />;', 'App.tsrx', options)).toThrow(
+			error_with(TSRX_ERRORS.DYNAMIC_TAG_EXPRESSION, '1:11'),
+		);
+	});
+});
+
 // A `<` in markup child position only opens a tag when the next character can
 // begin one. Anything else — a digit, an operator, an emoji, whitespace — is a
 // literal `<` in the text, the same rule the HTML tokenizer uses. Every case
@@ -5469,7 +8984,7 @@ describe('function types in JSX attribute values', () => {
 		expect(as_type(arrow.params[0], 'Identifier').name).toBe('reset');
 		// The element's own children still parse — the stale context used to
 		// swallow the opening tag's `>` and everything after it.
-		expect(as_type(element.children[0], 'JSXElement')).toBeTruthy();
+		expect(contentChild(element, 0, 'JSXElement')).toBeTruthy();
 	});
 
 	it('parses the no-argument function type in every spelling that leaked a context', () => {
@@ -5505,8 +9020,279 @@ describe('function types in JSX attribute values', () => {
 		const [, id] = element.openingElement.attributes;
 		expect(as_type(as_type(id, 'JSXAttribute').name, 'JSXIdentifier').name).toBe('id');
 		expect(
-			as_type(as_type(element.children[0], 'JSXElement').openingElement.name, 'JSXIdentifier').name,
+			as_type(contentChild(element, 0, 'JSXElement').openingElement.name, 'JSXIdentifier').name,
 		).toBe('Sibling');
+	});
+});
+
+describe('`<` operators beside type-argument lookahead', () => {
+	// The tokenizer splits a lone `<` off when the source after it looks like
+	// type parameters or arguments. It must leave `<=`, `<<`, and `<<=` whole,
+	// both when the operator is compact (`value<=1`) and when a later arrow
+	// gives the generic-arrow lookahead a `<...>() =>` shape to pair with.
+
+	/**
+	 * @param {string} source
+	 * @returns {{ type: string, operator: string | undefined }}
+	 */
+	function ifTest(source) {
+		const test = findNode(source, 'IfStatement').test;
+		return { type: test.type, operator: 'operator' in test ? test.operator : undefined };
+	}
+
+	/**
+	 * Binary operators in source order.
+	 *
+	 * @param {string} source
+	 * @returns {string[]}
+	 */
+	function binaryOperators(source) {
+		/** @type {AST.BinaryExpression[]} */
+		const binaries = [];
+		find_first(parseModule(source, 'App.tsrx'), (node) => {
+			if (node.type === 'BinaryExpression') binaries.push(node);
+			return false;
+		});
+		return binaries
+			.sort((a, b) => /** @type {number} */ (a.start) - /** @type {number} */ (b.start))
+			.map((node) => node.operator);
+	}
+
+	it('keeps comparison and shift operators whole', () => {
+		for (const [operator, type] of [
+			['<', 'BinaryExpression'],
+			['<=', 'BinaryExpression'],
+			['<<', 'BinaryExpression'],
+			['<<=', 'AssignmentExpression'],
+			['>=', 'BinaryExpression'],
+			['>>', 'BinaryExpression'],
+			['>>>', 'BinaryExpression'],
+		]) {
+			for (const operand of ['0', 'n']) {
+				for (const expression of [
+					`value ${operator} ${operand}`,
+					`value${operator}${operand}`,
+					`value ${operator}${operand}`,
+					`value${operator} ${operand}`,
+				]) {
+					for (const rest of ['', ' const release = () => () => value; return release;']) {
+						const source = `function compare(value: number, n: number) { if (${expression}) return;${rest} }`;
+						expect(ifTest(source), source).toEqual({ type, operator });
+					}
+				}
+			}
+		}
+	});
+
+	it('keeps a compact shift whole after any operand', () => {
+		for (const expression of ['1<<n', 'value<<n', '(value)<<1', 'value[0]<<1']) {
+			const source = `function shift(value: number[], n: number) { if (${expression}) return; }`;
+			expect(ifTest(source), source).toEqual({ type: 'BinaryExpression', operator: '<<' });
+		}
+	});
+
+	it('keeps `<=` whole in loop headers and beside JSX', () => {
+		for (const source of [
+			'for (let i = 0; i<=n; i++) {}',
+			'for (let i = 0; i <= n; i++) { const f = () => (y) => y; }',
+		]) {
+			expect(binaryOperators(source), source).toEqual(['<=']);
+		}
+
+		const conditional = findNode('const a = b<=c ? <div /> : null;', 'ConditionalExpression');
+		expect(as_type(conditional.test, 'BinaryExpression').operator).toBe('<=');
+		expect(conditional.consequent.type).toBe('JSXElement');
+	});
+
+	it('keeps `<=` and `<<` whole in template bodies, headers, and attributes', () => {
+		/** @type {Array<[source: string, operators: string[]]>} */
+		const cases = [
+			[
+				`function App({ n }: { n: number }) @{
+	@if (n<=1) {
+		<button disabled={n<=0} onClick={() => () => n}>{n<<1}</button>
+	}
+}`,
+				['<=', '<=', '<<'],
+			],
+			[
+				`function App({ n }: { n: number }) @{
+	const flags = 1<<n;
+	<>{flags <= 4 && <b />}</>
+}`,
+				['<<', '<='],
+			],
+		];
+		for (const [source, operators] of cases) {
+			expect(binaryOperators(source), source).toEqual(operators);
+		}
+	});
+
+	it('still reads type arguments, including a generic function type after `<<`', () => {
+		/** @type {Array<[source: string, params: string[]]>} */
+		const cases = [
+			['const result = f<T>(1);', ['TSTypeReference']],
+			['const result = x<y>(z);', ['TSTypeReference']],
+			['const result = f<<T,>(x: T) => T>(g);', ['TSFunctionType']],
+			['const result = f<<T extends () => void>() => T>(g);', ['TSFunctionType']],
+			['const result = f < <T,>(x: T) => T > (g);', ['TSFunctionType']],
+		];
+		for (const [source, params] of cases) {
+			const call = findNode(source, 'CallExpression');
+			expect(
+				call.typeArguments?.params.map((param) => param.type),
+				source,
+			).toEqual(params);
+		}
+
+		for (const source of [
+			'type List = Array<<T>() => T>;',
+			'let list: Array<<T>(x: T) => T> = [];',
+		]) {
+			expect(findNode(source, 'TSFunctionType').typeParameters?.params, source).toHaveLength(1);
+		}
+	});
+
+	it('still recognizes generic arrows and generic function expressions', () => {
+		for (const source of [
+			'const id = <T,>(x: T) => x;',
+			'const id = < T,>(x: T) => x;',
+			'const id = <T extends object = {}>(x: T): T => x;',
+			'const run = <T extends () => void>(task: T) => task;',
+		]) {
+			expect(
+				findNode(source, 'ArrowFunctionExpression').typeParameters?.params,
+				source,
+			).toHaveLength(1);
+		}
+
+		expect(
+			findNode('const id = function <T>(x: T) { return x; };', 'FunctionExpression').typeParameters
+				?.params,
+		).toHaveLength(1);
+
+		const source = 'const a = x < y; const id = <T,>(x: T) => x;';
+		expect(binaryOperators(source)).toEqual(['<']);
+		expect(findNode(source, 'ArrowFunctionExpression').typeParameters?.params).toHaveLength(1);
+	});
+
+	it('keeps a tag with an arrow attribute and arrow-shaped text as JSX', () => {
+		for (const source of [
+			'const a = <div onClick={() => a}>(b) => c</div>;',
+			'function App() @{ <Foo cb={(x) => x}>(b) => c</Foo> }',
+		]) {
+			expect(findNode(source, 'JSXElement').openingElement.attributes, source).toHaveLength(1);
+		}
+	});
+
+	it('reads type parameters inside types instead of a JSX tag', () => {
+		expect(
+			findNode('type C = { new <T>(x: T): T };', 'TSConstructSignatureDeclaration').typeParameters
+				?.params,
+		).toHaveLength(1);
+		expect(
+			findNode('interface A { f?<T>(x: T): T; }', 'TSMethodSignature').typeParameters?.params,
+		).toHaveLength(1);
+		expect(
+			findNode('type F = new <T>(x: T) => T;', 'TSConstructorType').typeParameters?.params,
+		).toHaveLength(1);
+	});
+
+	it('keeps a tag whose generic arrow prop has a function-type constraint as JSX (#164)', () => {
+		for (const source of [
+			'const node = <Box fn={<T extends () => void,>(x: T) => x} />;',
+			'const node = <Box fn={<T extends () => void>(x: T) => x} />;',
+			'const node = <Box fn={<T extends (a: T) => T = () => void,>(x: T) => x} />;',
+			'const node = <Box fn={<T,>(x: T) => x}>(b) => c</Box>;',
+			'const node = <Box fn={<T,>(x: T) => x}>(b): T => c</Box>;',
+			'function App() @{ <Box fn={<T extends () => void,>(x: T) => x}>{1}</Box> }',
+		]) {
+			const attributes = findNode(source, 'JSXElement').openingElement.attributes;
+			expect(attributes, source).toHaveLength(1);
+			const value = as_type(attributes[0], 'JSXAttribute').value;
+			const arrow = as_type(
+				as_type(value, 'JSXExpressionContainer').expression,
+				'ArrowFunctionExpression',
+			);
+			expect(arrow.typeParameters?.params, source).toHaveLength(1);
+		}
+	});
+
+	it('recognizes generic arrows whose type parameters hold arrows, defaults, modifiers, and comments', () => {
+		for (const source of [
+			'const run = <T extends () => void,>(task: T) => task;',
+			'const run = <T extends (x: number) => void = () => void>(task: T) => task;',
+			'const run = <const T extends readonly unknown[]>(x: T) => x;',
+			'const run = <T, U extends Map<string, Array<T>>>(x: T, y: U) => x;',
+			'const run = <T /* first */, U // second\n>(x: T, y: U) => x;',
+			'const run = <T extends { fn(): void; key: "a" | \'b\' }>(x: T) => x;',
+			'const run = <T,>(x: T): { value: T } => ({ value: x });',
+			'const run = <T,>(x: T): (y: T) => T => (y) => y;',
+		]) {
+			const arrow = findNode(source, 'ArrowFunctionExpression');
+			expect(arrow.typeParameters?.params.length, source).toBeGreaterThan(0);
+			expect(arrow.params, source).not.toHaveLength(0);
+		}
+	});
+
+	it('recognizes generic arrows whose parameters hold comments, regex literals, and division (#175)', () => {
+		for (const [source, param_count] of /** @type {[string, number][]} */ ([
+			['const fn = <T extends object>(x: T /* ) */) => x;', 1],
+			['const fn = <T extends object>(x: T // )\n) => x;', 1],
+			['const fn = <T extends object>(x: T, re = /[)]/) => x;', 2],
+			['const fn = <T extends object>(x: T, re = /\\)/gu, y = 1) => x;', 3],
+			['const fn = <T extends object>(x: T, y = (1) / 2, z = a / b) => x;', 3],
+			['const fn = <T extends object>(x: T, y = "(", z = `)`) => x;', 3],
+			['const fn = <T,>(x: T /* ) */): T /* ) */ => x;', 1],
+			['const fn = <T extends object>(x: T, y = a! / 2, z = b!.c / 3) => x;', 3],
+			['const fn = <T extends object>(x: T, y = i++ / 2, z = --j / 3) => x;', 3],
+			['const fn = <T extends object>(x: T, y = 1. / 2, z = .5 / 3) => x;', 3],
+			['const fn = <T extends object>(x: T, y = typeof /[)]/, z = !/[)]/.test("")) => x;', 3],
+			['const fn = <T extends object>(x: T, y = c ? /[)]/ : /\\)/) => x;', 2],
+			[
+				'const fn = <T extends object>(x: T, y = a.in / 2, z = b.typeof / 3, w = c?.d / 4) => x;',
+				4,
+			],
+			['const fn = <T extends object>(x: T, of = 1, y = of / 2) => x;', 3],
+			['const fn = <T extends object>(x: T, y = [...typeof /[)]/.source, ...void /\\)/]) => x;', 2],
+			['const fn = <T extends object>(x: T, ...rest: [y?: RegExp]) => rest[0] ?? /[)]/;', 2],
+			[
+				'const fn = <T extends object>(x: T, y = (s) => { for (const c of /[)]/.exec(s) ?? []) c; }) => x;',
+				2,
+			],
+		])) {
+			const arrow = findNode(source, 'ArrowFunctionExpression');
+			expect(arrow.typeParameters?.params, source).toHaveLength(1);
+			expect(arrow.params, source).toHaveLength(param_count);
+		}
+	});
+
+	it('keeps a tag whose generic arrow prop has parentheses in comments or regex literals as JSX (#175)', () => {
+		for (const source of [
+			'const node = <Box fn={<T extends () => void,>(x: T /* ) */) => x} />;',
+			'const node = <Box fn={<T,>(x: T, re = /[)]/) => x}>(b) => c</Box>;',
+		]) {
+			const attributes = findNode(source, 'JSXElement').openingElement.attributes;
+			expect(attributes, source).toHaveLength(1);
+			const value = as_type(attributes[0], 'JSXAttribute').value;
+			const arrow = as_type(
+				as_type(value, 'JSXExpressionContainer').expression,
+				'ArrowFunctionExpression',
+			);
+			expect(arrow.typeParameters?.params, source).toHaveLength(1);
+		}
+	});
+
+	it('reads type parameters after an optional class member name', () => {
+		for (const source of [
+			'abstract class A { abstract m?<T>(x: T): T; }',
+			'class A { m?<T>(x: T): T { return x; } }',
+			'class A { m? <T>(x: T): T; }',
+		]) {
+			const method = findNode(source, 'MethodDefinition');
+			expect(method.optional, source).toBe(true);
+			expect(method.typeParameters?.params, source).toHaveLength(1);
+		}
 	});
 });
 
@@ -5565,5 +9351,3795 @@ describe('wrapped destructuring assignment targets', () => {
 			'AssignmentExpression',
 		);
 		expect(assignment.left.type).toBe('ArrayPattern');
+	});
+});
+
+describe('`var` redeclaring a catch parameter', () => {
+	// Annex B lets `var` in a catch block redeclare a catch parameter that is a
+	// plain name, as acorn and TypeScript allow. Parsed in a worker, so a parse
+	// that never returns fails the test instead of stalling the run.
+	const modes = [
+		undefined,
+		{ collect: true, comments: [], preserveParens: true },
+		{ loose: true, comments: [] },
+	];
+	/** @param {string[]} sources */
+	const in_every_mode = (sources) =>
+		sources.flatMap((source) => modes.map((options) => ({ source, options })));
+
+	it('lets `var` redeclare a catch parameter that is a plain name', async () => {
+		const sources = [
+			'export function read() {\n\ttry { throw 1; }\n\tcatch (error) { var error = 2; return error; }\n}',
+			'try {} catch (e: unknown) { var e; }',
+			'try {} catch (e) { for (var e of []) {} }',
+			'try {} catch (e) { { var e; } }',
+			'try {} catch (e) { try {} catch (e) { var e; } }',
+			'function App() @{ @try { <div /> } @catch (e) { var e = 1; <span>{e}</span> } }',
+			'function App() { return @try { <div /> } @catch (e) { var e = 1; <span>{e}</span> }; }',
+		];
+
+		const outcomes = await parse_in_worker(in_every_mode(sources));
+
+		expect(outcomes).toEqual(
+			sources.flatMap(() => [
+				{ ok: true, errors: undefined },
+				{ ok: true, errors: [] },
+				{ ok: true, errors: [] },
+			]),
+		);
+	});
+
+	it('still rejects the redeclarations Annex B does not allow', async () => {
+		// A destructured parameter and a function declaration are ECMAScript early
+		// errors that TypeScript doesn't report; `let` conflicts in TypeScript too
+		// (TS2492).
+		/** @type {Array<[source: string, name: string, error: ErrorKind]>} */
+		const sources = [
+			['try {} catch ({ e }) { var e; }', 'e', UPSTREAM_ERRORS.REDECLARED],
+			['try {} catch ([e]) { var e; }', 'e', UPSTREAM_ERRORS.REDECLARED],
+			['try {} catch (e) { let e; }', 'e', TS_ERRORS.CATCH_PARAMETER_REDECLARED],
+			['try {} catch (e) { function e() {} }', 'e', UPSTREAM_ERRORS.REDECLARED],
+			[
+				'function App() @{ @try { <div /> } @catch (e, reset) { var reset; <span /> } }',
+				'reset',
+				UPSTREAM_ERRORS.REDECLARED,
+			],
+		];
+
+		const outcomes = await parse_in_worker(in_every_mode(sources.map(([source]) => source)));
+
+		expect(outcomes).toEqual(
+			sources.flatMap(([source, name, error]) => [
+				thrown(error, source.lastIndexOf(name)),
+				{ ok: true, errors: [code_of(error)] },
+				{ ok: true, errors: [code_of(error)] },
+			]),
+		);
+	});
+});
+
+describe('a redeclared name (#948, #952)', () => {
+	// TypeScript reports a name declared twice in one symbol table as TS2451
+	// where the first declaration bound is a `let`, `const`, or `using` one, and
+	// as TS2300 otherwise. It binds the function declarations of a list that
+	// aren't exported before the other statements. An enum with another
+	// declaration of its name is TS2567, a `let`, `const`, or `using` declaration
+	// of a `catch` clause's parameter in its block TS2492, and a `var` in a block
+	// below one that declares its name that way TS2481. Each is reported at the
+	// later declaration, and a strict parse throws it.
+	const modes = [undefined, { collect: true, comments: [] }];
+
+	/**
+	 * Where `name` is last declared in `source`.
+	 * @param {string} source
+	 * @param {string} name
+	 */
+	const last = (source, name) =>
+		source.search(new RegExp(`\\b${name}\\b(?![\\s\\S]*\\b${name}\\b)`));
+
+	/**
+	 * Each source's error, at the last `a` unless `at` says where.
+	 * @type {Array<[source: string, error: ErrorKind, at?: number]>}
+	 */
+	const cases = [
+		['let a;\nlet a;', TS_ERRORS.BLOCK_SCOPED_VARIABLE_REDECLARED],
+		['const a = 1;\nconst a = 2;', TS_ERRORS.BLOCK_SCOPED_VARIABLE_REDECLARED],
+		['let a, a;', TS_ERRORS.BLOCK_SCOPED_VARIABLE_REDECLARED],
+		['let [b, { a }] = c;\nlet a;', TS_ERRORS.BLOCK_SCOPED_VARIABLE_REDECLARED],
+		['using a = null;\nlet a;', TS_ERRORS.BLOCK_SCOPED_VARIABLE_REDECLARED],
+		['let a;\nvar a;', TS_ERRORS.BLOCK_SCOPED_VARIABLE_REDECLARED],
+		['let a;\n{\n\tvar a;\n}', TS_ERRORS.BLOCK_SCOPED_VARIABLE_REDECLARED],
+		['function f() {\n\tconst a = 1;\n\tvar a;\n}', TS_ERRORS.BLOCK_SCOPED_VARIABLE_REDECLARED],
+		['namespace N {\n\tlet a;\n\tvar a;\n}', TS_ERRORS.BLOCK_SCOPED_VARIABLE_REDECLARED],
+		['let a;\nclass a {}', TS_ERRORS.BLOCK_SCOPED_VARIABLE_REDECLARED],
+		['{\n\tlet a;\n\tclass a {}\n}', TS_ERRORS.BLOCK_SCOPED_VARIABLE_REDECLARED],
+		// A function declaration in a block below is in that block's table.
+		['let a;\nlet a;\n{\n\tfunction a() {}\n}', TS_ERRORS.BLOCK_SCOPED_VARIABLE_REDECLARED, 11],
+		['var a;\nlet a;', UPSTREAM_ERRORS.REDECLARED],
+		['class a {}\nlet a;', UPSTREAM_ERRORS.REDECLARED],
+		['let a;\nfunction a() {}', UPSTREAM_ERRORS.REDECLARED],
+		['function a() {}\nlet a;', UPSTREAM_ERRORS.REDECLARED],
+		['{\n\tlet a;\n\tfunction a() {}\n}', UPSTREAM_ERRORS.REDECLARED],
+		['function f(a) {\n\tlet a;\n}', UPSTREAM_ERRORS.REDECLARED],
+		['{\n\tlet a;\n\tvar a;\n}', TS_ERRORS.OUTER_SCOPED_VARIABLE_INITIALIZED],
+		['{\n\tconst a = 1;\n\tvar [a] = b;\n}', TS_ERRORS.OUTER_SCOPED_VARIABLE_INITIALIZED],
+		['{\n\tlet a;\n\t{\n\t\tvar a;\n\t}\n}', TS_ERRORS.OUTER_SCOPED_VARIABLE_INITIALIZED],
+		['for (let a; ; ) {\n\tvar a;\n}', TS_ERRORS.OUTER_SCOPED_VARIABLE_INITIALIZED],
+		['try {\n} catch (a) {\n\tlet a;\n}', TS_ERRORS.CATCH_PARAMETER_REDECLARED],
+		['try {\n} catch ({ a }) {\n\tconst a = 1;\n}', TS_ERRORS.CATCH_PARAMETER_REDECLARED],
+		['try {\n} catch (a: unknown) {\n\tusing a = null;\n}', TS_ERRORS.CATCH_PARAMETER_REDECLARED],
+		['enum a {}\nlet a;', TS_ERRORS.ENUM_REDECLARED],
+		['let a;\nenum a {}', TS_ERRORS.ENUM_REDECLARED],
+		['enum a {}\nvar a;', TS_ERRORS.ENUM_REDECLARED],
+		['enum a {}\nfunction a() {}', TS_ERRORS.ENUM_REDECLARED],
+		['const enum a {}\nclass a {}', TS_ERRORS.ENUM_REDECLARED],
+		// TypeScript reports nothing for these, whose tables differ, but acorn
+		// raises an ECMAScript early error.
+		['{\n\tclass a {}\n\tvar a;\n}', UPSTREAM_ERRORS.REDECLARED],
+		['try {\n} catch (a) {\n\tclass a {}\n}', UPSTREAM_ERRORS.REDECLARED],
+	];
+
+	it('reports the code TypeScript reports for each kind of redeclaration', async () => {
+		const outcomes = await parse_in_worker(
+			cases.flatMap(([source]) => modes.map((options) => ({ source, options }))),
+		);
+
+		expect(outcomes).toEqual(
+			cases.flatMap(([source, error, at = last(source, 'a')]) => [
+				thrown(error, at),
+				{ ok: true, errors: [code_of(error)] },
+			]),
+		);
+	});
+
+	it('reports TS2300 where a function declaration later in the list comes first', async () => {
+		// A strict parse throws the first. An exported function isn't bound first.
+		/** @type {Array<[source: string, errors: Array<[ErrorKind, at: number]>]>} */
+		const cases = [
+			[
+				'let a;\nlet a;\nfunction a() {}',
+				[
+					[UPSTREAM_ERRORS.REDECLARED, 11],
+					[UPSTREAM_ERRORS.REDECLARED, 23],
+				],
+			],
+			[
+				'let a;\nfunction a() {}\nlet a;',
+				[
+					[UPSTREAM_ERRORS.REDECLARED, 16],
+					[UPSTREAM_ERRORS.REDECLARED, 27],
+				],
+			],
+			[
+				'{\n\tlet a;\n\tlet a;\n\tfunction a() {}\n}',
+				[
+					[UPSTREAM_ERRORS.REDECLARED, 15],
+					[UPSTREAM_ERRORS.REDECLARED, 28],
+				],
+			],
+			// A comment or an escaped name between `function` and the name
+			[
+				'let a;\nlet a;\nfunction /* c */ a() {}',
+				[
+					[UPSTREAM_ERRORS.REDECLARED, 11],
+					[UPSTREAM_ERRORS.REDECLARED, 31],
+				],
+			],
+			[
+				'let a;\nlet a;\nfunction \\u0061() {}',
+				[
+					[UPSTREAM_ERRORS.REDECLARED, 11],
+					[UPSTREAM_ERRORS.REDECLARED, 23],
+				],
+			],
+			[
+				'let a;\nlet a;\nexport function a() {}',
+				[
+					[TS_ERRORS.BLOCK_SCOPED_VARIABLE_REDECLARED, 11],
+					[UPSTREAM_ERRORS.REDECLARED, 30],
+				],
+			],
+		];
+		const outcomes = await parse_in_worker(
+			cases.flatMap(([source]) => modes.map((options) => ({ source, options }))),
+		);
+
+		expect(outcomes).toEqual(
+			cases.flatMap(([, errors]) => [
+				thrown(errors[0][0], errors[0][1]),
+				{ ok: true, errors: errors.map(([error]) => code_of(error)) },
+			]),
+		);
+		for (const [source, errors] of cases) {
+			for (const [, at] of errors) expect(source.slice(at), source).toMatch(/^(?:a|\\u0061)/);
+		}
+	});
+});
+
+describe('comments around empty statements', () => {
+	/**
+	 * @param {AST.Comment[] | undefined} comments
+	 * @returns {string[] | undefined}
+	 */
+	const values = (comments) => comments?.map((comment) => comment.value);
+
+	// Like Prettier, a `;` in a statement list prints as nothing, so the
+	// statements around it take its comments.
+	it('gives a comment after an empty statement to the statement before it', () => {
+		const ast = parseModule('a; ; // c\nb;', 'App.tsrx');
+		const [a, empty, b] = ast.body;
+		assert_type(empty, 'EmptyStatement');
+
+		expect(values(a.trailingComments)).toEqual([' c']);
+		expect(empty.leadingComments).toBeUndefined();
+		expect(empty.trailingComments).toBeUndefined();
+		expect(b.leadingComments).toBeUndefined();
+	});
+
+	it('gives a comment on its own line before an empty statement to the next statement', () => {
+		const ast = parseModule('a;\n// c\n;\nb;', 'App.tsrx');
+		const [a, empty, b] = ast.body;
+		assert_type(empty, 'EmptyStatement');
+
+		expect(a.trailingComments).toBeUndefined();
+		expect(empty.leadingComments).toBeUndefined();
+		expect(values(b.leadingComments)).toEqual([' c']);
+	});
+
+	it('gives the last statement the comments after the empty statements that end a list', () => {
+		const ast = parseModule('function f() {\n\ta; ; // c\n\t;\n\t// d\n}', 'App.tsrx');
+		const declaration = firstStatement(ast, 'FunctionDeclaration');
+		const [a] = declaration.body.body;
+
+		expect(values(a.trailingComments)).toEqual([' c', ' d']);
+	});
+
+	it('keeps the comments of a list with only empty statements in its container', () => {
+		const block_ast = parseModule('function f() {\n\t; // c\n}\nb;', 'App.tsrx');
+		const declaration = firstStatement(block_ast, 'FunctionDeclaration');
+		const [, b] = block_ast.body;
+
+		expect(values(declaration.body.innerComments)).toEqual([' c']);
+		expect(b.leadingComments).toBeUndefined();
+
+		const program_ast = parseModule('; // c\n;', 'App.tsrx');
+		expect(values(program_ast.innerComments)).toEqual([' c']);
+	});
+
+	it('keeps the comments of an empty statement body', () => {
+		const ast = parseModule('if (x) ; // c\nelse y;', 'App.tsrx');
+		const statement = firstStatement(ast, 'IfStatement');
+		assert_type(statement.consequent, 'EmptyStatement');
+
+		expect(values(statement.consequent.trailingComments)).toEqual([' c']);
+	});
+
+	// Static blocks and namespace bodies are statement lists like a function
+	// body (#286), so their empty statements take no comments either.
+	it('gives the comments of empty statements in static blocks and namespaces to their neighbors', () => {
+		const class_ast = parseModule(
+			'class A {\n\tstatic {\n\t\ta; ; // c\n\t}\n\tstatic {\n\t\t; // d\n\t}\n\tb() {}\n}',
+			'App.tsrx',
+		);
+		const [static_block, empty_block, method] = firstStatement(class_ast, 'ClassDeclaration').body
+			.body;
+		assert_type(static_block, 'StaticBlock');
+		assert_type(empty_block, 'StaticBlock');
+		const [a, empty] = static_block.body;
+
+		expect(values(a.trailingComments)).toEqual([' c']);
+		expect(empty.trailingComments).toBeUndefined();
+		expect(values(empty_block.innerComments)).toEqual([' d']);
+		expect(empty_block.body[0].trailingComments).toBeUndefined();
+		expect(method.leadingComments).toBeUndefined();
+
+		const namespace_ast = parseModule(
+			'namespace N {\n\ta; ; // c\n}\nnamespace M {\n\t; // d\n}\nb;',
+			'App.tsrx',
+		);
+		const namespace = as_type(namespace_ast.body[0], 'TSModuleDeclaration');
+		const empty_namespace = as_type(namespace_ast.body[1], 'TSModuleDeclaration');
+		const block = as_type(namespace.body, 'TSModuleBlock');
+
+		expect(values(block.body[0].trailingComments)).toEqual([' c']);
+		expect(block.body[1].trailingComments).toBeUndefined();
+		expect(values(as_type(empty_namespace.body, 'TSModuleBlock').innerComments)).toEqual([' d']);
+		expect(namespace_ast.body[2].leadingComments).toBeUndefined();
+	});
+});
+
+describe('parenthesized expression metadata', () => {
+	/**
+	 * @param {string} source
+	 * @param {string} name
+	 * @returns {AST.Identifier & { metadata?: { paren_start?: number } }}
+	 */
+	function findIdentifier(source, name) {
+		const ast = parseModule(source, 'App.tsrx');
+		const found = find_first(ast, (node) => node.type === 'Identifier' && node.name === name);
+		if (!found) throw new Error(`No identifier ${name} found in source`);
+		return /** @type {AST.Identifier & { metadata?: { paren_start?: number } }} */ (found);
+	}
+
+	// The formatter finds a node's own parentheses from here, one pair per
+	// stacked JSDoc cast.
+	it('records the outermost grouping paren of a parenthesized expression', () => {
+		const source = 'x = /** @type {A} */ ((/** @type {B} */ (n)));';
+		expect(findIdentifier(source, 'n').metadata?.paren_start).toBe(source.indexOf('(('));
+	});
+
+	it('leaves out the parens of a call or statement around the expression', () => {
+		for (const source of ['foo /** @type {A} */ ((n));', 'if ((n)) {}', 'while ((n)) {}']) {
+			expect(findIdentifier(source, 'n').metadata?.paren_start, source).toBe(
+				source.indexOf('((') + 1,
+			);
+		}
+		expect(findIdentifier('foo(n);', 'n').metadata?.paren_start).toBeUndefined();
+	});
+});
+
+describe('mistakes that TypeScript reports only from its checker', () => {
+	// TypeScript's parser accepts these and reports them as checker diagnostics.
+	// `collect` and `loose` mode record them and keep parsing; a strict parse
+	// throws them. Parsed in a worker, so a parse that never returns fails the
+	// test instead of stalling the run.
+
+	/**
+	 * @typedef {{
+	 *   source: string,
+	 *   errors: Array<[error: ErrorKind, at: string]>,
+	 *   throws: [error: ErrorKind, at: string],
+	 *   valid?: string,
+	 *   pick?: (program: AST.Program) => unknown,
+	 *   pickValid?: (program: AST.Program) => unknown,
+	 *   match?: Record<string, unknown> | unknown[],
+	 * }} CheckerLevelCase
+	 * `errors` pairs each collected error with the source text at its position,
+	 * and `throws` the error a strict parse throws with its `line:column`.
+	 * The node that `pick` takes from the AST is the node that `pickValid` (or
+	 * `pick`) takes from the AST of the `valid` source, apart from locations, or
+	 * matches `match`.
+	 */
+
+	/** @param {AST.Program} program */
+	const first = (program) => program.body[0];
+	/** @param {AST.Program} program */
+	const last = (program) => program.body[program.body.length - 1];
+	/** @param {AST.Program} program */
+	const first_member = (program) =>
+		as_type(/** @type {AST.Node} */ (first(program)), 'ClassDeclaration').body.body[0];
+	/** @param {AST.Program} program */
+	const first_parameter = (program) => {
+		const fn = /** @type {AST.Node} */ (first(program));
+		if (fn.type !== 'FunctionDeclaration' && fn.type !== 'TSDeclareFunction') {
+			throw new Error(`Expected a function, got ${fn.type}`);
+		}
+		return fn.params[0];
+	};
+	/** @param {AST.Program} program */
+	const constructor_parameter = (program) =>
+		as_type(/** @type {AST.Node} */ (first_member(program)), 'MethodDefinition').value.params[0];
+	/** @param {AST.Program} program */
+	const namespace_statement = (program) =>
+		as_type(
+			as_type(/** @type {AST.Node} */ (first(program)), 'TSModuleDeclaration').body,
+			'TSModuleBlock',
+		).body[0];
+	/** @param {AST.Program} program */
+	const class_method_statement = (program) =>
+		as_type(
+			/** @type {AST.Node} */ (
+				as_type(/** @type {AST.Node} */ (first(program)), 'ClassDeclaration').body.body.at(-1)
+			),
+			'MethodDefinition',
+		).value.body?.body[0];
+	/** @param {AST.Program} program */
+	const function_statements = (program) =>
+		as_type(/** @type {AST.Node} */ (first(program)), 'FunctionDeclaration').body.body;
+	/** @param {AST.Program} program */
+	const function_statement = (program) => function_statements(program)[0];
+	/** @param {AST.Program} program */
+	const interface_member = (program) =>
+		as_type(/** @type {AST.Node} */ (first(program)), 'TSInterfaceDeclaration').body.body[0];
+	/** @param {AST.Program} program */
+	const first_type_parameter = (program) => {
+		const declaration = /** @type {AST.Node & { typeParameters?: { params: unknown[] } }} */ (
+			first(program)
+		);
+		return declaration.typeParameters?.params[0];
+	};
+	/** @param {AST.Program} program */
+	const constructor_parameters = (program) =>
+		as_type(/** @type {AST.Node} */ (first_member(program)), 'MethodDefinition').value.params;
+	/** @param {AST.Program} program */
+	const declarator_init = (program) =>
+		as_type(/** @type {AST.Node} */ (first(program)), 'VariableDeclaration').declarations[0].init;
+	/** @param {AST.Program} program */
+	const arrow_parameters = (program) =>
+		as_type(declarator_init(program), 'ArrowFunctionExpression').params;
+	/** @param {AST.Program} program */
+	const type_alias_type = (program) =>
+		as_type(/** @type {AST.Node} */ (first(program)), 'TSTypeAliasDeclaration').typeAnnotation;
+	/**
+	 * `pick`, with each rest element that has a default (#726, #770) replaced by
+	 * its argument, the `AssignmentPattern`: the tree that the source without the
+	 * `...` gives. There must be one.
+	 * @param {(program: AST.Program) => unknown} pick
+	 */
+	const rest_defaults_as_elements = (pick) => (/** @type {AST.Program} */ program) => {
+		let found = false;
+		/** @param {unknown} value @returns {unknown} */
+		const unwrap = (value) => {
+			if (Array.isArray(value)) return value.map(unwrap);
+			if (!value || typeof value !== 'object') return value;
+			const node = /** @type {{ type?: string, argument?: { type?: string } }} */ (value);
+			if (node.type === 'RestElement' && node.argument?.type === 'AssignmentPattern') {
+				found = true;
+				return unwrap(node.argument);
+			}
+			return Object.fromEntries(
+				Object.entries(value).map(([key, child]) => [
+					key,
+					key === 'metadata' ? child : unwrap(child),
+				]),
+			);
+		};
+		const node = unwrap(pick(program));
+		if (!found) throw new Error('Expected a rest element with a default');
+		return node;
+	};
+
+	/** @type {CheckerLevelCase[]} */
+	const cases = [
+		{
+			source: 'type T = 1;\ntype T = 2;',
+			errors: [[UPSTREAM_ERRORS.REDECLARED, 'T = 2']],
+			throws: [UPSTREAM_ERRORS.REDECLARED, '2:5'],
+			valid: 'type U = 1;\ntype T = 2;',
+			pick: last,
+		},
+		{
+			source: "import a from 'a';\nimport a from 'b';",
+			errors: [[UPSTREAM_ERRORS.REDECLARED, "a from 'b'"]],
+			throws: [UPSTREAM_ERRORS.REDECLARED, '2:7'],
+			valid: "import b from 'a';\nimport a from 'b';",
+			pick: last,
+		},
+		{
+			source: 'class A { abstract m(): void; }',
+			errors: [[UPSTREAM_ERRORS.ABSTRACT_METHOD_IN_CLASS, 'abstract m']],
+			throws: [UPSTREAM_ERRORS.ABSTRACT_METHOD_IN_CLASS, '1:10'],
+			valid: 'abstract class A { abstract m(): void; }',
+			pick: first_member,
+		},
+		{
+			source: 'declare class A { x = 1; }',
+			errors: [[UPSTREAM_ERRORS.AMBIENT_INITIALIZER, '= 1']],
+			throws: [UPSTREAM_ERRORS.AMBIENT_INITIALIZER, '1:20'],
+			valid: 'class A { x = 1; }',
+			pick: first_member,
+		},
+		{
+			source: 'declare let x = 1;',
+			errors: [[UPSTREAM_ERRORS.AMBIENT_INITIALIZER, '1;']],
+			throws: [UPSTREAM_ERRORS.AMBIENT_INITIALIZER, '1:16'],
+			valid: 'let x = 1;',
+			pick: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'VariableDeclaration').declarations,
+		},
+		{
+			source: 'abstract class A { static abstract x: number; }',
+			errors: [[TS_ERRORS.MODIFIER_CANNOT_BE_USED_WITH, 'abstract x']],
+			throws: [TS_ERRORS.MODIFIER_CANNOT_BE_USED_WITH, '1:26'],
+			pick: first_member,
+			match: { static: true, abstract: true, key: { name: 'x' } },
+		},
+		{
+			source: 'class A {\n\tconstructor(readonly public x: number) {}\n}',
+			errors: [[TS_ERRORS.MODIFIER_MUST_PRECEDE, 'public x']],
+			// acorn-typescript throws it at the modifier's column (sveltejs/acorn-typescript#122).
+			throws: [TS_ERRORS.MODIFIER_MUST_PRECEDE, '2:12'],
+			valid: 'class A {\n\tconstructor(public readonly x: number) {}\n}',
+			pick: constructor_parameter,
+		},
+		{
+			source: 'class A { constructor(readonly readonly x: number) {} }',
+			// At the repeated modifier (sveltejs/acorn-typescript#129).
+			errors: [[UPSTREAM_ERRORS.DUPLICATE_MODIFIER, 'readonly x']],
+			throws: [UPSTREAM_ERRORS.DUPLICATE_MODIFIER, '1:31'],
+			valid: 'class A { constructor(readonly x: number) {} }',
+			pick: constructor_parameter,
+		},
+		{
+			source: 'class A { private private x = 1; }',
+			errors: [[TS_ERRORS.ACCESSIBILITY_MODIFIER_ALREADY_SEEN, 'private x']],
+			throws: [TS_ERRORS.ACCESSIBILITY_MODIFIER_ALREADY_SEEN, '1:18'],
+			valid: 'class A { private x = 1; }',
+			pick: first_member,
+		},
+		{
+			source: 'class A { public protected x = 1; }',
+			// The first one stays.
+			errors: [[TS_ERRORS.ACCESSIBILITY_MODIFIER_ALREADY_SEEN, 'protected']],
+			throws: [TS_ERRORS.ACCESSIBILITY_MODIFIER_ALREADY_SEEN, '1:17'],
+			valid: 'class A { public x = 1; }',
+			pick: first_member,
+		},
+		{
+			source: 'class A {\n\tconstructor(private public readonly x: number) {}\n}',
+			errors: [[TS_ERRORS.ACCESSIBILITY_MODIFIER_ALREADY_SEEN, 'public']],
+			throws: [TS_ERRORS.ACCESSIBILITY_MODIFIER_ALREADY_SEEN, '2:21'],
+			valid: 'class A {\n\tconstructor(private readonly x: number) {}\n}',
+			pick: constructor_parameter,
+		},
+		{
+			source: 'function f(...a?: number[]) {}',
+			errors: [[TS_ERRORS.OPTIONAL_REST_PARAMETER, '?']],
+			throws: [TS_ERRORS.OPTIONAL_REST_PARAMETER, '1:15'],
+			valid: 'declare function f(...a?: number[]): void;',
+			pick: first_parameter,
+		},
+		{
+			source: 'function f(a: string, ...b?: number[]): void;\nfunction f() {}',
+			errors: [[TS_ERRORS.OPTIONAL_REST_PARAMETER, '?:']],
+			throws: [TS_ERRORS.OPTIONAL_REST_PARAMETER, '1:26'],
+			valid: 'declare function f(a: string, ...b?: number[]): void;',
+			pick: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'TSDeclareFunction').params,
+		},
+		{
+			source: 'class A { constructor(public ...rest: number[]) {} }',
+			errors: [[TS_ERRORS.REST_PARAMETER_PROPERTY, 'public']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:29'],
+			valid: 'class A { constructor(...rest: number[]) {} }',
+			pick: constructor_parameter,
+		},
+		{
+			source: 'class A { m(a: string, readonly ...rest: number[]) {} }',
+			errors: [[TS_ERRORS.REST_PARAMETER_PROPERTY, 'readonly']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:32'],
+			valid: 'class A { m(a: string, ...rest: number[]) {} }',
+			pick: first_member,
+		},
+		{
+			source: 'class A { constructor(@dec public ...rest: number[]) {} }',
+			errors: [[TS_ERRORS.REST_PARAMETER_PROPERTY, 'public']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:34'],
+			valid: 'class A { constructor(@dec ...rest: number[]) {} }',
+			pick: constructor_parameter,
+		},
+		{
+			source: 'class A { constructor(private readonly ...rest: number[], b) {} }',
+			errors: [
+				[TS_ERRORS.REST_PARAMETER_PROPERTY, 'private readonly ...'],
+				[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', b'],
+			],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:39'],
+			pick: first_member,
+			match: {
+				value: {
+					params: [
+						{ type: 'RestElement', argument: { name: 'rest' } },
+						{ type: 'Identifier', name: 'b' },
+					],
+				},
+			},
+		},
+		{
+			source: '@dec function f() {}',
+			errors: [[TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '@dec']],
+			throws: [TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '1:5'],
+			valid: 'function f() {}',
+			pick: first,
+		},
+		{
+			source: '@a @b(1) const x = 1;',
+			errors: [[TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '@a']],
+			throws: [TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '1:9'],
+			valid: 'const x = 1;',
+			pick: first,
+		},
+		{
+			source: '@dec interface I {}',
+			errors: [[TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '@dec']],
+			throws: [TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '1:5'],
+			valid: 'interface I {}',
+			pick: first,
+		},
+		{
+			source: "@dec import a from 'a';",
+			errors: [[TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '@dec']],
+			throws: [TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '1:5'],
+			valid: "import a from 'a';",
+			pick: first,
+		},
+		{
+			source: 'export @dec function f() {}',
+			errors: [[TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '@dec']],
+			throws: [TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '1:12'],
+			valid: 'export function f() {}',
+			pick: first,
+		},
+		{
+			source: 'export default @dec async function f() {}',
+			errors: [[TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '@dec']],
+			throws: [TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '1:20'],
+			valid: 'export default async function f() {}',
+			pick: first,
+		},
+		{
+			// No other class takes the decorators written before `export`.
+			source: '@dec export const A = class {};',
+			errors: [[TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '@dec']],
+			throws: [TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '1:12'],
+			valid: 'export const A = class {};',
+			pick: first,
+		},
+		{
+			source: 'function f() {\n\t@dec const x = 1;\n}',
+			errors: [[TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '@dec']],
+			throws: [TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '2:6'],
+			valid: 'function f() {\n\tconst x = 1;\n}',
+			pick: first,
+		},
+		{
+			// No other class takes the decorators.
+			source: '@dec function f() {}\nclass A {}',
+			errors: [[TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '@dec']],
+			throws: [TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '1:5'],
+			valid: 'function f() {}\nclass A {}',
+			pick: (program) => program.body,
+		},
+		{
+			source: 'export function App() @{\n\t@dec const x = 1;\n\t<div>{x}</div>\n}',
+			errors: [[TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '@dec']],
+			throws: [TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, '2:6'],
+		},
+		{
+			source: 'class A { @dec constructor() {} }',
+			errors: [[UPSTREAM_ERRORS.DECORATED_CONSTRUCTOR, '@dec']],
+			throws: [UPSTREAM_ERRORS.DECORATED_CONSTRUCTOR, '1:10'],
+			pick: first_member,
+			match: {
+				type: 'MethodDefinition',
+				kind: 'constructor',
+				decorators: [{ type: 'Decorator', expression: { name: 'dec' } }],
+			},
+		},
+		{
+			source: 'class A { private #x = 1; }',
+			errors: [[UPSTREAM_ERRORS.PRIVATE_ELEMENT_ACCESSIBILITY, 'private']],
+			throws: [UPSTREAM_ERRORS.PRIVATE_ELEMENT_ACCESSIBILITY, '1:10'],
+			pick: first_member,
+			match: { type: 'PropertyDefinition', accessibility: 'private', key: { name: 'x' } },
+		},
+		{
+			source: 'abstract class A { abstract #x: number; }',
+			errors: [[UPSTREAM_ERRORS.PRIVATE_ELEMENT_ABSTRACT, 'abstract #x']],
+			throws: [UPSTREAM_ERRORS.PRIVATE_ELEMENT_ABSTRACT, '1:19'],
+			pick: first_member,
+			match: { abstract: true, key: { type: 'PrivateIdentifier', name: 'x' } },
+		},
+		{
+			source: 'interface I { private x: number }',
+			errors: [[UPSTREAM_ERRORS.TYPE_MEMBER_MODIFIER, 'private x']],
+			throws: [UPSTREAM_ERRORS.TYPE_MEMBER_MODIFIER, '1:14'],
+			pick: interface_member,
+			match: { type: 'TSPropertySignature', accessibility: 'private', key: { name: 'x' } },
+		},
+		{
+			source: 'type T = { static m(): void };',
+			errors: [[UPSTREAM_ERRORS.TYPE_MEMBER_MODIFIER, 'static m']],
+			throws: [UPSTREAM_ERRORS.TYPE_MEMBER_MODIFIER, '1:11'],
+			pick: (program) =>
+				as_type(
+					as_type(/** @type {AST.Node} */ (first(program)), 'TSTypeAliasDeclaration')
+						.typeAnnotation,
+					'TSTypeLiteral',
+				).members[0],
+			match: { type: 'TSMethodSignature', static: true, key: { name: 'm' } },
+		},
+		{
+			source: 'interface I {\n\tstatic\n\tx: number;\n}',
+			errors: [[UPSTREAM_ERRORS.TYPE_MEMBER_MODIFIER, 'static\n']],
+			throws: [UPSTREAM_ERRORS.TYPE_MEMBER_MODIFIER, '2:1'],
+			pick: interface_member,
+			match: { type: 'TSPropertySignature', static: true, key: { name: 'x' } },
+		},
+		{
+			source: 'interface I<public T> {}',
+			errors: [[UPSTREAM_ERRORS.TYPE_PARAMETER_MODIFIER, 'public T']],
+			throws: [UPSTREAM_ERRORS.TYPE_PARAMETER_MODIFIER, '1:12'],
+			pick: first_type_parameter,
+			match: { type: 'TSTypeParameter', accessibility: 'public', name: { name: 'T' } },
+		},
+		{
+			source: 'function f<in T>() {}',
+			errors: [[UPSTREAM_ERRORS.VARIANCE_MODIFIER, 'in T']],
+			throws: [UPSTREAM_ERRORS.VARIANCE_MODIFIER, '1:11'],
+			valid: 'interface I<in T> {}',
+			pick: first_type_parameter,
+		},
+		{
+			source: 'class A { out x = 1; }',
+			errors: [[UPSTREAM_ERRORS.VARIANCE_MODIFIER, 'out x']],
+			throws: [UPSTREAM_ERRORS.VARIANCE_MODIFIER, '1:10'],
+			pick: first_member,
+			match: { type: 'PropertyDefinition', out: true, key: { name: 'x' } },
+		},
+		{
+			source: 'function f({ a }?: { a: number }) {}',
+			errors: [[TS_ERRORS.OPTIONAL_BINDING_PATTERN_PARAMETER, '{ a }?']],
+			throws: [TS_ERRORS.OPTIONAL_BINDING_PATTERN_PARAMETER, '1:11'],
+			valid: 'declare function f({ a }?: { a: number }): void;',
+			pick: first_parameter,
+		},
+		{
+			source: 'const o = { m([a]?: number[]) {} };',
+			errors: [[TS_ERRORS.OPTIONAL_BINDING_PATTERN_PARAMETER, '[a]?']],
+			throws: [TS_ERRORS.OPTIONAL_BINDING_PATTERN_PARAMETER, '1:14'],
+			valid: 'declare function m([a]?: number[]): void;',
+			pick: (program) =>
+				as_type(
+					/** @type {AST.Property} */ (
+						as_type(
+							as_type(/** @type {AST.Node} */ (first(program)), 'VariableDeclaration')
+								.declarations[0].init,
+							'ObjectExpression',
+						).properties[0]
+					).value,
+					'FunctionExpression',
+				).params[0],
+			pickValid: first_parameter,
+		},
+		{
+			source: 'export function App({ a }?: { a: number }) @{\n\t<div />\n}',
+			errors: [[TS_ERRORS.OPTIONAL_BINDING_PATTERN_PARAMETER, '{ a }?']],
+			throws: [TS_ERRORS.OPTIONAL_BINDING_PATTERN_PARAMETER, '1:20'],
+			pick: (program) =>
+				as_type(
+					as_type(/** @type {AST.Node} */ (first(program)), 'ExportNamedDeclaration').declaration,
+					'FunctionDeclaration',
+				).params[0],
+			match: { type: 'ObjectPattern', optional: true },
+		},
+		{
+			source: 'function f(...a: number[],) {}',
+			errors: [[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ',)']],
+			throws: [TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, '1:25'],
+			valid: 'function f(...a: number[]) {}',
+			pick: first,
+		},
+		{
+			source: 'function f(...a: number[], b: string) {}',
+			errors: [[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', b']],
+			throws: [TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, '1:25'],
+			pick: first,
+			match: { params: [{ type: 'RestElement' }, { type: 'Identifier', name: 'b' }] },
+		},
+		{
+			source: 'const [...a, b] = c;',
+			errors: [[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', b']],
+			throws: [TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, '1:11'],
+			pick: first,
+			match: {
+				declarations: [
+					{ id: { elements: [{ type: 'RestElement' }, { type: 'Identifier', name: 'b' }] } },
+				],
+			},
+		},
+		{
+			source: 'function f(...a: number[], /* last */\n) {}',
+			errors: [[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', /*']],
+			throws: [TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, '1:25'],
+			valid: 'function f(...a: number[] /* last */\n) {}',
+			pick: first,
+		},
+		{
+			source: 'const f = (...a: number[],) => a;',
+			errors: [[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ',)']],
+			throws: [TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, '1:25'],
+			valid: 'const f = (...a: number[]) => a;',
+			pick: first,
+		},
+		{
+			source: "import j from './a.json' with { type: 'json', type: 'x' };",
+			// acorn-typescript reports it after the repeated attribute's value.
+			errors: [[TSRX_ERRORS.DUPLICATED_ATTRIBUTE_KEY, ' };']],
+			throws: [TSRX_ERRORS.DUPLICATED_ATTRIBUTE_KEY, '1:55'],
+			pick: first,
+			match: { attributes: [{ value: { value: 'json' } }, { value: { value: 'x' } }] },
+		},
+		{
+			source: 'export { missing };',
+			errors: [[UPSTREAM_ERRORS.EXPORT_NOT_DEFINED, 'missing }']],
+			throws: [UPSTREAM_ERRORS.EXPORT_NOT_DEFINED, '1:9'],
+			valid: 'const missing = 1;\nexport { missing };',
+			pick: last,
+		},
+		{
+			source: 'a?.b = c;',
+			errors: [[UPSTREAM_ERRORS.OPTIONAL_CHAIN_ASSIGNMENT, 'a?.b']],
+			throws: [UPSTREAM_ERRORS.OPTIONAL_CHAIN_ASSIGNMENT, '1:0'],
+			pick: first,
+			match: {
+				expression: { type: 'AssignmentExpression', left: { type: 'ChainExpression' } },
+			},
+		},
+		{
+			source: 'a?.b += c;',
+			errors: [[UPSTREAM_ERRORS.OPTIONAL_CHAIN_ASSIGNMENT, 'a?.b']],
+			throws: [UPSTREAM_ERRORS.OPTIONAL_CHAIN_ASSIGNMENT, '1:0'],
+			pick: first,
+			match: {
+				expression: {
+					type: 'AssignmentExpression',
+					operator: '+=',
+					left: { type: 'ChainExpression' },
+				},
+			},
+		},
+		{
+			source: "import.source('x');",
+			errors: [[UPSTREAM_ERRORS.IMPORT_META_PROPERTY, "source('x')"]],
+			throws: [UPSTREAM_ERRORS.IMPORT_META_PROPERTY, '1:7'],
+			pick: first,
+			match: {
+				expression: {
+					type: 'CallExpression',
+					callee: { type: 'MetaProperty', meta: { name: 'import' }, property: { name: 'source' } },
+				},
+			},
+		},
+		{
+			source: 'const x = new.target;',
+			errors: [[UPSTREAM_ERRORS.NEW_TARGET_OUTSIDE_FUNCTION, 'new.target']],
+			throws: [UPSTREAM_ERRORS.NEW_TARGET_OUTSIDE_FUNCTION, '1:10'],
+			valid: 'function f() {\n\tconst x = new.target;\n}',
+			pick: first,
+			pickValid: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'FunctionDeclaration').body.body[0],
+		},
+		{
+			source: 'super();',
+			errors: [
+				[UPSTREAM_ERRORS.SUPER_OUTSIDE_METHOD, 'super'],
+				[UPSTREAM_ERRORS.SUPER_CALL_OUTSIDE_CONSTRUCTOR, 'super'],
+			],
+			throws: [UPSTREAM_ERRORS.SUPER_OUTSIDE_METHOD, '1:0'],
+			valid: 'class A extends B {\n\tconstructor() {\n\t\tsuper();\n\t}\n}',
+			pick: first,
+			pickValid: (program) =>
+				as_type(/** @type {AST.Node} */ (first_member(program)), 'MethodDefinition').value.body
+					?.body[0],
+		},
+		{
+			source: 'class A {\n\tconstructor() {\n\t\tsuper();\n\t}\n}',
+			errors: [[UPSTREAM_ERRORS.SUPER_CALL_OUTSIDE_CONSTRUCTOR, 'super']],
+			throws: [UPSTREAM_ERRORS.SUPER_CALL_OUTSIDE_CONSTRUCTOR, '3:2'],
+			valid: 'class A extends B {\n\tconstructor() {\n\t\tsuper();\n\t}\n}',
+			pick: class_method_statement,
+		},
+		{
+			source: 'namespace N {\n\tconst x = await 42;\n}',
+			errors: [[TS_ERRORS.AWAIT_EXPRESSION_NOT_ALLOWED, 'await 42']],
+			throws: ['TS18037', '2:11'],
+			valid: 'const x = await 42;',
+			pick: namespace_statement,
+			pickValid: first,
+		},
+		{
+			source: 'namespace N {\n\tfor await (const x of y) {}\n}',
+			errors: [[TS_ERRORS.FOR_AWAIT_NOT_ALLOWED, 'await (']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '2:5'],
+			valid: 'for await (const x of y) {}',
+			pick: namespace_statement,
+			pickValid: first,
+		},
+		{
+			source: 'namespace N {\n\tawait using x = y;\n}',
+			errors: [[TS_ERRORS.AWAIT_USING_NOT_ALLOWED, 'await using']],
+			throws: [TS_ERRORS.AWAIT_USING_OUTSIDE_ASYNC, '2:1'],
+			valid: 'await using x = y;',
+			pick: namespace_statement,
+			pickValid: first,
+		},
+		{
+			source: '#x in obj;',
+			errors: [[TS_ERRORS.PRIVATE_IDENTIFIER_OUTSIDE_CLASS, '#x in']],
+			throws: [TS_ERRORS.PRIVATE_IDENTIFIER_OUTSIDE_CLASS, '1:0'],
+			valid: 'class A {\n\t#x;\n\tm() {\n\t\t#x in obj;\n\t}\n}',
+			pick: first,
+			pickValid: class_method_statement,
+		},
+		{
+			source: 'obj.#x;',
+			errors: [[TS_ERRORS.PRIVATE_IDENTIFIER_OUTSIDE_CLASS, '#x;']],
+			throws: [TS_ERRORS.PRIVATE_IDENTIFIER_OUTSIDE_CLASS, '1:4'],
+			valid: 'class A {\n\t#x;\n\tm() {\n\t\tobj.#x;\n\t}\n}',
+			pick: first,
+			pickValid: class_method_statement,
+		},
+		{
+			source: 'export const v: string;',
+			errors: [[TS_ERRORS.DECLARATION_NOT_INITIALIZED, 'v: string']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:22'],
+			valid: 'export declare const v: string;',
+			pick: (program) =>
+				as_type(
+					as_type(/** @type {AST.Node} */ (first(program)), 'ExportNamedDeclaration').declaration,
+					'VariableDeclaration',
+				).declarations,
+		},
+		{
+			source: 'const a = 1,\n\tb: number;',
+			errors: [[TS_ERRORS.DECLARATION_NOT_INITIALIZED, 'b: number']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '2:10'],
+			valid: 'declare const a = 1,\n\tb: number;',
+			pick: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'VariableDeclaration').declarations,
+		},
+		{
+			source: 'function f() {\n\texport const a = 1;\n}',
+			errors: [[TS_ERRORS.MODIFIERS_CANNOT_APPEAR_HERE, 'export const']],
+			throws: [TS_ERRORS.MODIFIERS_CANNOT_APPEAR_HERE, '2:1'],
+			valid: 'export const a = 1;',
+			pick: function_statement,
+			pickValid: first,
+		},
+		{
+			source: 'function f() {\n\texport default 1;\n}',
+			errors: [[TS_ERRORS.NESTED_DEFAULT_EXPORT, 'export default']],
+			throws: [TS_ERRORS.NESTED_DEFAULT_EXPORT, '2:1'],
+			valid: 'export default 1;',
+			pick: function_statement,
+			pickValid: first,
+		},
+		{
+			source: "{\n\timport a from 'a';\n}",
+			errors: [[TS_ERRORS.NESTED_IMPORT, 'import a']],
+			throws: [TS_ERRORS.NESTED_IMPORT, '2:1'],
+			valid: "import a from 'a';",
+			pick: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'BlockStatement').body[0],
+			pickValid: first,
+		},
+		{
+			source: "function f() {\n\timport x = require('a');\n}",
+			errors: [[TS_ERRORS.NESTED_IMPORT, 'import x']],
+			throws: [TS_ERRORS.NESTED_IMPORT, '2:1'],
+			valid: "import x = require('a');",
+			pick: function_statement,
+			pickValid: first,
+		},
+		// TypeScript's error for each other kind of export in a block.
+		{
+			source: 'function f() {\n\texport { f };\n}',
+			errors: [[TS_ERRORS.NESTED_EXPORT, 'export {']],
+			throws: [TS_ERRORS.NESTED_EXPORT, '2:1'],
+		},
+		{
+			source: "function f() {\n\texport * from 'a';\n}",
+			errors: [[TS_ERRORS.NESTED_EXPORT, 'export *']],
+			throws: [TS_ERRORS.NESTED_EXPORT, '2:1'],
+		},
+		{
+			source: 'function f() {\n\texport = f;\n}',
+			errors: [[TS_ERRORS.NESTED_EXPORT_ASSIGNMENT, 'export =']],
+			throws: [TS_ERRORS.NESTED_EXPORT_ASSIGNMENT, '2:1'],
+		},
+		{
+			source: 'function f() {\n\texport as namespace A;\n}',
+			errors: [[TS_ERRORS.NESTED_GLOBAL_EXPORT, 'export as']],
+			throws: [TS_ERRORS.NESTED_GLOBAL_EXPORT, '2:1'],
+		},
+		{
+			source: 'function f() {\n\texport /* a */ default class {}\n}',
+			errors: [[TS_ERRORS.MODIFIERS_CANNOT_APPEAR_HERE, 'export /*']],
+			throws: [TS_ERRORS.MODIFIERS_CANNOT_APPEAR_HERE, '2:1'],
+		},
+		{
+			source: 'function f() {\n\texport declare namespace N {}\n}',
+			errors: [[TS_ERRORS.NESTED_NAMESPACE, 'export declare']],
+			throws: [TS_ERRORS.NESTED_NAMESPACE, '2:1'],
+		},
+		{
+			source: "export function App() @{\n\timport a from 'a';\n\t<div>{a}</div>\n}",
+			errors: [[TS_ERRORS.NESTED_IMPORT, 'import a']],
+			throws: [TS_ERRORS.NESTED_IMPORT, '2:1'],
+		},
+		{
+			source: 'function f() {\n\tconst\n}',
+			// Right after `const`, as TypeScript reports it.
+			errors: [[TS_ERRORS.VARIABLE_DECLARATION_LIST_EMPTY, '\n}']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '3:0'],
+			pick: function_statement,
+			match: { type: 'VariableDeclaration', kind: 'const', declarations: [] },
+		},
+		{
+			source: 'var;',
+			errors: [[TS_ERRORS.VARIABLE_DECLARATION_LIST_EMPTY, ';']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:3'],
+			pick: first,
+			match: { type: 'VariableDeclaration', kind: 'var', declarations: [] },
+		},
+		{
+			source: 'function f() {\n\tconst\n\treturn 1;\n}',
+			errors: [[TS_ERRORS.VARIABLE_DECLARATION_LIST_EMPTY, '\n\treturn']],
+			throws: ['TS1359', '3:1'],
+			pick: (program) => ({ statements: function_statements(program) }),
+			match: {
+				statements: [
+					{ type: 'VariableDeclaration', kind: 'const', declarations: [] },
+					{ type: 'ReturnStatement' },
+				],
+			},
+		},
+		{
+			source: 'export function App() @{\n\tconst\n\t<div />\n}',
+			errors: [[TS_ERRORS.VARIABLE_DECLARATION_LIST_EMPTY, '\n\t<div']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '3:1'],
+		},
+		{
+			source: 'function f() {\n\tlet\n}',
+			errors: [[UPSTREAM_ERRORS.LET_RESERVED, 'let']],
+			throws: [UPSTREAM_ERRORS.LET_RESERVED, '2:1'],
+			pick: function_statement,
+			match: { type: 'ExpressionStatement', expression: { type: 'Identifier', name: 'let' } },
+		},
+		{
+			// acorn also reports the binding name and the lexical declaration's name,
+			// at the same place: one mistake, one error.
+			source: 'const { a: let } = b;',
+			errors: [[UPSTREAM_ERRORS.LET_RESERVED, 'let }']],
+			throws: [UPSTREAM_ERRORS.LET_RESERVED, '1:11'],
+			pick: first,
+			match: {
+				type: 'VariableDeclaration',
+				declarations: [{ id: { properties: [{ value: { type: 'Identifier', name: 'let' } }] } }],
+			},
+		},
+		{
+			source: 'var let = 1;',
+			errors: [[UPSTREAM_ERRORS.LET_RESERVED, 'let =']],
+			throws: [UPSTREAM_ERRORS.LET_RESERVED, '1:4'],
+			pick: first,
+			match: { type: 'VariableDeclaration', declarations: [{ id: { name: 'let' } }] },
+		},
+		{
+			source: 'class let {}',
+			errors: [[UPSTREAM_ERRORS.LET_RESERVED, 'let {']],
+			throws: [UPSTREAM_ERRORS.LET_RESERVED, '1:6'],
+			pick: first,
+			match: { type: 'ClassDeclaration', id: { name: 'let' } },
+		},
+		{
+			source: "import let from 'a';",
+			errors: [[UPSTREAM_ERRORS.LET_RESERVED, 'let from']],
+			throws: [UPSTREAM_ERRORS.LET_RESERVED, '1:7'],
+			pick: first,
+			match: { type: 'ImportDeclaration', specifiers: [{ local: { name: 'let' } }] },
+		},
+		{
+			source: 'function f(let) {\n\tlet = 1;\n}',
+			errors: [
+				[UPSTREAM_ERRORS.LET_RESERVED, 'let)'],
+				[UPSTREAM_ERRORS.LET_RESERVED, 'let ='],
+			],
+			throws: [UPSTREAM_ERRORS.LET_RESERVED, '1:11'],
+			pick: first,
+			match: {
+				params: [{ type: 'Identifier', name: 'let' }],
+				body: {
+					body: [
+						{
+							expression: {
+								type: 'AssignmentExpression',
+								left: { type: 'Identifier', name: 'let' },
+							},
+						},
+					],
+				},
+			},
+		},
+		{
+			source: 'for (var; ;) {}',
+			// Right after `var`, as for a statement.
+			errors: [[TS_ERRORS.VARIABLE_DECLARATION_LIST_EMPTY, '; ;)']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:8'],
+			pick: first,
+			match: {
+				type: 'ForStatement',
+				init: { type: 'VariableDeclaration', kind: 'var', declarations: [] },
+				test: null,
+				update: null,
+			},
+		},
+		{
+			source: 'for (const of x) {}',
+			errors: [[TS_ERRORS.VARIABLE_DECLARATION_LIST_EMPTY, ' of x']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:14'],
+			pick: first,
+			match: {
+				type: 'ForOfStatement',
+				left: { type: 'VariableDeclaration', kind: 'const', declarations: [] },
+				right: { type: 'Identifier', name: 'x' },
+			},
+		},
+		{
+			source: 'for (let of x) {}',
+			errors: [[TS_ERRORS.VARIABLE_DECLARATION_LIST_EMPTY, ' of x']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:12'],
+			pick: first,
+			match: {
+				type: 'ForOfStatement',
+				left: { type: 'VariableDeclaration', kind: 'let', declarations: [] },
+			},
+		},
+		{
+			source: 'for (const in x) {}',
+			errors: [[TS_ERRORS.VARIABLE_DECLARATION_LIST_EMPTY, ' in x']],
+			throws: ['TS1359', '1:11'],
+			pick: first,
+			match: {
+				type: 'ForInStatement',
+				left: { type: 'VariableDeclaration', kind: 'const', declarations: [] },
+			},
+		},
+		{
+			source: 'async function f() {\n\tfor await (var\n\t\tof x) {}\n}',
+			errors: [[TS_ERRORS.VARIABLE_DECLARATION_LIST_EMPTY, '\n\t\tof']],
+			// At `await`: acorn reads a declarator named `of`.
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '2:5'],
+			pick: function_statement,
+			match: {
+				type: 'ForOfStatement',
+				await: true,
+				left: { type: 'VariableDeclaration', kind: 'var', declarations: [] },
+			},
+		},
+		{
+			source:
+				'export function App() @{\n\t<ul>\n\t\t@for (const of items) {\n\t\t\t<li />\n\t\t}\n\t</ul>\n}',
+			errors: [[TS_ERRORS.VARIABLE_DECLARATION_LIST_EMPTY, ' of items']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '3:17'],
+		},
+		{
+			source: 'class A { constructor(public [a]: number[]) {} }',
+			errors: [[TS_ERRORS.PATTERN_PARAMETER_PROPERTY, 'public [a]']],
+			throws: [TS_ERRORS.PATTERN_PARAMETER_PROPERTY, '1:22'],
+			pick: constructor_parameter,
+			match: {
+				type: 'TSParameterProperty',
+				accessibility: 'public',
+				parameter: { type: 'ArrayPattern', elements: [{ type: 'Identifier', name: 'a' }] },
+			},
+		},
+		{
+			source: 'class A {\n\tconstructor(readonly { a }?: { a: number }) {}\n}',
+			errors: [
+				[TS_ERRORS.PATTERN_PARAMETER_PROPERTY, 'readonly {'],
+				// As for any other optional pattern parameter of a constructor with a body.
+				[TS_ERRORS.OPTIONAL_BINDING_PATTERN_PARAMETER, '{ a }?'],
+			],
+			throws: [TS_ERRORS.PATTERN_PARAMETER_PROPERTY, '2:13'],
+			pick: constructor_parameter,
+			match: {
+				type: 'TSParameterProperty',
+				readonly: true,
+				parameter: { type: 'ObjectPattern', optional: true },
+			},
+		},
+		{
+			source: 'function f(public x: number) {}',
+			errors: [[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public x']],
+			throws: ['TS1212', '1:11'],
+			valid: 'class A { constructor(public x: number) {} }',
+			pick: first_parameter,
+			pickValid: constructor_parameter,
+		},
+		{
+			// At the first modifier, not at its column.
+			source: 'const g = function (\n\tprivate readonly x: number,\n\tprotected y: number,\n) {};',
+			errors: [
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'private readonly'],
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'protected y'],
+			],
+			throws: ['TS1212', '2:1'],
+			valid:
+				'class A {\n\tconstructor(\n\t\tprivate readonly x: number,\n\t\tprotected y: number,\n\t) {}\n}',
+			pick: (program) =>
+				as_type(
+					as_type(/** @type {AST.Node} */ (first(program)), 'VariableDeclaration').declarations[0]
+						.init,
+					'FunctionExpression',
+				).params,
+			pickValid: (program) =>
+				as_type(/** @type {AST.Node} */ (first_member(program)), 'MethodDefinition').value.params,
+		},
+		{
+			source: 'declare function f(readonly x: number): void;',
+			errors: [[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'readonly x']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:28'],
+			valid: 'class A { constructor(readonly x: number) {} }',
+			pick: first_parameter,
+			pickValid: constructor_parameter,
+		},
+		{
+			source: 'export function App(override x: number) @{\n\t<div>{x}</div>\n}',
+			errors: [[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'override']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:29'],
+		},
+		{
+			// TypeScript reports both.
+			source: 'function f(public ...rest: number[]) {}',
+			errors: [
+				[TS_ERRORS.REST_PARAMETER_PROPERTY, 'public'],
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public'],
+			],
+			throws: ['TS1212', '1:11'],
+			valid: 'function f(...rest: number[]) {}',
+			pick: first_parameter,
+		},
+		{
+			source: 'function f(public [a]: number[]) {}',
+			errors: [
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public'],
+				[TS_ERRORS.PATTERN_PARAMETER_PROPERTY, 'public'],
+			],
+			throws: ['TS1212', '1:11'],
+			pick: first_parameter,
+			match: { type: 'TSParameterProperty', parameter: { type: 'ArrayPattern' } },
+		},
+		// A parameter property with a pattern and a default (#665).
+		{
+			source: 'class A {\n\tconstructor(public [a] = [1]) {}\n}',
+			errors: [[TS_ERRORS.PATTERN_PARAMETER_PROPERTY, 'public [a]']],
+			throws: [TS_ERRORS.PATTERN_PARAMETER_PROPERTY, '2:13'],
+			pick: constructor_parameter,
+			match: {
+				type: 'TSParameterProperty',
+				accessibility: 'public',
+				parameter: { type: 'AssignmentPattern', left: { type: 'ArrayPattern' } },
+			},
+		},
+		{
+			source: 'class A { constructor(readonly { a }: { a: number } = { a: 1 }) {} }',
+			errors: [[TS_ERRORS.PATTERN_PARAMETER_PROPERTY, 'readonly {']],
+			throws: [TS_ERRORS.PATTERN_PARAMETER_PROPERTY, '1:22'],
+			pick: constructor_parameter,
+			match: {
+				type: 'TSParameterProperty',
+				readonly: true,
+				parameter: {
+					type: 'AssignmentPattern',
+					left: { type: 'ObjectPattern', typeAnnotation: { type: 'TSTypeAnnotation' } },
+				},
+			},
+		},
+		{
+			source: 'function f(public [a] = [1]) {}',
+			errors: [
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public'],
+				[TS_ERRORS.PATTERN_PARAMETER_PROPERTY, 'public'],
+			],
+			throws: ['TS1212', '1:11'],
+			pick: first_parameter,
+			match: {
+				type: 'TSParameterProperty',
+				parameter: { type: 'AssignmentPattern', left: { type: 'ArrayPattern' } },
+			},
+		},
+		// A parameter property modifier on a signature's parameter (#664).
+		{
+			source: 'type F = (public x: number) => void;',
+			errors: [[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public x']],
+			// acorn-typescript reads `(public x` as a parenthesized type.
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:17'],
+			valid: 'class A { constructor(public x: number) {} }',
+			pick: (program) => as_type(type_alias_type(program), 'TSFunctionType').parameters,
+			pickValid: constructor_parameters,
+		},
+		{
+			source: 'type C = new (protected x: number) => object;',
+			errors: [[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'protected x']],
+			throws: ['TS1212', '1:14'],
+			valid: 'class A { constructor(protected x: number) {} }',
+			pick: (program) => as_type(type_alias_type(program), 'TSConstructorType').parameters,
+			pickValid: constructor_parameters,
+		},
+		{
+			source:
+				'interface I {\n\tm(private readonly x: number): void;\n\t(override y: number): void;\n\tnew (readonly z: number): I;\n}',
+			errors: [
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'private readonly'],
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'override y'],
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'readonly z'],
+			],
+			throws: ['TS1212', '2:3'],
+			pick: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'TSInterfaceDeclaration').body.body,
+			match: [
+				{
+					type: 'TSMethodSignature',
+					parameters: [{ type: 'TSParameterProperty', accessibility: 'private', readonly: true }],
+				},
+				{
+					type: 'TSCallSignatureDeclaration',
+					parameters: [{ type: 'TSParameterProperty', override: true }],
+				},
+				{
+					type: 'TSConstructSignatureDeclaration',
+					parameters: [{ type: 'TSParameterProperty', readonly: true }],
+				},
+			],
+		},
+		{
+			source: 'type T = { m?(public [a]: number[]): void };',
+			errors: [
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public'],
+				[TS_ERRORS.PATTERN_PARAMETER_PROPERTY, 'public'],
+			],
+			throws: ['TS1212', '1:14'],
+			pick: (program) =>
+				as_type(as_type(type_alias_type(program), 'TSTypeLiteral').members[0], 'TSMethodSignature')
+					.parameters,
+			match: [
+				{
+					type: 'TSParameterProperty',
+					accessibility: 'public',
+					parameter: { type: 'ArrayPattern', typeAnnotation: { type: 'TSTypeAnnotation' } },
+				},
+			],
+		},
+		{
+			source: 'type T = { (public ...rest: number[]): void };',
+			errors: [
+				[TS_ERRORS.REST_PARAMETER_PROPERTY, 'public'],
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public'],
+			],
+			throws: ['TS1212', '1:12'],
+			valid: 'type T = { (...rest: number[]): void };',
+			pick: type_alias_type,
+		},
+		{
+			// A signature's parameters now go through `parseBindingList`, which reads
+			// the parameters after a rest parameter, as for a function.
+			source: 'type F = (...a: number[], b: string) => void;',
+			errors: [[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', b']],
+			throws: [TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, '1:24'],
+			pick: (program) => as_type(type_alias_type(program), 'TSFunctionType').parameters,
+			match: [{ type: 'RestElement' }, { type: 'Identifier', name: 'b' }],
+		},
+		// A parameter property modifier on an arrow function's parameter (#663).
+		{
+			source: 'const k = (public x: number) => x;',
+			errors: [[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public x']],
+			throws: ['TS1212', '1:11'],
+			valid: 'class A { constructor(public x: number) {} }',
+			pick: arrow_parameters,
+			pickValid: constructor_parameters,
+		},
+		{
+			source: 'const m = async (readonly x: number) => x;',
+			errors: [[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'readonly x']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:26'],
+			valid: 'class A { constructor(readonly x: number) {} }',
+			pick: arrow_parameters,
+			pickValid: constructor_parameters,
+		},
+		{
+			// After type parameters, a modifier can come before a pattern too.
+			source: 'const n = <T,>(a: T, private readonly b?: T, protected [c]: T[] = []) => a;',
+			errors: [
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'private readonly'],
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'protected'],
+				[TS_ERRORS.PATTERN_PARAMETER_PROPERTY, 'protected'],
+			],
+			// acorn-typescript throws the error of reading `<T,>` as an element.
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:10'],
+			pick: arrow_parameters,
+			match: [
+				{ type: 'Identifier', name: 'a' },
+				{
+					type: 'TSParameterProperty',
+					accessibility: 'private',
+					readonly: true,
+					parameter: { type: 'Identifier', name: 'b', optional: true },
+				},
+				{
+					type: 'TSParameterProperty',
+					accessibility: 'protected',
+					parameter: {
+						type: 'AssignmentPattern',
+						left: { type: 'ArrayPattern', typeAnnotation: { type: 'TSTypeAnnotation' } },
+						right: { type: 'ArrayExpression' },
+					},
+				},
+			],
+		},
+		{
+			source: 'const o = async <T,>(override x: T) => x;',
+			errors: [[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'override']],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:19'],
+			valid: 'class A { constructor(override x: T) {} }',
+			pick: arrow_parameters,
+			pickValid: constructor_parameters,
+		},
+		{
+			source:
+				'const g = (\n\ta: number,\n\treadonly b = 1,\n\tpublic { c }: { c: number },\n): number => a;',
+			errors: [
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'readonly b'],
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public {'],
+				[TS_ERRORS.PATTERN_PARAMETER_PROPERTY, 'public {'],
+			],
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '3:10'],
+			pick: declarator_init,
+			match: {
+				type: 'ArrowFunctionExpression',
+				params: [
+					{ type: 'Identifier', name: 'a' },
+					{
+						type: 'TSParameterProperty',
+						readonly: true,
+						parameter: { type: 'AssignmentPattern', left: { name: 'b' } },
+					},
+					{
+						type: 'TSParameterProperty',
+						accessibility: 'public',
+						parameter: { type: 'ObjectPattern', typeAnnotation: { type: 'TSTypeAnnotation' } },
+					},
+				],
+				returnType: { type: 'TSTypeAnnotation' },
+			},
+		},
+		{
+			// TypeScript reports both, as for a function's parameter.
+			source: 'const f = (a: number, public ...rest: number[]) => a;',
+			errors: [
+				[TS_ERRORS.REST_PARAMETER_PROPERTY, 'public'],
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public'],
+			],
+			throws: ['TS1212', '1:22'],
+			valid: 'const f = (a: number, ...rest: number[]) => a;',
+			pick: arrow_parameters,
+		},
+		{
+			source: 'const f = (a, public ...r,) => a;',
+			errors: [
+				[TS_ERRORS.REST_PARAMETER_PROPERTY, 'public'],
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public'],
+				[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ',)'],
+			],
+			throws: ['TS1212', '1:14'],
+			valid: 'const f = (a, ...r) => a;',
+			pick: arrow_parameters,
+		},
+		{
+			source: 'export const App = (public x: number) => @{\n\t<div>{x}</div>\n};',
+			errors: [[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public x']],
+			throws: ['TS1212', '1:20'],
+		},
+		// An arrow function's optional rest or pattern parameter (#663), as other
+		// functions' (#616, #557).
+		{
+			source: 'const f = (...a?: number[]) => a;',
+			errors: [[TS_ERRORS.OPTIONAL_REST_PARAMETER, '?:']],
+			throws: [TS_ERRORS.OPTIONAL_REST_PARAMETER, '1:15'],
+			valid: 'declare function f(...a?: number[]): void;',
+			pick: arrow_parameters,
+			pickValid: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'TSDeclareFunction').params,
+		},
+		{
+			source: 'const f = ({ a }?: { a: number }) => a;',
+			errors: [[TS_ERRORS.OPTIONAL_BINDING_PATTERN_PARAMETER, '{ a }?']],
+			throws: [TS_ERRORS.OPTIONAL_BINDING_PATTERN_PARAMETER, '1:11'],
+			valid: 'declare function f({ a }?: { a: number }): void;',
+			pick: arrow_parameters,
+			pickValid: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'TSDeclareFunction').params,
+		},
+		{
+			source: 'const f = async (x, [a]?: number[]) => a;',
+			errors: [[TS_ERRORS.OPTIONAL_BINDING_PATTERN_PARAMETER, '[a]?']],
+			throws: [TS_ERRORS.OPTIONAL_BINDING_PATTERN_PARAMETER, '1:20'],
+			pick: arrow_parameters,
+			match: [{ type: 'Identifier' }, { type: 'ArrayPattern', optional: true }],
+		},
+		{
+			source: 'const f = <T,>({ a }?: T) => a;',
+			errors: [[TS_ERRORS.OPTIONAL_BINDING_PATTERN_PARAMETER, '{ a }?']],
+			// The arrow function's own error, past its `=>` (#703).
+			throws: [TS_ERRORS.OPTIONAL_BINDING_PATTERN_PARAMETER, '1:15'],
+			pick: arrow_parameters,
+			match: [{ type: 'ObjectPattern', optional: true }],
+		},
+		// An async arrow function's optional rest parameter (#702), which acorn
+		// reads as a spread among the arguments of `async (…)`.
+		{
+			source: 'const f = async (...a?: number[]) => a;',
+			errors: [[TS_ERRORS.OPTIONAL_REST_PARAMETER, '?:']],
+			throws: [TS_ERRORS.OPTIONAL_REST_PARAMETER, '1:21'],
+			valid: 'declare function f(...a?: number[]): void;',
+			pick: arrow_parameters,
+			pickValid: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'TSDeclareFunction').params,
+		},
+		{
+			source: `const g = async (
+	x,
+	...[a] /* rest */ ?
+) => x;`,
+			errors: [[TS_ERRORS.OPTIONAL_REST_PARAMETER, '?\n']],
+			throws: [TS_ERRORS.OPTIONAL_REST_PARAMETER, '3:19'],
+			pick: arrow_parameters,
+			match: [
+				{ type: 'Identifier', name: 'x' },
+				{ type: 'RestElement', argument: { type: 'ArrayPattern' }, optional: true },
+			],
+		},
+		// A parameter's default in a function or constructor type, or in a
+		// method, call, or construct signature (#705, TS2371). The tree keeps it,
+		// as typescript-estree's does.
+		{
+			source: 'type F = (a = 1) => void;',
+			errors: [[TS_ERRORS.SIGNATURE_PARAMETER_INITIALIZER, 'a = 1']],
+			throws: [TS_ERRORS.SIGNATURE_PARAMETER_INITIALIZER, '1:10'],
+			pick: (program) => as_type(type_alias_type(program), 'TSFunctionType').parameters,
+			match: [
+				{
+					type: 'AssignmentPattern',
+					left: { type: 'Identifier', name: 'a' },
+					right: { type: 'Literal', value: 1 },
+				},
+			],
+		},
+		{
+			source: `interface I {
+	m(a: number = 1): void;
+	(b = 2): void;
+	new ({ c }: { c: number } = { c: 3 }): I;
+}`,
+			errors: [
+				[TS_ERRORS.SIGNATURE_PARAMETER_INITIALIZER, 'a: number = 1'],
+				[TS_ERRORS.SIGNATURE_PARAMETER_INITIALIZER, 'b = 2'],
+				[TS_ERRORS.SIGNATURE_PARAMETER_INITIALIZER, '{ c }'],
+			],
+			throws: [TS_ERRORS.SIGNATURE_PARAMETER_INITIALIZER, '2:3'],
+			pick: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'TSInterfaceDeclaration').body.body,
+			match: [
+				{
+					type: 'TSMethodSignature',
+					parameters: [
+						{
+							type: 'AssignmentPattern',
+							left: { type: 'Identifier', name: 'a', typeAnnotation: { type: 'TSTypeAnnotation' } },
+						},
+					],
+				},
+				{
+					type: 'TSCallSignatureDeclaration',
+					parameters: [{ type: 'AssignmentPattern', left: { name: 'b' } }],
+				},
+				{
+					type: 'TSConstructSignatureDeclaration',
+					parameters: [{ type: 'AssignmentPattern', left: { type: 'ObjectPattern' } }],
+				},
+			],
+		},
+		{
+			source: 'let f: new ([a]?: number[], b = 2) => object;',
+			errors: [[TS_ERRORS.SIGNATURE_PARAMETER_INITIALIZER, 'b = 2']],
+			throws: [TS_ERRORS.SIGNATURE_PARAMETER_INITIALIZER, '1:28'],
+		},
+		{
+			// TypeScript reports both at the parameter.
+			source: 'type F = (public x = 1) => void;',
+			errors: [
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public'],
+				[TS_ERRORS.SIGNATURE_PARAMETER_INITIALIZER, 'public x = 1'],
+			],
+			// acorn-typescript reads `(public x` as a parenthesized type.
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:17'],
+			pick: (program) => as_type(type_alias_type(program), 'TSFunctionType').parameters,
+			match: [
+				{
+					type: 'TSParameterProperty',
+					accessibility: 'public',
+					parameter: { type: 'AssignmentPattern', left: { name: 'x' } },
+				},
+			],
+		},
+		// A rest parameter's default (#726, TS1048, at the parameter's name). The
+		// rest element's argument is an `AssignmentPattern`, with the `?` and the
+		// type annotation on its target, as for a parameter with a default.
+		{
+			source: 'function f(...a = []) {}',
+			errors: [[TS_ERRORS.REST_PARAMETER_INITIALIZER, 'a =']],
+			throws: [TS_ERRORS.REST_PARAMETER_INITIALIZER, '1:14'],
+			valid: 'function f(a = []) {}',
+			pick: rest_defaults_as_elements(first_parameter),
+			pickValid: first_parameter,
+		},
+		{
+			source: 'function f(...[a, b] = []) {}',
+			errors: [[TS_ERRORS.REST_PARAMETER_INITIALIZER, '[a, b]']],
+			throws: [TS_ERRORS.REST_PARAMETER_INITIALIZER, '1:14'],
+			valid: 'function f([a, b] = []) {}',
+			pick: rest_defaults_as_elements(first_parameter),
+			pickValid: first_parameter,
+		},
+		{
+			source: 'const g = (...a: number[] = []) => a;',
+			errors: [[TS_ERRORS.REST_PARAMETER_INITIALIZER, 'a:']],
+			throws: [TS_ERRORS.REST_PARAMETER_INITIALIZER, '1:14'],
+			valid: 'const g = (a: number[] = []) => a;',
+			pick: rest_defaults_as_elements(arrow_parameters),
+			pickValid: arrow_parameters,
+		},
+		{
+			source: `const h = async (
+	x,
+	...a = [1]
+) => a;`,
+			errors: [[TS_ERRORS.REST_PARAMETER_INITIALIZER, 'a = [1]']],
+			throws: [TS_ERRORS.REST_PARAMETER_INITIALIZER, '3:4'],
+			valid: `const h = async (
+	x,
+	a = [1]
+) => a;`,
+			pick: rest_defaults_as_elements(arrow_parameters),
+			pickValid: arrow_parameters,
+		},
+		{
+			source: 'const i = async (...a: number[] = []) => a;',
+			errors: [[TS_ERRORS.REST_PARAMETER_INITIALIZER, 'a:']],
+			throws: [TS_ERRORS.REST_PARAMETER_INITIALIZER, '1:20'],
+			valid: 'const i = async (a: number[] = []) => a;',
+			pick: rest_defaults_as_elements(arrow_parameters),
+			pickValid: arrow_parameters,
+		},
+		{
+			source: 'const k = <T,>(...a: T[] = []) => a;',
+			errors: [[TS_ERRORS.REST_PARAMETER_INITIALIZER, 'a:']],
+			throws: [TS_ERRORS.REST_PARAMETER_INITIALIZER, '1:18'],
+			valid: 'const k = <T,>(a: T[] = []) => a;',
+			pick: rest_defaults_as_elements(arrow_parameters),
+			pickValid: arrow_parameters,
+		},
+		{
+			source: 'const l = async <T,>(...a = []) => a;',
+			errors: [[TS_ERRORS.REST_PARAMETER_INITIALIZER, 'a =']],
+			throws: [TS_ERRORS.REST_PARAMETER_INITIALIZER, '1:24'],
+			valid: 'const l = async <T,>(a = []) => a;',
+			pick: rest_defaults_as_elements(arrow_parameters),
+			pickValid: arrow_parameters,
+		},
+		{
+			source: `export function App() @{
+	const m = (...a = []) => a;
+	<div>{m.length}</div>
+}`,
+			errors: [[TS_ERRORS.REST_PARAMETER_INITIALIZER, 'a =']],
+			throws: [TS_ERRORS.REST_PARAMETER_INITIALIZER, '2:15'],
+		},
+		{
+			// TypeScript reports TS2371 too, at the parameter.
+			source: 'type H = (...a = []) => void;',
+			errors: [
+				[TS_ERRORS.REST_PARAMETER_INITIALIZER, 'a ='],
+				[TS_ERRORS.SIGNATURE_PARAMETER_INITIALIZER, '...a = []'],
+			],
+			throws: [TS_ERRORS.REST_PARAMETER_INITIALIZER, '1:13'],
+			pick: (program) => as_type(type_alias_type(program), 'TSFunctionType').parameters,
+			match: [
+				{
+					type: 'RestElement',
+					argument: { type: 'AssignmentPattern', left: { name: 'a' }, right: { elements: [] } },
+				},
+			],
+		},
+		{
+			source: `interface I {
+	m(...a = []): void;
+	new (...b: string[] = []): I;
+}`,
+			errors: [
+				[TS_ERRORS.REST_PARAMETER_INITIALIZER, 'a ='],
+				[TS_ERRORS.SIGNATURE_PARAMETER_INITIALIZER, '...a = []'],
+				[TS_ERRORS.REST_PARAMETER_INITIALIZER, 'b:'],
+				[TS_ERRORS.SIGNATURE_PARAMETER_INITIALIZER, '...b: string[] = []'],
+			],
+			throws: [TS_ERRORS.REST_PARAMETER_INITIALIZER, '2:6'],
+			pick: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'TSInterfaceDeclaration').body.body,
+			match: [
+				{
+					parameters: [
+						{ type: 'RestElement', argument: { type: 'AssignmentPattern', left: { name: 'a' } } },
+					],
+				},
+				{
+					parameters: [
+						{
+							type: 'RestElement',
+							argument: {
+								type: 'AssignmentPattern',
+								left: { name: 'b', typeAnnotation: { type: 'TSTypeAnnotation' } },
+							},
+						},
+					],
+				},
+			],
+		},
+		{
+			source: 'class A { constructor(public ...a = []) {} }',
+			errors: [
+				[TS_ERRORS.REST_PARAMETER_PROPERTY, 'public'],
+				[TS_ERRORS.REST_PARAMETER_INITIALIZER, 'a ='],
+			],
+			// acorn-typescript expects a name after the modifier.
+			throws: [TS_ERRORS.UNEXPECTED_TOKEN, '1:29'],
+			valid: 'class A { constructor(a = []) {} }',
+			pick: rest_defaults_as_elements(constructor_parameters),
+			pickValid: constructor_parameters,
+		},
+		// A rest element's default in a destructuring pattern (#770, TS1186, at
+		// the `=`). The rest element's argument is an `AssignmentPattern`, as
+		// typescript-estree gives `[...a = 1] = b`.
+		{
+			source: 'const [...a = 1] = b;',
+			errors: [[TS_ERRORS.REST_ELEMENT_INITIALIZER, '= 1']],
+			throws: [TS_ERRORS.REST_ELEMENT_INITIALIZER, '1:12'],
+			valid: 'const [a = 1] = b;',
+			pick: rest_defaults_as_elements(first),
+			pickValid: first,
+		},
+		{
+			source: 'const { x, ...a = f() } = b;',
+			errors: [[TS_ERRORS.REST_ELEMENT_INITIALIZER, '= f()']],
+			throws: [TS_ERRORS.REST_ELEMENT_INITIALIZER, '1:16'],
+			pick: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'VariableDeclaration').declarations[0].id,
+			match: {
+				type: 'ObjectPattern',
+				properties: [
+					{ type: 'Property' },
+					{
+						type: 'RestElement',
+						argument: {
+							type: 'AssignmentPattern',
+							left: { name: 'a' },
+							right: { type: 'CallExpression' },
+						},
+					},
+				],
+			},
+		},
+		{
+			source: 'function f([...a = 1], { ...b = {} }) {}',
+			errors: [
+				[TS_ERRORS.REST_ELEMENT_INITIALIZER, '= 1'],
+				[TS_ERRORS.REST_ELEMENT_INITIALIZER, '= {}'],
+			],
+			throws: [TS_ERRORS.REST_ELEMENT_INITIALIZER, '1:17'],
+			pick: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'FunctionDeclaration').params,
+			match: [
+				{ elements: [{ type: 'RestElement', argument: { type: 'AssignmentPattern' } }] },
+				{ properties: [{ type: 'RestElement', argument: { type: 'AssignmentPattern' } }] },
+			],
+		},
+		{
+			source: 'const f = ([...a = 1]) => a;',
+			errors: [[TS_ERRORS.REST_ELEMENT_INITIALIZER, '= 1']],
+			throws: [TS_ERRORS.REST_ELEMENT_INITIALIZER, '1:17'],
+			valid: 'const f = ([a = 1]) => a;',
+			pick: rest_defaults_as_elements(arrow_parameters),
+			pickValid: arrow_parameters,
+		},
+		{
+			source: '[...a = 1] = b;',
+			errors: [[TS_ERRORS.REST_ELEMENT_INITIALIZER, '= 1']],
+			throws: [TS_ERRORS.REST_ELEMENT_INITIALIZER, '1:6'],
+			valid: '[a = 1] = b;',
+			pick: rest_defaults_as_elements(first),
+			pickValid: first,
+		},
+		{
+			source: '({ ...a = 1 } = b);',
+			errors: [[TS_ERRORS.REST_ELEMENT_INITIALIZER, '= 1']],
+			throws: [TS_ERRORS.REST_ELEMENT_INITIALIZER, '1:8'],
+			pick: (program) => {
+				let expression = as_type(
+					/** @type {AST.Node} */ (first(program)),
+					'ExpressionStatement',
+				).expression;
+				if (expression.type === 'ParenthesizedExpression') expression = expression.expression;
+				return as_type(expression, 'AssignmentExpression').left;
+			},
+			match: {
+				type: 'ObjectPattern',
+				properties: [{ type: 'RestElement', argument: { type: 'AssignmentPattern' } }],
+			},
+		},
+		{
+			// The `=` past a comment.
+			source: 'for ([...a /* = */ = 1] of c) {}',
+			errors: [[TS_ERRORS.REST_ELEMENT_INITIALIZER, '= 1']],
+			throws: [TS_ERRORS.REST_ELEMENT_INITIALIZER, '1:19'],
+			pick: (program) => as_type(/** @type {AST.Node} */ (first(program)), 'ForOfStatement').left,
+			match: {
+				type: 'ArrayPattern',
+				elements: [
+					{
+						type: 'RestElement',
+						argument: { type: 'AssignmentPattern', left: { name: 'a' }, right: { value: 1 } },
+					},
+				],
+			},
+		},
+		{
+			// And past the parentheses around the target.
+			source: '[...(a) = 1] = b;',
+			errors: [[TS_ERRORS.REST_ELEMENT_INITIALIZER, '= 1']],
+			throws: [TS_ERRORS.REST_ELEMENT_INITIALIZER, '1:8'],
+			valid: '[(a) = 1] = b;',
+			pick: rest_defaults_as_elements(first),
+			pickValid: first,
+		},
+		// A property after an object binding pattern's rest element (#771,
+		// TypeScript's TS2462 from its checker), recorded at the comma as for an
+		// array binding pattern.
+		{
+			source: 'const { ...a, b } = c;',
+			errors: [[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', b']],
+			throws: [TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, '1:12'],
+			pick: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'VariableDeclaration').declarations[0].id,
+			match: {
+				type: 'ObjectPattern',
+				properties: [
+					{ type: 'RestElement', argument: { name: 'a' } },
+					{ type: 'Property', key: { name: 'b' } },
+				],
+			},
+		},
+		{
+			source: 'function f({ ...a, ...b, c = 1 }) {}',
+			errors: [
+				[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', ...b'],
+				[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', c'],
+			],
+			throws: [TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, '1:17'],
+			pick: first_parameter,
+			match: {
+				type: 'ObjectPattern',
+				properties: [
+					{ type: 'RestElement', argument: { name: 'a' } },
+					{ type: 'RestElement', argument: { name: 'b' } },
+					{ type: 'Property', value: { type: 'AssignmentPattern' } },
+				],
+			},
+		},
+		{
+			// And after a rest element's default (#770).
+			source: 'const { ...a = 1, b } = c;',
+			errors: [
+				[TS_ERRORS.REST_ELEMENT_INITIALIZER, '= 1'],
+				[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', b'],
+			],
+			throws: [TS_ERRORS.REST_ELEMENT_INITIALIZER, '1:13'],
+			pick: (program) =>
+				as_type(/** @type {AST.Node} */ (first(program)), 'VariableDeclaration').declarations[0].id,
+			match: {
+				type: 'ObjectPattern',
+				properties: [
+					{ type: 'RestElement', argument: { type: 'AssignmentPattern' } },
+					{ type: 'Property', key: { name: 'b' } },
+				],
+			},
+		},
+		// A parameter after an arrow function's rest parameter (#727, TS1014),
+		// recorded at the comma as for other functions' parameters.
+		{
+			source: 'const f = (...a, b) => [a, b];',
+			errors: [[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', b']],
+			throws: [TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, '1:15'],
+			pick: arrow_parameters,
+			match: [
+				{ type: 'RestElement', argument: { name: 'a' } },
+				{ type: 'Identifier', name: 'b' },
+			],
+		},
+		{
+			source: 'const g = (...a, ...b, c,) => c;',
+			errors: [
+				[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', ...b'],
+				[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', c'],
+			],
+			throws: [TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, '1:15'],
+			pick: arrow_parameters,
+			match: [
+				{ type: 'RestElement', argument: { name: 'a' } },
+				{ type: 'RestElement', argument: { name: 'b' } },
+				{ type: 'Identifier', name: 'c' },
+			],
+		},
+		{
+			source: 'const h = (...a, b = 1, { c }): void => c;',
+			errors: [[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', b']],
+			throws: [TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, '1:15'],
+			pick: arrow_parameters,
+			match: [
+				{ type: 'RestElement' },
+				{ type: 'AssignmentPattern', left: { name: 'b' } },
+				{ type: 'ObjectPattern' },
+			],
+		},
+		{
+			source: `export function App() @{
+	const m = (
+		...a: string[],
+		b: string
+	) => b;
+	<div>{m()}</div>
+}`,
+			errors: [[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ',']],
+			throws: [TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, '3:16'],
+		},
+		{
+			// After a rest parameter with modifiers, async too.
+			source: 'const i = (x, public ...a, b) => b;',
+			errors: [
+				[TS_ERRORS.REST_PARAMETER_PROPERTY, 'public'],
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public'],
+				[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', b'],
+			],
+			throws: ['TS1212', '1:14'],
+			pick: arrow_parameters,
+			match: [{ name: 'x' }, { type: 'RestElement' }, { name: 'b' }],
+		},
+		{
+			source: 'const j = async (x, public ...a, b) => b;',
+			errors: [
+				[TS_ERRORS.REST_PARAMETER_PROPERTY, 'public'],
+				[TS_ERRORS.PARAMETER_PROPERTY_OUTSIDE_CONSTRUCTOR, 'public'],
+				[TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', b'],
+			],
+			throws: ['TS1212', '1:20'],
+			pick: arrow_parameters,
+			match: [{ name: 'x' }, { type: 'RestElement' }, { name: 'b' }],
+		},
+	];
+
+	/** @type {Array<ParseOptions>} */
+	const collect_modes = [{ collect: true, preserveParens: true }, { loose: true }];
+
+	/**
+	 * A node without its locations.
+	 * @param {unknown} node
+	 */
+	function without_locations(node) {
+		return JSON.parse(
+			JSON.stringify(node, (key, value) =>
+				key === 'start' ||
+				key === 'end' ||
+				key === 'loc' ||
+				key === 'range' ||
+				key === 'metadata' ||
+				key === 'extra'
+					? undefined
+					: typeof value === 'bigint'
+						? `${value}n`
+						: value,
+			),
+		);
+	}
+
+	it('records them and keeps parsing in collect and loose mode', async () => {
+		const inputs = cases.flatMap(({ source }) =>
+			collect_modes.map((options) => ({ source, options })),
+		);
+		const valid_inputs = cases.flatMap(({ valid }) =>
+			valid ? collect_modes.map((options) => ({ source: valid, options })) : [],
+		);
+		const outcomes = await parse_in_worker_with_ast([...inputs, ...valid_inputs]);
+		const valid_outcomes = outcomes.slice(inputs.length);
+
+		for (const [index, { source, options }] of inputs.entries()) {
+			const test_case = cases[Math.floor(index / collect_modes.length)];
+			const outcome = outcomes[index];
+			const label = `${JSON.stringify(source)} with ${JSON.stringify(options)}`;
+			if (!outcome.ok) throw new Error(`${label} threw ${outcome.message}`);
+			expect(
+				outcome.errors?.map(({ code, pos }, i) => [
+					code,
+					source.slice(pos, (pos ?? 0) + (test_case.errors[i]?.[1].length ?? 0)),
+				]),
+				label,
+			).toEqual(test_case.errors.map(([error, at]) => [code_of(error), at]));
+
+			const node = test_case.pick?.(outcome.ast);
+			if (test_case.match) {
+				expect(node, label).toMatchObject(test_case.match);
+			}
+			if (test_case.valid) {
+				const valid_outcome = valid_outcomes.shift();
+				if (!valid_outcome?.ok) throw new Error(`${JSON.stringify(test_case.valid)} threw`);
+				const valid_node = (test_case.pickValid ?? test_case.pick)?.(valid_outcome.ast);
+				expect(valid_node, label).toBeDefined();
+				expect(without_locations(node), label).toEqual(without_locations(valid_node));
+			}
+		}
+	});
+
+	it('still throws them without collecting', async () => {
+		const outcomes = await parse_in_worker(cases.map(({ source }) => ({ source })));
+
+		expect(
+			outcomes.map((outcome, index) =>
+				outcome.ok ? 'parsed' : [outcome.code, line_column(cases[index].source, outcome.pos)],
+			),
+		).toEqual(cases.map(({ throws: [error, at] }) => [code_of(error), at]));
+	});
+
+	it('compares them with valid code', async () => {
+		const sources = cases.flatMap(({ valid }) => (valid ? [valid] : []));
+		const outcomes = await parse_in_worker(sources.map((source) => ({ source })));
+
+		expect(outcomes).toEqual(sources.map(() => ({ ok: true, errors: undefined })));
+	});
+
+	it('still throws input that only TypeScript error recovery accepts', async () => {
+		const sources = [
+			'type B = {\n\t[a: string, b: string]: string;\n};',
+			'let a: *;',
+			'function b(x: ?) {}',
+			'let c: ?string;',
+			'let d: string?;',
+			'let f: !string;',
+			'let g: string!;',
+			// TypeScript's parser reads a declarator here, or expects one.
+			'const 1;',
+			'const if (a) {}',
+			'var\n#x;',
+			'export function App() @{ const <div /> }',
+			// Decorators before a statement that isn't a declaration, in a function
+			// that has decorators of its own.
+			'@dec function f() {\n\t@inner x;\n}',
+			// TypeScript's parser reads a declarator named `of` in these `for` heads.
+			'for (const of []) {}',
+			'for (const of x.y) {}',
+			// Modifiers on the line before a parameter's name are its name.
+			'function f(readonly\n\tx: number) {}',
+			'const f = (public\n\tx) => x;',
+			// TypeScript reads `(` and a modifier as an arrow function's parameters
+			// only before a name other than `as`, and as a parenthesized expression
+			// otherwise.
+			'const f = (public [a]) => a;',
+			'const f = async (readonly { a }) => a;',
+			'const f = (public ...r) => r;',
+			'const f = (readonly as) => 1;',
+			// Modifiers where no arrow function follows.
+			'(public x);',
+			'(a, readonly b);',
+			'f(public x);',
+			'async (a, public b);',
+			'const f = (a, public b)\n=> a;',
+			// TypeScript reads a parenthesized type here.
+			'type F = (public ...rest: number[]) => void;',
+			// TypeScript reads `x` as the name after the modifiers, then fails.
+			'const f = (a, public x y) => a;',
+		];
+		const modes = [undefined, ...collect_modes];
+		const inputs = sources.flatMap((source) => modes.map((options) => ({ source, options })));
+
+		const outcomes = await parse_in_worker(inputs);
+
+		for (const [index, outcome] of outcomes.entries()) {
+			expect(outcome.ok, JSON.stringify(inputs[index])).toBe(false);
+		}
+	});
+
+	it('still throws decorators before anything but a declaration', async () => {
+		// TypeScript's parser expects a declaration after decorators (TS1146), or
+		// an expression after `=` (TS1109). Each throws where acorn-typescript
+		// raises it: after the decorators.
+		/** @type {Array<[source: string, at: string]>} */
+		const sources = [
+			['@dec x;', 'x;'],
+			['@dec if (a) {}', 'if'],
+			['@dec type;', 'type'],
+			['export @dec x;', 'x;'],
+			['const y = @dec 1;', '1'],
+			['const y = @dec function () {};', 'function'],
+		];
+		const modes = [undefined, ...collect_modes];
+		const inputs = sources.flatMap(([source]) => modes.map((options) => ({ source, options })));
+
+		const outcomes = await parse_in_worker(inputs);
+
+		expect(outcomes).toEqual(
+			sources.flatMap(([source, at]) =>
+				modes.map(() => thrown(TS_ERRORS.UNEXPECTED_LEADING_DECORATOR, source.indexOf(at))),
+			),
+		);
+	});
+
+	it("still throws a rest parameter's default, or a parameter after it, where no arrow function follows", async () => {
+		// Only a parameter can have these (#726, #727). A rest element without an
+		// arrow function fails at its `...`, as before.
+		/** @type {Array<[source: string, error: ErrorKind, at: string]>} */
+		const sources = [
+			['const a = (...b, c);', TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', c'],
+			[
+				`const a = (...b, c)
+=> 1;`,
+				TS_ERRORS.REST_ELEMENT_TRAILING_COMMA,
+				', c',
+			],
+			['const a = (...b, c()) => 1;', TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', c'],
+			['const a = x || (...b, c) => b;', TS_ERRORS.REST_ELEMENT_TRAILING_COMMA, ', c'],
+			['const a = (...b = []);', TS_ERRORS.UNEXPECTED_TOKEN, '...'],
+			['const a = x || (...b = []) => b;', TS_ERRORS.UNEXPECTED_TOKEN, '= []'],
+			['const a = async(...b: T = []);', TS_ERRORS.UNEXPECTED_TYPE_ANNOTATION, ': T'],
+		];
+		const modes = [undefined, ...collect_modes];
+		const inputs = sources.flatMap(([source]) => modes.map((options) => ({ source, options })));
+
+		const outcomes = await parse_in_worker(inputs);
+
+		expect(outcomes).toEqual(
+			sources.flatMap(([source, error, at]) => modes.map(() => thrown(error, source.indexOf(at)))),
+		);
+	});
+
+	it('still reads an assignment as the argument of a spread in a call of `async`', async () => {
+		// `async (...a = []) => a` has a rest parameter with a default (#726), but
+		// without the `=>` it's a call, whose argument is the assignment.
+		const outcomes = await parse_in_worker_with_ast(
+			['const a = async(...b = []);', 'const a = async(...(b = [])) => b;'].flatMap((source) =>
+				[undefined, ...collect_modes].map((options) => ({ source, options })),
+			),
+		);
+
+		expect(outcomes.slice(0, 3).map((outcome) => outcome.ok && outcome.errors)).toEqual([
+			undefined,
+			[],
+			[],
+		]);
+		for (const outcome of outcomes.slice(0, 3)) {
+			if (!outcome.ok) throw new Error(outcome.message);
+			expect(declarator_init(outcome.ast)).toMatchObject({
+				type: 'CallExpression',
+				arguments: [{ type: 'SpreadElement', argument: { type: 'AssignmentExpression' } }],
+			});
+		}
+		// A parenthesized pattern isn't a parameter.
+		// acorn's `Parenthesized pattern` (TS1005).
+		expect(outcomes.slice(3)).toEqual([
+			thrown('TS1005', 19),
+			thrown('TS1005', 19),
+			thrown('TS1005', 19),
+		]);
+	});
+
+	it('records no error where TypeScript reports none', async () => {
+		const sources = [
+			// A rest parameter may have a trailing comma in an ambient context.
+			'declare function f(...a: number[],): void;',
+			'declare function g(...a: number[],\n\t// last\n): void;',
+			'declare const v: string;',
+			'for (const x of y) {}',
+			'class A {\n\t#x;\n\tm() {\n\t\treturn #x in this;\n\t}\n}',
+			'async function f() {\n\tnamespace N {}\n\tawait g();\n}',
+			// A declarator on the line after `const`.
+			'const\n\t[a] = b;',
+			// An overload signature may have an optional binding pattern.
+			'function f({ a }?: { a: number }): void;\nfunction f(options?: { a: number }) {}',
+			'namespace N {\n\texport const a = 1;\n}',
+			// Decorators on a class, and on a parameter (TS1206 only without
+			// `experimentalDecorators`), which the parser can't know.
+			'@dec export class A {}',
+			'export @dec abstract class A {}',
+			'@dec declare class A {}',
+			'const A = @dec class {};',
+			'class A {\n\tconstructor(@dec private x: number) {}\n\tm(@dec y: number) {}\n}',
+			// Parameter properties and parameters named after modifiers.
+			'class A {\n\tconstructor(public x: number, readonly: number, ...rest: number[]) {}\n}',
+			'function f(readonly, override?: number) {}',
+			// A declarator named `of`.
+			'for (const of of x) {}',
+			'for (var of = 1; ; ) {}',
+			// Names and expressions that start with a modifier's name.
+			'const f = (readonly, override = 1, public$: number) => readonly;',
+			'const g = (a, readonly [b]);',
+			'const h = async (readonly) => readonly;',
+			'f(readonly, readonly[0], override * 2);',
+			'type P = (readonly [string]) | (readonly string[]);',
+			'type Q = (readonly: number) => void;',
+			// A parameter property with a default that isn't a pattern.
+			'class A {\n\tconstructor(public x = 1, readonly y: number[] = []) {}\n}',
+			// A default before a rest element, and a spread of an assignment.
+			'const [a = 1, ...b] = c;',
+			'f(...a = 1, ...(b = 2));',
+		];
+		const outcomes = await parse_in_worker(
+			sources.flatMap((source) => collect_modes.map((options) => ({ source, options }))),
+		);
+
+		expect(outcomes).toEqual(
+			sources.flatMap(() => collect_modes.map(() => ({ ok: true, errors: [] }))),
+		);
+	});
+
+	it('records an empty declaration list with no width, right after its keyword', async () => {
+		/** @type {Array<[source: string, keyword_end: number]>} */
+		const cases = [
+			['function f() {\n\tconst\n}', 21],
+			['var /* none */;', 3],
+			['const', 5],
+		];
+		const outcomes = await parse_in_worker_with_ast(
+			cases.map(([source]) => ({ source, options: collect_modes[0] })),
+		);
+
+		expect(outcomes.map((outcome) => (outcome.ok ? outcome.errors : outcome.message))).toEqual(
+			cases.map(([, keyword_end]) => [
+				{
+					code: TS_ERRORS.VARIABLE_DECLARATION_LIST_EMPTY.code,
+					pos: keyword_end,
+					end: keyword_end,
+				},
+			]),
+		);
+	});
+
+	it('still throws a const pattern without an initializer', async () => {
+		const outcomes = await parse_in_worker(
+			[undefined, ...collect_modes].map((options) => ({ source: 'const { a };', options })),
+		);
+
+		expect(outcomes).toEqual(
+			[undefined, ...collect_modes].map(() => thrown(TS_ERRORS.UNEXPECTED_TOKEN, 11)),
+		);
+	});
+});
+
+describe('JSX whitespace in template text', () => {
+	const modes = [undefined, { collect: true, preserveParens: true }, { loose: true }];
+
+	/**
+	 * The children of the first `<div>` or fragment: each text by its value,
+	 * each element by its tag.
+	 *
+	 * @param {unknown} ast
+	 * @returns {string[]}
+	 */
+	function children(ast) {
+		const container = find_first(
+			ast,
+			(node) =>
+				node.type === 'JSXFragment' ||
+				(node.type === 'JSXElement' &&
+					/** @type {AST.TSRXJSXElement} */ (node).openingElement.name.type === 'JSXIdentifier' &&
+					/** @type {{ name: string }} */ (
+						/** @type {AST.TSRXJSXElement} */ (node).openingElement.name
+					).name === 'div'),
+		);
+		return node_children(/** @type {AST.Node} */ (container)).map((child) =>
+			child.type === 'JSXText'
+				? child.value
+				: child.type === 'JSXElement'
+					? `<${/** @type {{ name: string }} */ (child.openingElement.name).name}>`
+					: is_empty_container(child)
+						? '{}'
+						: child.type,
+		);
+	}
+
+	/** @type {Array<[string, string, string[]]>} */
+	const cases = [
+		// The text after a closing tag starts at the tag, so a space there stays
+		// in it whatever the closed element's body ends with (#442)
+		[
+			'a space after a closing tag whose body ends in a line break',
+			'export function App() @{\n\t<div>\n\t\t<span>\n\t\t\t<b>1</b>\n\t\t</span> 2\n\t</div>\n}',
+			['\n\t\t', '<span>', ' 2\n\t'],
+		],
+		[
+			'the same in a fragment',
+			'export function App() @{\n\t<>\n\t\t<span>\n\t\t\t<b>1</b>\n\t\t</span> 2\n\t</>\n}',
+			['\n\t\t', '<span>', ' 2\n\t'],
+		],
+		// As after a self-closing tag, the text keeps the line break that JSX
+		// trims as layout
+		[
+			'text on the line after a closing tag',
+			'<div>\n\t<b>1</b>\n\ttwo\n</div>;',
+			['\n\t', '<b>', '\n\ttwo\n'],
+		],
+		[
+			'text on the line after a self-closing tag',
+			'<div>\n\t<b />\n\ttwo\n</div>;',
+			['\n\t', '<b>', '\n\ttwo\n'],
+		],
+		// A comment is an empty `{}` of its own, as `{/* c */}` is in TSX: the
+		// text on each side of it follows JSX's whitespace rules on its own, so a
+		// space on the comment's line renders, and the line break on its other
+		// side is layout
+		[
+			'a block comment on the line after a closing tag',
+			'<div>\n\t<b>t</b>\n\t/* c */ <i />\n</div>;',
+			['\n\t', '<b>', '\n\t', '{}', ' ', '<i>', '\n'],
+		],
+		[
+			'a block comment on the line after a self-closing tag',
+			'<div>\n\t<b />\n\t/* c */ <i />\n</div>;',
+			['\n\t', '<b>', '\n\t', '{}', ' ', '<i>', '\n'],
+		],
+		[
+			'a line comment after a closing tag',
+			'<div>\n\t<b>t</b> // c\n\t<i />\n</div>;',
+			['\n\t', '<b>', ' ', '{}', '\n\t', '<i>', '\n'],
+		],
+		[
+			'a block comment between children on one line',
+			'<div><b>t</b> /* c */ <i /></div>;',
+			['<b>', ' ', '{}', ' ', '<i>'],
+		],
+		// JSX whitespace is ASCII: a non-breaking space is text (#444)
+		[
+			'a non-breaking space at the start of a line',
+			'<div>\n\t\u00a0<b>x</b>\n</div>;',
+			['\n\t\u00a0', '<b>', '\n'],
+		],
+		[
+			'a non-breaking space on its own line',
+			'<div>\n\t<b>x</b>\n\t\u00a0\n</div>;',
+			['\n\t', '<b>', '\n\t\u00a0\n'],
+		],
+		[
+			'a non-breaking space between children',
+			'<div><b>x</b>\u00a0<i /></div>;',
+			['<b>', '\u00a0', '<i>'],
+		],
+		['a tab on its own line', '<div>\n\t<b>x</b>\n\t\t\n</div>;', ['\n\t', '<b>', '\n\t\t\n']],
+		// An element in a `{…}` container reads its text as anywhere else (#612)
+		[
+			'a space after a closing tag in an element in a child container',
+			'export function App() @{\n\t<main>\n\t\t{x && <div><b>1</b> 2</div>}\n\t</main>\n}',
+			['<b>', ' 2'],
+		],
+		[
+			'a space after a closing tag in an element in an attribute value',
+			'export function App() @{\n\t<main slot={<div><b>1</b> 2</div>} />\n}',
+			['<b>', ' 2'],
+		],
+		[
+			'a space after a closing tag in an element in a container in TSX',
+			'const a = <main>{x && <div><b>1</b> 2</div>}</main>;',
+			['<b>', ' 2'],
+		],
+		[
+			'a non-breaking space after a closing tag in an element in a container',
+			'export function App() @{\n\t<main>\n\t\t{x && <div><b>1</b> 2</div>}\n\t</main>\n}',
+			['<b>', ' 2'],
+		],
+		[
+			'a space after a closing tag in an element in a directive body in a container',
+			'export function App() @{\n\t<main>\n\t\t{x && <section>@if (y) { <div><b>1</b> 2</div> }</section>}\n\t</main>\n}',
+			['<b>', ' 2'],
+		],
+		[
+			'a space after a child container in an element in a directive body in a container',
+			'export function App() @{\n\t<main>\n\t\t{x && <section>@if (y) { <div>{a} 2</div> }</section>}\n\t</main>\n}',
+			['JSXExpressionContainer', ' 2'],
+		],
+		[
+			'text after a closing tag, when the container goes on after the element',
+			'export function App() @{\n\t<main>\n\t\t{x ? <div><b>1</b> 2</div> : <p />}\n\t</main>\n}',
+			['<b>', ' 2'],
+		],
+		// So does an element in a `switch` case (#613)
+		[
+			'a space after an opening tag in an @switch case',
+			'export function App() @{\n\t<main>\n\t\t@switch (x) {\n\t\t\t@case 1: {\n\t\t\t\t<div> 1</div>\n\t\t\t}\n\t\t\t@case 2: {\n\t\t\t\t<p />\n\t\t\t}\n\t\t}\n\t</main>\n}',
+			[' 1'],
+		],
+		[
+			'a space after a closing tag in an @switch case',
+			'export function App() @{\n\t<main>\n\t\t@switch (x) {\n\t\t\t@case 1: {\n\t\t\t\t<div><b>3</b> 4</div>\n\t\t\t}\n\t\t}\n\t</main>\n}',
+			['<b>', ' 4'],
+		],
+		[
+			'a non-breaking space after a closing tag in an @switch case',
+			'export function App() @{\n\t<main>\n\t\t@switch (x) {\n\t\t\t@case 1: {\n\t\t\t\t<div><b>3</b> 4</div>\n\t\t\t}\n\t\t}\n\t</main>\n}',
+			['<b>', ' 4'],
+		],
+		[
+			'a non-breaking space after a nested closing tag in an @switch case',
+			'export function App() @{\n\t@switch (x) {\n\t\t@case 1: {\n\t\t\t<div>\n\t\t\t\t<span>\n\t\t\t\t\t<b>1</b>\n\t\t\t\t</span> 2\n\t\t\t</div>\n\t\t}\n\t}\n}',
+			['\n\t\t\t\t', '<span>', ' 2\n\t\t\t'],
+		],
+		[
+			'text before a tag in an @switch case',
+			'export function App() @{\n\t<main>\n\t\t@switch (x) {\n\t\t\t@case 1: {\n\t\t\t\t<div>1<b /></div>\n\t\t\t}\n\t\t}\n\t</main>\n}',
+			['1', '<b>'],
+		],
+		[
+			'a space after a child container in an @default case',
+			'export function App() @{\n\t<main>\n\t\t@switch (x) {\n\t\t\t@default: {\n\t\t\t\t<div>{a} 1</div>\n\t\t\t}\n\t\t}\n\t</main>\n}',
+			['JSXExpressionContainer', ' 1'],
+		],
+		[
+			'text before a tag in a switch case',
+			'function A() {\n\tswitch (x) {\n\t\tcase 1:\n\t\t\treturn <div> 1<b /></div>;\n\t}\n}',
+			[' 1', '<b>'],
+		],
+		[
+			'a space after a closing tag in a switch case in a container',
+			'export function App() @{\n\t<main>\n\t\t{(() => {\n\t\t\tswitch (x) {\n\t\t\t\tcase 1:\n\t\t\t\t\treturn <div><b>1</b> 2</div>;\n\t\t\t}\n\t\t})()}\n\t</main>\n}',
+			['<b>', ' 2'],
+		],
+		// So does an element in a setup statement, wherever the statement holds it (#636)
+		[
+			'text before a tag in an element in a setup statement',
+			'export function App() @{\n\tconst a = <div>Hello<b /></div>;\n\t<main>{a}</main>\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'a space after an opening tag in an element in a setup statement',
+			'export function App() @{\n\tlet a = <div> 1</div>;\n\t<main>{a}</main>\n}',
+			[' 1'],
+		],
+		[
+			'a space after a closing tag in an element in a setup statement',
+			'export function App() @{\n\tconst a = <div><b>1</b> 2</div>;\n\t<main>{a}</main>\n}',
+			['<b>', ' 2'],
+		],
+		[
+			'a non-breaking space after a closing tag in an element in a setup statement',
+			'export function App() @{\n\tconst a = <div><b>1</b>\u00a02</div>;\n\t<main>{a}</main>\n}',
+			['<b>', '\u00a02'],
+		],
+		[
+			'a space after a child container in an element in a setup statement',
+			'export function App() @{\n\tconst a = <div>{x} 2</div>;\n\t<main>{a}</main>\n}',
+			['JSXExpressionContainer', ' 2'],
+		],
+		[
+			'text before a tag in a function declared in a setup statement',
+			'export function App() @{\n\tfunction f() {\n\t\treturn <div>Hello<b /></div>;\n\t}\n\t<main>{f()}</main>\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'text before a tag in a return in a setup statement',
+			'export function App() @{\n\tif (x) {\n\t\treturn <div>Hello<b /></div>;\n\t}\n\t<main />\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'text before a tag in a call argument in a setup statement',
+			'export function App() @{\n\tconst a = f(<div>Hello<b /></div>);\n\t<main>{a}</main>\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'text before a tag in an array in a setup statement',
+			'export function App() @{\n\tconst a = [<div>Hello<b /></div>];\n\t<main>{a}</main>\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'text before a tag in an object in a setup statement',
+			'export function App() @{\n\tconst a = { k: <div>Hello<b /></div> };\n\t<main>{a.k}</main>\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'text before a tag in a conditional in a setup statement',
+			'export function App() @{\n\tconst a = x ? <div>Hello<b /></div> : null;\n\t<main>{a}</main>\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'text before a tag in an arrow body in a setup statement',
+			'export function App() @{\n\tconst a = () => <div>Hello<b /></div>;\n\t<main>{a()}</main>\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'text before a tag in an @if in a setup statement',
+			'export function App() @{\n\tconst a = @if (x) {\n\t\t<div>Hello<b /></div>\n\t};\n\t<main>{a}</main>\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'text before a tag in an @for in a setup statement',
+			'export function App() @{\n\tconst a = @for (const i of xs) {\n\t\t<div>Hello<b /></div>\n\t};\n\t<main>{a}</main>\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'text before a tag in an @switch in a setup statement',
+			'export function App() @{\n\tconst a = @switch (x) {\n\t\t@case 1: {\n\t\t\t<div>Hello<b /></div>\n\t\t}\n\t};\n\t<main>{a}</main>\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'text before a tag in a setup statement of a @{ … } in a setup statement',
+			'export function App() @{\n\tconst a = @{\n\t\tconst b = <div>Hello<b /></div>;\n\t\t<p>{b}</p>\n\t};\n\t<main>{a}</main>\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'text before a tag in a component declared in a setup statement',
+			'export function App() @{\n\tfunction B() @{\n\t\t<div>Hello<b /></div>\n\t}\n\t<main><B /></main>\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'text before a tag in a switch case in a setup statement',
+			'export function App() @{\n\tswitch (y) {\n\t\tcase 1: {\n\t\t\tconst a = <div>Hello<b /></div>;\n\t\t}\n\t}\n\t<main />\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'a space after a closing tag in an element in a container in a setup statement',
+			'export function App() @{\n\tconst a = <p>{x && <div><b>1</b> 2</div>}</p>;\n\t<main>{a}</main>\n}',
+			['<b>', ' 2'],
+		],
+		[
+			'a space after a closing tag in an element in an attribute value in a setup statement',
+			'export function App() @{\n\tconst a = <p slot={<div><b>1</b> 2</div>} />;\n\t<main>{a}</main>\n}',
+			['<b>', ' 2'],
+		],
+		[
+			'text before a tag in a setup statement of an @if body',
+			'export function App() @{\n\t<main>\n\t\t@if (x) {\n\t\t\tconst a = <div>Hello<b /></div>;\n\t\t\t<p>{a}</p>\n\t\t}\n\t</main>\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'text before a tag in a setup statement of a @{ … } child',
+			'export function App() @{\n\t<main>\n\t\t@{\n\t\t\tconst a = <div>Hello<b /></div>;\n\t\t\t<p>{a}</p>\n\t\t}\n\t</main>\n}',
+			['Hello', '<b>'],
+		],
+		[
+			'a space after a closing tag in a setup statement of an @case',
+			'export function App() @{\n\t<main>\n\t\t@switch (x) {\n\t\t\t@case 1: {\n\t\t\t\tconst a = <div><b>1</b> 2<i /></div>;\n\t\t\t\t<p>{a}</p>\n\t\t\t}\n\t\t}\n\t</main>\n}',
+			['<b>', ' 2', '<i>'],
+		],
+		// A spread attribute's argument stays code
+		[
+			'text in an element with a spread attribute',
+			'export function App() @{\n\t<main>\n\t\t<div {...{ a: b ? c : d, e: <i>1</i> }}> 3</div>\n\t</main>\n}',
+			[' 3'],
+		],
+	];
+
+	it.each(cases)('reads %s like JSX', async (_label, source, expected) => {
+		const outcomes = await parse_in_worker_with_ast(modes.map((options) => ({ source, options })));
+
+		for (const [index, outcome] of outcomes.entries()) {
+			const label = `${JSON.stringify(source)} with ${JSON.stringify(modes[index])}`;
+			if (!outcome.ok) throw new Error(`${label} threw ${outcome.message}`);
+			expect(outcome.errors ?? [], label).toEqual([]);
+			expect(children(outcome.ast), label).toEqual(expected);
+		}
+	});
+
+	it('reports a token that text cannot start at instead of reading it forever', async () => {
+		// The `<` of `<T,>` reads as a type parameter list's, where the text of
+		// `<b>` would start, so the text reads nothing
+		const source = 'const f = <b><T,>() => 1;';
+		const outcomes = await parse_in_worker(modes.map((options) => ({ source, options })));
+
+		for (const outcome of outcomes) {
+			expect(outcome).toEqual(thrown(TS_ERRORS.UNEXPECTED_TOKEN, 13));
+		}
+	});
+
+	it('reads the token after a self-closing tag with a space before its `>` as code', async () => {
+		const sources = [
+			'const a = <div / >;\nconst b = 1;',
+			'export function App() @{\n\tconst a = <b / >;\n\tconst c = 1;\n\t<main>{a}</main>\n}',
+		];
+		const inputs = sources.flatMap((source) => modes.map((options) => ({ source, options })));
+		const outcomes = await parse_in_worker(inputs);
+
+		expect(outcomes).toEqual(inputs.map(({ options }) => ({ ok: true, errors: options && [] })));
+	});
+});
+
+describe('syntax errors in an element that is a value', () => {
+	const modes = [undefined, { collect: true, preserveParens: true }, { loose: true }];
+
+	// acorn-typescript first parses a value that starts with `<` as an element,
+	// in an attempt that is undone when it fails. A syntax error in the element
+	// still reports as that error, where TypeScript reports it (#638).
+	/** @type {Array<[label: string, source: string, error: [ErrorKind, at: string]]>} */
+	const cases = [
+		[
+			'a closing tag without its `>`',
+			'const el = <div>x</div;',
+			[TS_ERRORS.TOKEN_EXPECTED, '1:22'],
+		],
+		['the same in parentheses', 'const el = (<div>x</div);', [TS_ERRORS.TOKEN_EXPECTED, '1:23']],
+		[
+			'the same at the end of the input',
+			'const a = cond ? <span>a</span',
+			[TS_ERRORS.TOKEN_EXPECTED, '1:30'],
+		],
+		[
+			'the same in a default export',
+			'export default <div>B</div',
+			[TS_ERRORS.TOKEN_EXPECTED, '1:26'],
+		],
+		['a self-closing tag without its `>`', 'const el = <div/;', [TS_ERRORS.TOKEN_EXPECTED, '1:16']],
+		[
+			'a closing tag without its `>` in a setup statement',
+			'export function App() @{\n\tconst a = <div><b>1</b</div>;\n\t<p>{a}</p>\n}',
+			[TS_ERRORS.TOKEN_EXPECTED, '2:23'],
+		],
+		// A closing tag where an element starts is reported at its `<`, where
+		// TypeScript expects an expression (#653)
+		['a closing tag as an argument', 'x = import(</>);', [TS_ERRORS.UNEXPECTED_TOKEN, '1:11']],
+		['a closing tag as an index', 'x = a[(</>)];', [TS_ERRORS.UNEXPECTED_TOKEN, '1:7']],
+		['a closing tag as an operand', 'x = -(< />);', [TS_ERRORS.UNEXPECTED_TOKEN, '1:6']],
+		[
+			'a closing tag after yield',
+			'function* g() {\n\tyield </>;\n}',
+			[TS_ERRORS.UNEXPECTED_TOKEN, '2:7'],
+		],
+		['a closing tag in parentheses', 'x = (</>);', [TS_ERRORS.UNEXPECTED_TOKEN, '1:5']],
+		['a closing tag where a statement starts', 'a;\n</div>', [TS_ERRORS.UNEXPECTED_TOKEN, '2:0']],
+		[
+			'text that reads nothing in a setup statement',
+			'export function App() @{\n\tconst f = <b><T,>() => 1;\n\t<main />\n}',
+			[TS_ERRORS.UNEXPECTED_TOKEN, '2:14'],
+		],
+	];
+
+	it.each(cases)('reports %s as a syntax error', async (_label, source, [error, at]) => {
+		const outcomes = await parse_in_worker(modes.map((options) => ({ source, options })));
+
+		for (const outcome of outcomes) {
+			expect(outcome.ok ? 'parsed' : [outcome.code, line_column(source, outcome.pos)]).toEqual([
+				code_of(error),
+				at,
+			]);
+		}
+	});
+});
+
+/**
+ * The comments attached in `node`, by their values.
+ *
+ * @param {unknown} node
+ * @returns {string[]}
+ */
+function comments_in(node) {
+	/** @type {string[]} */
+	const values = [];
+	JSON.stringify(node, (key, value) => {
+		if (
+			(key === 'leadingComments' || key === 'trailingComments' || key === 'innerComments') &&
+			Array.isArray(value)
+		) {
+			values.push(...value.map((/** @type {{ value: string }} */ comment) => comment.value));
+		}
+		return value;
+	});
+	return values;
+}
+
+/**
+ * Whether a child is an empty `{}`, such as the one the parser gives each
+ * comment between children.
+ * @param {AST.Node} child
+ */
+function is_empty_container(child) {
+	return child.type === 'JSXExpressionContainer' && child.expression.type === 'JSXEmptyExpression';
+}
+
+/**
+ * The children of `node`: each text by its value, each element by its tag and
+ * children, an empty `{}` as `{}`, and anything else by its type.
+ *
+ * @param {AST.Node} node
+ * @returns {unknown[]}
+ */
+function read_children(node) {
+	return node_children(node).map((child) =>
+		child.type === 'JSXText'
+			? child.value
+			: child.type === 'JSXElement'
+				? {
+						[/** @type {{ name: string }} */ (child.openingElement.name).name]:
+							read_children(child),
+					}
+				: is_empty_container(child)
+					? '{}'
+					: child.type,
+	);
+}
+
+describe('an element as an attribute value without braces (#654)', () => {
+	const modes = [undefined, { collect: true, preserveParens: true }, { loose: true }];
+
+	/**
+	 * The value of the `attr` attribute.
+	 *
+	 * @param {unknown} ast
+	 * @returns {AST.Node}
+	 */
+	function attr_value(ast) {
+		const attribute = /** @type {ESTreeJSX.JSXAttribute} */ (
+			find_first(
+				ast,
+				(node) =>
+					node.type === 'JSXAttribute' &&
+					/** @type {ESTreeJSX.JSXAttribute} */ (node).name.name === 'attr',
+			)
+		);
+		return /** @type {AST.Node} */ (/** @type {unknown} */ (attribute.value));
+	}
+
+	// acorn-typescript's JSX parser read the element, taking each text token as
+	// a child. Its text was read as a template's, which ends at a comment, so
+	// the parser read the same empty text there until memory ran out. The
+	// element is template markup now, as in a braced value (#656), so a comment
+	// is a comment, in an empty `{}` of its own.
+	/** @type {Array<[string, string, unknown[], string[]]>} */
+	const cases = [
+		['a block comment', 'const el = <div attr=<b>/* c */</b> />;', ['{}'], [' c ']],
+		[
+			'a block comment after text',
+			'const el = <div attr=<b>a /* c */ b</b> />;',
+			['a ', '{}', ' b'],
+			[' c '],
+		],
+		['a line comment', 'const el = <div attr=<b>// c\n</b> />;', ['{}', '\n'], [' c']],
+		[
+			'a line comment after a space',
+			'const el = <div attr=<b> // c\n</b> />;',
+			[' ', '{}', '\n'],
+			[' c'],
+		],
+		[
+			'a line comment on its own line',
+			'const el = <div attr=<b>\n// c\n</b> />;',
+			['\n', '{}', '\n'],
+			[' c'],
+		],
+		['a comment in a fragment', 'const el = <div attr=<>/* c */</> />;', ['{}'], [' c ']],
+		[
+			'a comment in a nested element',
+			'const el = <div attr=<b>a<i>/* c */</i></b> />;',
+			['a', { i: ['{}'] }],
+			[' c '],
+		],
+		[
+			'a comment in an element in a template',
+			'export function App() @{\n\t<main>\n\t\t<div attr=<b>/* c */</b> />\n\t</main>\n}',
+			['{}'],
+			[' c '],
+		],
+		[
+			'a comment in an element in a setup statement',
+			'export function App() @{\n\tconst el = <div attr=<b>/* c */</b> />;\n\t<main>{el}</main>\n}',
+			['{}'],
+			[' c '],
+		],
+		[
+			'a comment in an element in a function',
+			'function App() {\n\treturn <div attr=<b>// c\n</b> />;\n}',
+			['{}', '\n'],
+			[' c'],
+		],
+		['an @if', 'const el = <div attr=<b>@if (x) { <i /> }</b> />;', ['JSXIfExpression'], []],
+		// The other children read as they did
+		['text', 'const el = <div attr=<b>text</b> />;', ['text'], []],
+		['an element', 'const el = <div attr=<b><i /></b> />;', [{ i: [] }], []],
+		['a container', 'const el = <div attr=<b>{x}</b> />;', ['JSXExpressionContainer'], []],
+	];
+
+	it.each(cases)('reads %s', async (_label, source, children, comments) => {
+		const outcomes = await parse_in_worker_with_ast(modes.map((options) => ({ source, options })));
+
+		for (const [index, outcome] of outcomes.entries()) {
+			const label = `${JSON.stringify(source)} with ${JSON.stringify(modes[index])}`;
+			if (!outcome.ok) throw new Error(`${label} threw ${outcome.message}`);
+			expect(outcome.errors ?? [], label).toEqual([]);
+			expect(read_children(attr_value(outcome.ast)), label).toEqual(children);
+			expect(comments_in(attr_value(outcome.ast)), label).toEqual(comments);
+		}
+	});
+
+	it('reports a closing tag that does not match it as in a braced value', async () => {
+		const sources = [
+			'const el = <div attr= <b>// c\n"foo">text</div>;',
+			'const el = <div attr={<b>// c\n"foo">text</div>};',
+		];
+		const outcomes = await parse_in_worker(
+			sources.flatMap((source) => modes.map((options) => ({ source, options }))),
+		);
+
+		// Both at the `</div>` (2:10)
+		const pos = sources[0].indexOf('</div>');
+		expect(outcomes).toEqual(
+			sources.flatMap(() => [
+				thrown(TSRX_ERRORS.MISMATCHED_CLOSING_TAG, pos),
+				thrown(TSRX_ERRORS.UNEXPECTED_CLOSING_TAG, pos),
+				thrown(TSRX_ERRORS.UNEXPECTED_CLOSING_TAG, pos),
+			]),
+		);
+	});
+
+	// An element in a dynamic tag name is reported (#737), but collecting still
+	// parses it, with acorn-typescript's JSX parser (see `jsx_parseElement`),
+	// where a comment is text
+	it('reads a comment in an element in a reported dynamic tag name as text', async () => {
+		const source = 'const el = <{c ? <b>/* c */</b> : "div"} />;';
+		const [strict, ...collected] = await parse_in_worker_with_ast(
+			modes.map((options) => ({ source, options })),
+		);
+
+		expect(strict).toEqual(thrown(TSRX_ERRORS.DYNAMIC_TAG_EXPRESSION, 13));
+		for (const outcome of collected) {
+			if (!outcome.ok) throw new Error(outcome.message);
+			expect(outcome.errors?.map(({ code }) => code)).toEqual([
+				TSRX_ERRORS.DYNAMIC_TAG_EXPRESSION.code,
+			]);
+			const b = /** @type {AST.Node} */ (
+				find_first(
+					outcome.ast,
+					(node) =>
+						node.type === 'JSXElement' &&
+						/** @type {{ name: string }} */ (
+							/** @type {ESTreeJSX.JSXElement} */ (node).openingElement.name
+						).name === 'b',
+				)
+			);
+			expect(read_children(b)).toEqual(['/* c */']);
+		}
+	});
+});
+
+describe("an element in a spread attribute's argument (#656)", () => {
+	const modes = [undefined, { collect: true, preserveParens: true }, { loose: true }];
+
+	/**
+	 * The element `<i>`.
+	 *
+	 * @param {unknown} ast
+	 * @returns {AST.Node}
+	 */
+	function element_i(ast) {
+		return /** @type {AST.Node} */ (
+			find_first(
+				ast,
+				(node) =>
+					node.type === 'JSXElement' &&
+					/** @type {{ name?: string }} */ (
+						/** @type {ESTreeJSX.JSXElement} */ (node).openingElement.name
+					).name === 'i',
+			)
+		);
+	}
+
+	// acorn-typescript's JSX parser read the element as plain JSX: a comment was
+	// text, and `@if` was text and a container. It is template markup, as in a
+	// braced value.
+	/** @type {Array<[string, string, unknown[], string[]]>} */
+	const cases = [
+		[
+			'a comment in an object',
+			'export function App() @{\n\t<div {...{ k: <i><b /> /* c */ 2</i> }} />\n}',
+			[{ b: [] }, ' ', '{}', ' 2'],
+			[' c '],
+		],
+		[
+			'an @if in an object',
+			'export function App() @{\n\t<div {...{ k: <i>@if (x) { <b /> }</i> }} />\n}',
+			['JSXIfExpression'],
+			[],
+		],
+		[
+			'a comment in a conditional',
+			'export function App() @{\n\t<main>\n\t\t<div {...(c ? <i><b /> /* c */ 2</i> : null)}>t</div>\n\t</main>\n}',
+			[{ b: [] }, ' ', '{}', ' 2'],
+			[' c '],
+		],
+		[
+			'an @for in a setup statement',
+			'export function App() @{\n\tconst a = <div {...{ k: <i>@for (const y of ys) { <b>{y}</b> }</i>, j: 1 }} />;\n\t<main>{a}</main>\n}',
+			['JSXForExpression'],
+			[],
+		],
+		[
+			'a line comment in a function',
+			'function App() {\n\treturn <div {...{ k: <i><b />\n\t\t// c\n\t\ttwo</i> }} />;\n}',
+			[{ b: [] }, '\n\t\t', '{}', '\n\t\ttwo'],
+			[' c'],
+		],
+		[
+			'text in an array',
+			'function App() {\n\treturn <div {...[<i>  a  <b />  </i>]}>t</div>;\n}',
+			['  a  ', { b: [] }, '  '],
+			[],
+		],
+		[
+			'an @switch in an arrow',
+			'const a = <div {...{ r: () => <i>@switch (x) { @case 1: { <b /> } }</i> }} />;',
+			['JSXSwitchExpression'],
+			[],
+		],
+		[
+			'a code block',
+			'export function App() @{\n\t<main>\n\t\t<div {...{ k: <i>@{ const y = 1; <b>{y}</b> }</i> }}>t</div>\n\t</main>\n}',
+			['JSXCodeBlock'],
+			[],
+		],
+		[
+			'an @try in a container',
+			'export function App() @{\n\t<main>\n\t\t{x && <div {...{ k: <i>@try { <b /> } @catch (e) { <u /> }</i> }} />}\n\t</main>\n}',
+			['JSXTryExpression'],
+			[],
+		],
+	];
+
+	it.each(cases)('reads %s', async (_label, source, children, comments) => {
+		const outcomes = await parse_in_worker_with_ast(modes.map((options) => ({ source, options })));
+
+		for (const [index, outcome] of outcomes.entries()) {
+			const label = `${JSON.stringify(source)} with ${JSON.stringify(modes[index])}`;
+			if (!outcome.ok) throw new Error(`${label} threw ${outcome.message}`);
+			expect(outcome.errors ?? [], label).toEqual([]);
+			const i = element_i(outcome.ast);
+			expect(i.metadata?.native_tsrx, label).toBe(true);
+			expect(read_children(i), label).toEqual(children);
+			expect(comments_in(i), label).toEqual(comments);
+		}
+	});
+
+	/**
+	 * A node without its locations and metadata.
+	 * @param {unknown} node
+	 */
+	function without_locations(node) {
+		return JSON.parse(
+			JSON.stringify(node, (key, value) =>
+				key === 'start' || key === 'end' || key === 'loc' || key === 'range' || key === 'metadata'
+					? undefined
+					: value,
+			),
+		);
+	}
+
+	// Each spread, and an attribute value without braces, against the same
+	// expression in a braced value
+	/** @type {Array<[string, (element: string) => string, (element: string) => string]>} */
+	const forms = [
+		['an object', (x) => `{...{ k: ${x} }}`, (x) => `k={{ k: ${x} }}`],
+		['a conditional', (x) => `{...(c ? ${x} : null)}`, (x) => `k={(c ? ${x} : null)}`],
+		['an array', (x) => `{...[${x}]}`, (x) => `k={[${x}]}`],
+		['an object with more', (x) => `{...{ k: ${x}, j: 1 }}`, (x) => `k={{ k: ${x}, j: 1 }}`],
+		['an arrow', (x) => `{...{ r: () => ${x} }}`, (x) => `k={{ r: () => ${x} }}`],
+		['an attribute value without braces', (x) => `k=${x}`, (x) => `k={${x}}`],
+	];
+	const contents = [
+		'<b>t</b> /* c */ <u />',
+		'<b>t</b>\n\t\t// c\n\t\ttwo',
+		'@if (x) { <b /> } @else { <u /> } 2',
+		'@switch (x) { @case 1: { <b /> } }',
+		'{x} /* c */ {y}',
+		'<b k=<u>n /* c */</u> {...{ j: <u>@if (y) { <s /> }</u> }} />',
+	];
+	/** @type {Array<(host: string) => string>} */
+	const places = [
+		(host) => `const a = ${host};`,
+		(host) => `export function App() @{\n\t<main>\n\t\t${host}\n\t</main>\n}`,
+		(host) => `export function App() @{\n\tconst a = ${host};\n\t<main>{a}</main>\n}`,
+		(host) => `export function App() @{\n\t<main>\n\t\t{x && ${host}}\n\t</main>\n}`,
+	];
+	const ends = [' />', '>t</p>', ' j="1" {...y}>t</p>'];
+
+	it.each(forms)(
+		'reads an element in %s like one in a braced value',
+		async (_label, form, braced) => {
+			const pairs = contents.flatMap((content) =>
+				places.flatMap((place) =>
+					ends.map((end) => [
+						place(`<p ${form(`<i>${content}</i>`)}${end}`),
+						place(`<p ${braced(`<i>${content}</i>`)}${end}`),
+					]),
+				),
+			);
+			const outcomes = await parse_in_worker_with_ast(
+				pairs.flatMap((pair) =>
+					pair.flatMap((source) => modes.map((options) => ({ source, options }))),
+				),
+			);
+
+			for (const [index, [source]] of pairs.entries()) {
+				for (const [mode_index, options] of modes.entries()) {
+					const outcome = outcomes[index * 2 * modes.length + mode_index];
+					const reference = outcomes[(index * 2 + 1) * modes.length + mode_index];
+					const label = `${JSON.stringify(source)} with ${JSON.stringify(options)}`;
+					if (!outcome.ok) throw new Error(`${label} threw ${outcome.message}`);
+					if (!reference.ok) throw new Error(`the braced value of ${label} threw`);
+					expect(outcome.errors ?? [], label).toEqual([]);
+					const [i, reference_i] = [outcome, reference].map(({ ast }) => element_i(ast));
+					expect(i.metadata?.native_tsrx, label).toBe(true);
+					expect(without_locations(i), label).toEqual(without_locations(reference_i));
+					const [p, reference_p] = [outcome, reference].map(({ ast }) =>
+						read_children(
+							/** @type {AST.Node} */ (
+								find_first(
+									ast,
+									(node) =>
+										node.type === 'JSXElement' &&
+										/** @type {{ name?: string }} */ (
+											/** @type {ESTreeJSX.JSXElement} */ (node).openingElement.name
+										).name === 'p',
+								)
+							),
+						),
+					);
+					expect(p, label).toEqual(reference_p);
+				}
+			}
+		},
+	);
+});
+
+describe('a `/` in the opening tag of an element in a template (#655)', () => {
+	const modes = [undefined, { collect: true, preserveParens: true }, { loose: true }];
+
+	/**
+	 * A node without its locations.
+	 * @param {unknown} node
+	 */
+	function without_locations(node) {
+		return JSON.parse(
+			JSON.stringify(node, (key, value) =>
+				key === 'start' || key === 'end' || key === 'loc' || key === 'range' || key === 'metadata'
+					? undefined
+					: value,
+			),
+		);
+	}
+
+	// While an opening tag is read, its element isn't on the path yet, so the
+	// rule that reads a `/` or `#` in a template's text as text took the tag's
+	// `/` and a spread argument's for text.
+	/** @type {Array<[string, string, string]>} */
+	const self_closing = [
+		[
+			'a space before the `>`',
+			'export function App() @{\n\t<main>\n\t\t<div / >\n\t</main>\n}',
+			'export function App() @{\n\t<main>\n\t\t<div />\n\t</main>\n}',
+		],
+		[
+			'a line break before the `>`',
+			'export function App() @{\n\t<main>\n\t\t<div a="1" /\n\t\t>\n\t</main>\n}',
+			'export function App() @{\n\t<main>\n\t\t<div a="1" />\n\t</main>\n}',
+		],
+		[
+			'a comment before the `/`',
+			'export function App() @{\n\t<main>\n\t\t<div /* c */ / >\n\t</main>\n}',
+			'export function App() @{\n\t<main>\n\t\t<div /* c */ />\n\t</main>\n}',
+		],
+		[
+			'text after the tag',
+			'export function App() @{\n\t<main><div / >/path #tag</main>\n}',
+			'export function App() @{\n\t<main><div />/path #tag</main>\n}',
+		],
+		[
+			'an element in a function',
+			'function App() {\n\treturn <main><div {...a} / ></main>;\n}',
+			'function App() {\n\treturn <main><div {...a} /></main>;\n}',
+		],
+		[
+			'an element in a setup statement',
+			'export function App() @{\n\tconst el = <main><div / ></main>;\n\t<p>{el}</p>\n}',
+			'export function App() @{\n\tconst el = <main><div /></main>;\n\t<p>{el}</p>\n}',
+		],
+		[
+			'an element in an attribute value',
+			'export function App() @{\n\t<main>\n\t\t<div a=<b / > />\n\t</main>\n}',
+			'export function App() @{\n\t<main>\n\t\t<div a=<b /> />\n\t</main>\n}',
+		],
+	];
+
+	it.each(self_closing)(
+		'reads a self-closing tag with %s like one without',
+		async (_label, source, valid) => {
+			const outcomes = await parse_in_worker_with_ast(
+				[source, valid].flatMap((input) => modes.map((options) => ({ source: input, options }))),
+			);
+
+			for (const [index, options] of modes.entries()) {
+				const outcome = outcomes[index];
+				const valid_outcome = outcomes[modes.length + index];
+				const label = `${JSON.stringify(source)} with ${JSON.stringify(options)}`;
+				if (!outcome.ok) throw new Error(`${label} threw ${outcome.message}`);
+				if (!valid_outcome.ok) throw new Error(`${JSON.stringify(valid)} threw`);
+				expect(outcome.errors ?? [], label).toEqual([]);
+				expect(without_locations(outcome.ast), label).toEqual(without_locations(valid_outcome.ast));
+			}
+		},
+	);
+
+	/** @type {Array<[string, string, object]>} */
+	const spread_arguments = [
+		[
+			'a division',
+			'export function App() @{\n\t<main>\n\t\t<div {...{ a: b / 2 }} />\n\t</main>\n}',
+			{
+				type: 'ObjectExpression',
+				properties: [{ value: { type: 'BinaryExpression', operator: '/' } }],
+			},
+		],
+		[
+			'a division in an element in a function',
+			'function App() {\n\treturn <main><div {...[b / 2]} /></main>;\n}',
+			{ type: 'ArrayExpression', elements: [{ type: 'BinaryExpression', operator: '/' }] },
+		],
+		[
+			'a division in a setup statement',
+			'export function App() @{\n\tconst el = <main><div {...[b / 2]} /></main>;\n\t<p>{el}</p>\n}',
+			{ type: 'ArrayExpression', elements: [{ type: 'BinaryExpression', operator: '/' }] },
+		],
+		[
+			'a regular expression',
+			'export function App() @{\n\t<main>\n\t\t<div {...{ a: /re/.test(s) }} />\n\t</main>\n}',
+			{ type: 'ObjectExpression', properties: [{ value: { type: 'CallExpression' } }] },
+		],
+		[
+			'a private name',
+			'class C {\n\t#p = {};\n\trender() @{\n\t\t<main>\n\t\t\t<div {...this.#p} />\n\t\t</main>\n\t}\n}',
+			{ type: 'MemberExpression', property: { type: 'PrivateIdentifier', name: 'p' } },
+		],
+	];
+
+	it.each(spread_arguments)(
+		"reads %s in a spread attribute's argument as code",
+		async (_label, source, argument) => {
+			const outcomes = await parse_in_worker_with_ast(
+				modes.map((options) => ({ source, options })),
+			);
+
+			for (const [index, outcome] of outcomes.entries()) {
+				const label = `${JSON.stringify(source)} with ${JSON.stringify(modes[index])}`;
+				if (!outcome.ok) throw new Error(`${label} threw ${outcome.message}`);
+				expect(outcome.errors ?? [], label).toEqual([]);
+				const spread = /** @type {ESTreeJSX.JSXSpreadAttribute} */ (
+					find_first(outcome.ast, (node) => node.type === 'JSXSpreadAttribute')
+				);
+				expect(spread.argument, label).toMatchObject(argument);
+			}
+		},
+	);
+
+	it('still reads a `/` and a `#` that start a child as text', async () => {
+		const source = 'export function App() @{\n\t<main><div>/path #tag</div> / 2</main>\n}';
+		const outcomes = await parse_in_worker_with_ast(modes.map((options) => ({ source, options })));
+
+		for (const outcome of outcomes) {
+			if (!outcome.ok) throw new Error(outcome.message);
+			const main = /** @type {ESTreeJSX.JSXElement} */ (
+				find_first(outcome.ast, (node) => node.type === 'JSXElement')
+			);
+			expect(
+				node_children(/** @type {AST.Node} */ (/** @type {unknown} */ (main))).map((child) =>
+					child.type === 'JSXText'
+						? child.value
+						: node_children(child).map((c) => c.type === 'JSXText' && c.value),
+				),
+			).toEqual([['/path #tag'], ' / 2']);
+		}
+	});
+});
+
+describe('the text of an element in a template', () => {
+	const modes = [undefined, { collect: true, preserveParens: true }, { loose: true }];
+
+	/**
+	 * The children of the first element named `name`: each text by its `raw` or
+	 * `value`, each element by its tag, anything else by its type.
+	 *
+	 * @param {unknown} ast
+	 * @param {string} name
+	 * @param {'raw' | 'value'} [form]
+	 * @returns {string[]}
+	 */
+	function children(ast, name, form = 'raw') {
+		const element = find_first(
+			ast,
+			(node) =>
+				node.type === 'JSXElement' &&
+				/** @type {{ name?: string }} */ (
+					/** @type {AST.TSRXJSXElement} */ (node).openingElement.name
+				).name === name,
+		);
+		if (!element) throw new Error(`No <${name}>`);
+		return node_children(element).map((child) =>
+			child.type === 'JSXText'
+				? child[form]
+				: child.type === 'JSXElement'
+					? `<${/** @type {{ name: string }} */ (child.openingElement.name).name}>`
+					: is_empty_container(child)
+						? '{}'
+						: child.type,
+		);
+	}
+
+	/**
+	 * @param {string} body
+	 */
+	const component = (body) => `export function App() @{
+	<main>${body}</main>
+}`;
+
+	// In a template a `>` is text. In an element in a `{…}` container, the `>`
+	// right after a tag was read as code, dropping the text before it, and
+	// after a child container it failed (#694).
+	/** @type {Array<[string, string, string[], string?]>} */
+	const greater_than = [
+		['in a container', component('{c && <b>a > b</b>}'), ['a > b']],
+		['first in a container', component('{c && <b>> b</b>}'), ['> b']],
+		['in an arrow in a container', component('{c && <b>a => b</b>}'), ['a => b']],
+		['in operators in a container', component('{c && <b>a >= b >> c</b>}'), ['a >= b >> c']],
+		['after a tag in a container', component('{c && <b><i />a > b</b>}'), ['<i>', 'a > b']],
+		[
+			'after a child container in a container',
+			component('{c && <b>{y} a > b</b>}'),
+			['JSXExpressionContainer', ' a > b'],
+		],
+		[
+			'on its own line in a container',
+			component(`{c && <b>
+		a > b
+	</b>}`),
+			[
+				`
+		a > b
+	`,
+			],
+		],
+		[
+			'after type arguments in a container',
+			component('{c && <List<string>>a > b</List>}'),
+			['a > b'],
+			'List',
+		],
+		['in an attribute value', component('<div title={<b>a > b</b>} />'), ['a > b']],
+		[
+			'in an @if body in a container',
+			component('{c && <p>@if (d) { <b>a > b</b> }</p>}'),
+			['a > b'],
+		],
+		[
+			'in a container in a function',
+			`function App() {
+	return <main>{c && <b>a > b</b>}</main>;
+}`,
+			['a > b'],
+		],
+		// Template text since #656
+		[
+			"in a spread attribute's argument",
+			`export function App() @{
+	<div {...{ title: <b>a > b</b> }} />
+}`,
+			['a > b'],
+		],
+		['first in an unbraced attribute value', component('<div title=<b>> b</b> />'), ['> b']],
+		[
+			'in an unbraced attribute value in a container',
+			component('{c && <div title=<b>a > b</b> />}'),
+			['a > b'],
+		],
+		// It was text here before
+		['in a template', component('<b>a > b</b>'), ['a > b']],
+		['after a tag in a template', component('<b><i />a > b</b>'), ['<i>', 'a > b']],
+	];
+
+	it.each(greater_than)('reads a `>` %s as text', async (_label, source, expected, name = 'b') => {
+		const outcomes = await parse_in_worker_with_ast(modes.map((options) => ({ source, options })));
+
+		for (const [index, outcome] of outcomes.entries()) {
+			const label = `${JSON.stringify(source)} with ${JSON.stringify(modes[index])}`;
+			if (!outcome.ok) throw new Error(`${label} threw ${outcome.message}`);
+			expect(outcome.errors ?? [], label).toEqual([]);
+			expect(children(outcome.ast, name), label).toEqual(expected);
+		}
+	});
+
+	// Where the `>` is code, it stays code
+	/** @type {Array<[string, string, string]>} */
+	const code = [
+		['a comparison in a container', component('{a > b ? <b /> : null}'), 'BinaryExpression'],
+		[
+			'a comparison in an element in a container',
+			component('{c && <b>{a > b}</b>}'),
+			'BinaryExpression',
+		],
+		[
+			'a comparison in an attribute in a container',
+			component('{c && <b title={a > b} />}'),
+			'BinaryExpression',
+		],
+		[
+			'an arrow in a container',
+			component('{items.map((i) => <b>{i}</b>)}'),
+			'ArrowFunctionExpression',
+		],
+	];
+
+	it.each(code)('reads %s as code', async (_label, source, type) => {
+		const outcomes = await parse_in_worker_with_ast(modes.map((options) => ({ source, options })));
+
+		for (const [index, outcome] of outcomes.entries()) {
+			const label = `${JSON.stringify(source)} with ${JSON.stringify(modes[index])}`;
+			if (!outcome.ok) throw new Error(`${label} threw ${outcome.message}`);
+			expect(outcome.errors ?? [], label).toEqual([]);
+			expect(
+				find_first(outcome.ast, (node) => node.type === type),
+				label,
+			).toBeDefined();
+		}
+	});
+
+	// A text's `raw` is the text as written, which the printers print, with its
+	// character references. In an element that acorn-typescript's JSX parser
+	// reads, `value` has them decoded, and the output printed it, so
+	// `&#123;x&#125;` compiled to the expression `{x}` (#693). Since #656 that
+	// is only an element in a dynamic tag name, which is reported (#737) but
+	// parsed when collecting. The `value` of template text keeps them for now
+	// (#710).
+	/** @type {Array<[string, string, string[], string[] | null]>} */
+	const references = [
+		[
+			'in an element in a reported dynamic tag name',
+			`export function App() @{
+	<{c ? <b>&#123;x&#125; &amp;lt; &gt;</b> : 'i'} />
+}`,
+			['&#123;x&#125; &amp;lt; &gt;'],
+			['{x} &lt; >'],
+		],
+		[
+			'across a line break in an element in a reported dynamic tag name',
+			`export function App() @{
+	<{c ? <b>&#123;x&#125;
+&amp;lt;</b> : 'i'} />
+}`.replaceAll('\n', '\r\n'),
+			['&#123;x&#125;\r\n&amp;lt;'],
+			['{x}\n&lt;'],
+		],
+		[
+			"in a spread attribute's argument",
+			`export function App() @{
+	<div {...{ title: <b>&#123;x&#125; &amp;lt; &gt;</b> }} />
+}`,
+			['&#123;x&#125; &amp;lt; &gt;'],
+			null,
+		],
+		[
+			'in an unbraced attribute value in a container',
+			component('{c && <div title=<b>&#123;x&#125; &amp;lt; &gt;</b> />}'),
+			['&#123;x&#125; &amp;lt; &gt;'],
+			null,
+		],
+		[
+			'in a template',
+			component('<b>&#123;x&#125; &amp;lt; &gt;</b>'),
+			['&#123;x&#125; &amp;lt; &gt;'],
+			null,
+		],
+		[
+			'in an attribute value',
+			component('<div title={<b>&#123;x&#125; &amp;lt; &gt;</b>} />'),
+			['&#123;x&#125; &amp;lt; &gt;'],
+			null,
+		],
+	];
+
+	it.each(references)(
+		'keeps the character references %s in `raw`',
+		async (_label, source, raw, value) => {
+			const outcomes = await parse_in_worker_with_ast(
+				modes.map((options) => ({ source, options })),
+			);
+
+			const reported = source.includes('<{c ?');
+			for (const [index, outcome] of outcomes.entries()) {
+				const label = `${JSON.stringify(source)} with ${JSON.stringify(modes[index])}`;
+				if (reported && !modes[index]) {
+					expect(outcome, label).toMatchObject({
+						ok: false,
+						code: TSRX_ERRORS.DYNAMIC_TAG_EXPRESSION.code,
+					});
+					continue;
+				}
+				if (!outcome.ok) throw new Error(`${label} threw ${outcome.message}`);
+				expect(
+					(outcome.errors ?? []).map(({ code }) => code),
+					label,
+				).toEqual(reported ? [TSRX_ERRORS.DYNAMIC_TAG_EXPRESSION.code] : []);
+				expect(children(outcome.ast, 'b'), label).toEqual(raw);
+				if (value) expect(children(outcome.ast, 'b', 'value'), label).toEqual(value);
+			}
+		},
+	);
+
+	// A comment between children is a comment, not text as in TSX, so it is in
+	// neither form of the text, and doesn't print as text. It is an empty `{}`
+	// of its own, as `{/* c */}` is in TSX, so it splits the text
+	/** @type {Array<[string, string, string[]]>} */
+	const comments = [
+		['a block comment', component('<b>a /* c */ b</b>'), ['a ', '{}', ' b']],
+		[
+			'a block comment in a container',
+			component('{c && <b>a /* c */ > b</b>}'),
+			['a ', '{}', ' > b'],
+		],
+		[
+			'a line comment',
+			component(`<b>
+		// c
+		a
+	</b>`),
+			[
+				'\n\t\t',
+				'{}',
+				`
+		a
+	`,
+			],
+		],
+	];
+
+	it.each(comments)('leaves %s out of the text', async (_label, source, texts) => {
+		const outcomes = await parse_in_worker_with_ast(modes.map((options) => ({ source, options })));
+
+		for (const [index, outcome] of outcomes.entries()) {
+			const label = `${JSON.stringify(source)} with ${JSON.stringify(modes[index])}`;
+			if (!outcome.ok) throw new Error(`${label} threw ${outcome.message}`);
+			expect(children(outcome.ast, 'b'), label).toEqual(texts);
+			expect(children(outcome.ast, 'b', 'value'), label).toEqual(texts);
+		}
+	});
+});
+
+describe('an at-sign construct after `export` (#607)', () => {
+	/** @type {Array<ParseOptions | undefined>} */
+	const modes = [undefined, { collect: true }, { loose: true }];
+
+	// acorn-typescript takes every `@` after `export` for decorators, and the
+	// construct was parsed as a statement whose `id` the parser then read.
+	it('reports it like another token that starts no declaration, instead of crashing', async () => {
+		/** @type {Array<[source: string, error: ErrorKind, at: string]>} */
+		const cases = [
+			['export @if (a) { <div /> };', TS_ERRORS.UNEXPECTED_TOKEN, '@'],
+			['export @{ <div /> };', TS_ERRORS.UNEXPECTED_TOKEN, '@'],
+			['export @for (const a of b) { <div /> }', TS_ERRORS.UNEXPECTED_TOKEN, '@'],
+			['export @switch (a) { @case 1: { <div /> } }', TS_ERRORS.UNEXPECTED_TOKEN, '@'],
+			['export @try { <div /> } @catch (e) { <b /> }', TS_ERRORS.UNEXPECTED_TOKEN, '@'],
+			['export foo;', TS_ERRORS.UNEXPECTED_TOKEN, 'foo'],
+			// acorn-typescript's `'export declare' must be followed by an ambient
+			// declaration.`
+			['export declare @if (a) { <div /> }', 'TS1128', '@'],
+		];
+		const outcomes = await parse_in_worker(
+			cases.flatMap(([source]) => modes.map((options) => ({ source, options }))),
+		);
+		expect(outcomes).toEqual(
+			cases.flatMap(([source, error, at]) => modes.map(() => thrown(error, source.indexOf(at)))),
+		);
+	});
+
+	it('still exports a decorated class, and a default at-sign construct', async () => {
+		const sources = ['export @dec class A {}', 'export default @if (a) { <div /> };'];
+		const outcomes = await parse_in_worker_with_ast(
+			sources.flatMap((source) => modes.map((options) => ({ source, options }))),
+		);
+		expect(
+			outcomes.map((outcome) => {
+				if (!outcome.ok) return outcome.message;
+				const [statement] = outcome.ast.body;
+				return [
+					...(outcome.errors ?? []).map((error) => error.code),
+					/** @type {any} */ (statement).declaration.type,
+				];
+			}),
+		).toEqual(
+			[['ClassDeclaration'], ['JSXIfExpression']].flatMap((expected) => modes.map(() => expected)),
+		);
+	});
+});
+
+describe('`const` type parameters on an object method (#631)', () => {
+	/** @type {Array<ParseOptions | undefined>} */
+	const modes = [undefined, { collect: true }, { loose: true }];
+
+	it('reads them like those of an async method, a class method, or a function', async () => {
+		const sources = [
+			'const o = { m<const T>(x: T) { return x; } };',
+			'const o = { m<T, const U extends readonly unknown[]>(x: T, y: U) {} };',
+			'const o = { m\n  <const T>(x: T) {} };',
+			'const o = { async m<const T>(x: T) { return x; } };',
+			'class A { m<const T>(x: T) { return x; } }',
+		];
+		const outcomes = await parse_in_worker_with_ast(
+			sources.flatMap((source) => modes.map((options) => ({ source, options }))),
+		);
+		expect(
+			outcomes.map((outcome) => {
+				if (!outcome.ok) return outcome.message;
+				const parameters = /** @type {any} */ (
+					find_first(outcome.ast, (node) => node.type === 'TSTypeParameterDeclaration')
+				).params;
+				return [
+					...(outcome.errors ?? []).map((error) => error.code),
+					parameters.map((/** @type {any} */ parameter) => Boolean(parameter.const)),
+				];
+			}),
+		).toEqual(
+			[[[true]], [[false, true]], [[true]], [[true]], [[true]]].flatMap((expected) =>
+				modes.map(() => expected),
+			),
+		);
+	});
+
+	it('still reports `in` and `out` there, as for a function', async () => {
+		const source = 'const o = { m<in T>(x: T) {} };';
+		const outcomes = await parse_in_worker(modes.map((options) => ({ source, options })));
+		expect(outcomes).toEqual([
+			thrown(UPSTREAM_ERRORS.VARIANCE_MODIFIER, 14),
+			{ ok: true, errors: [UPSTREAM_ERRORS.VARIANCE_MODIFIER.code] },
+			{ ok: true, errors: [UPSTREAM_ERRORS.VARIANCE_MODIFIER.code] },
+		]);
+	});
+});
+
+// A comment between children renders like `{/* … */}` in TSX, so the parser
+// gives text with comments the children TSX has for it: the text between the
+// comments, each piece exactly as written, and an empty `{}` for each comment,
+// spanning it. A piece that is whitespace with a line break renders nothing,
+// but is kept as text, as TSX parsers keep such text anywhere.
+describe('comments between template children', () => {
+	/** @type {Array<ParseOptions | undefined>} */
+	const modes = [undefined, { collect: true, errors: [], comments: [] }, { loose: true }];
+
+	/**
+	 * The first `<p>` in `source`, parsed with `options`.
+	 * @param {string} source
+	 * @param {ParseOptions} [options]
+	 * @returns {AST.TSRXJSXElement}
+	 */
+	function paragraph(source, options) {
+		const ast = parseModule(source, 'App.tsrx', options);
+		return /** @type {AST.TSRXJSXElement} */ (
+			find_first(
+				ast,
+				(node) =>
+					node.type === 'JSXElement' &&
+					/** @type {{ name?: string }} */ (
+						/** @type {AST.TSRXJSXElement} */ (node).openingElement.name
+					).name === 'p',
+			)
+		);
+	}
+
+	/**
+	 * Each child: text by its `raw`, an empty `{}` as `{}`, an element by its tag.
+	 * @param {AST.TSRXJSXElement} element
+	 */
+	function read(element) {
+		return element.children.map((/** @type {any} */ child) =>
+			child.type === 'JSXText'
+				? child.raw
+				: is_empty_container(child)
+					? '{}'
+					: child.type === 'JSXElement'
+						? `<${child.openingElement.name.name}>`
+						: child.type,
+		);
+	}
+
+	/** @type {Array<[string, string, string[]]>} */
+	const cases = [
+		['a block comment between words', '<p>a /* c */ b</p>;', ['a ', '{}', ' b']],
+		[
+			'a line comment between lines of text',
+			'<p>\n\ta\n\t// c\n\tb\n</p>;',
+			['\n\ta\n\t', '{}', '\n\tb\n'],
+		],
+		[
+			'a comment between elements on one line',
+			'<p><b /> /* c */ <i /></p>;',
+			['<b>', ' ', '{}', ' ', '<i>'],
+		],
+		[
+			'comments with only line breaks between them',
+			'<p>a /* c */\n\t// d\n\t/* e */ b</p>;',
+			['a ', '{}', '\n\t', '{}', '\n\t', '{}', ' b'],
+		],
+		['a comment before the first text', '<p>/* c */ a</p>;', ['{}', ' a']],
+		['a line comment after the last text', '<p>a // c\n</p>;', ['a ', '{}', '\n']],
+		[
+			'a comment on its own line between elements',
+			'<p>\n\t<b />\n\t// c\n\t<i />\n</p>;',
+			['\n\t', '<b>', '\n\t', '{}', '\n\t', '<i>', '\n'],
+		],
+		['only a comment', '<p>\n\t// c\n</p>;', ['\n\t', '{}', '\n']],
+		['a `//` that touches text', '<p>a//b https://x.dev</p>;', ['a//b https://x.dev']],
+		[
+			'comments touching tags',
+			'<p><b />/* c */text<i />/* d */<u /></p>;',
+			['<b>', '{}', 'text', '<i>', '{}', '<u>'],
+		],
+		[
+			'the whitespace and comments after a directive block',
+			'function App() @{\n\t<p>\n\t\t@if (a) {\n\t\t\t<b />\n\t\t} // c\n\t\t// d\n\t\t<i />\n\t</p>\n}',
+			['\n\t\t', 'JSXIfExpression', ' ', '{}', '\n\t\t', '{}', '\n\t\t', '<i>', '\n\t'],
+		],
+		[
+			'text after a directive block, from the block on',
+			'function App() @{\n\t<p>\n\t\t@if (a) {\n\t\t\t<b />\n\t\t} /* c */ else\n\t</p>\n}',
+			['\n\t\t', 'JSXIfExpression', ' ', '{}', ' else\n\t'],
+		],
+		[
+			'text and a comment before the closing tag, in a container',
+			'function App() @{\n\t<main>{x && <p>a /* c */</p>}</main>\n}',
+			['a ', '{}'],
+		],
+		[
+			'text and a comment before the closing tag, in an attribute value',
+			'<b k=<p>n /* c */</p> />;',
+			['n ', '{}'],
+		],
+		[
+			'only a comment, in a container',
+			'function App() @{\n\t<main>{x && <p>/* c */</p>}</main>\n}',
+			['{}'],
+		],
+		[
+			'layout whitespace between elements',
+			'<p>\n\t<b />\n\n\t<i />\n</p>;',
+			['\n\t', '<b>', '\n\n\t', '<i>', '\n'],
+		],
+		[
+			'a comment in a template body',
+			'function App() @{\n\t<p>a /* c */ {b}</p>\n}',
+			['a ', '{}', ' ', 'JSXExpressionContainer'],
+		],
+	];
+
+	it.each(cases)('reads %s', (_label, source, expected) => {
+		for (const options of modes) {
+			expect(read(paragraph(source, options)), JSON.stringify(options)).toEqual(expected);
+		}
+	});
+
+	it('gives each piece and the `{}` their source positions, with the comment in the `{}`', () => {
+		const element = paragraph('<p>\n\ta /* c */ b\n</p>;');
+		const [first, container, last] = /** @type {any[]} */ (element.children);
+
+		expect(first).toMatchObject({
+			type: 'JSXText',
+			value: '\n\ta ',
+			raw: '\n\ta ',
+			start: 3,
+			end: 7,
+			loc: { start: { line: 1, column: 3 }, end: { line: 2, column: 3 } },
+		});
+		expect(container).toMatchObject({
+			type: 'JSXExpressionContainer',
+			start: 7,
+			end: 14,
+			loc: { start: { line: 2, column: 3 }, end: { line: 2, column: 10 } },
+			expression: {
+				type: 'JSXEmptyExpression',
+				start: 7,
+				end: 14,
+				loc: { start: { line: 2, column: 3 }, end: { line: 2, column: 10 } },
+			},
+		});
+		expect(container.expression.innerComments.map((/** @type {any} */ c) => c.value)).toEqual([
+			' c ',
+		]);
+		expect(last).toMatchObject({
+			type: 'JSXText',
+			value: ' b\n',
+			raw: ' b\n',
+			start: 14,
+			end: 17,
+			loc: { start: { line: 2, column: 10 }, end: { line: 3, column: 0 } },
+		});
+	});
+
+	it('gives each of several comments between two pieces its own `{}`', () => {
+		const source = '<p>a /* c */\n\t// d\n\t/* e */ b</p>;';
+		const children = /** @type {any[]} */ (paragraph(source).children);
+
+		for (const [index, comment, value] of /** @type {const} */ ([
+			[1, '/* c */', ' c '],
+			[3, '// d', ' d'],
+			[5, '/* e */', ' e '],
+		])) {
+			const container = children[index];
+			expect(container.start, comment).toBe(source.indexOf(comment));
+			expect(container.end, comment).toBe(source.indexOf(comment) + comment.length);
+			expect(
+				container.expression.innerComments.map((/** @type {any} */ c) => c.value),
+				comment,
+			).toEqual([value]);
+		}
+	});
+
+	// A tooling comment, like every comment, gets a `{}` of its own, which holds
+	// it for the editor's TypeScript, and the text around it keeps its line
+	// breaks, so that the comment stays on the line before the child it's about
+	it.each([
+		['// @ts-expect-error', ' @ts-expect-error'],
+		['/* @ts-ignore */', ' @ts-ignore '],
+		['/** @ts-expect-error */', '* @ts-expect-error '],
+		['// @jsxImportSource preact', ' @jsxImportSource preact'],
+	])('keeps the layout around %s', (comment, value) => {
+		const source = `<p>\n\t${comment}\n\t<b x />\n</p>;`;
+		for (const options of modes) {
+			const element = paragraph(source, options);
+			expect(read(element), JSON.stringify(options)).toEqual(['\n\t', '{}', '\n\t', '<b>', '\n']);
+			const start = source.indexOf(comment);
+			expect(element.children[1], JSON.stringify(options)).toMatchObject({
+				start,
+				end: start + comment.length,
+			});
+			expect(
+				/** @type {any} */ (element.children[1]).expression.innerComments?.map(
+					(/** @type {AST.Comment} */ c) => c.value,
+				),
+				JSON.stringify(options),
+			).toEqual([value]);
+		}
+	});
+
+	it('gives a plain comment its own `{}` too, where nothing renders around it', () => {
+		const element = paragraph('<p>\n\t// c\n\t<b x />\n</p>;');
+		expect(read(element)).toEqual(['\n\t', '{}', '\n\t', '<b>', '\n']);
+		expect(
+			/** @type {any} */ (element.children[1]).expression.innerComments?.map(
+				(/** @type {AST.Comment} */ c) => c.value,
+			),
+		).toEqual([' c']);
+	});
+
+	it('leaves the children to the analyzer as the parser gives them', () => {
+		const source = 'export function App() @{\n\t<p>a /* c */ b // d\n\t</p>\n}';
+		const ast = parseModule(source, 'App.tsrx');
+		const element = /** @type {AST.TSRXJSXElement} */ (
+			find_first(ast, (node) => node.type === 'JSXElement')
+		);
+		const children = [...element.children];
+		analyzeTsrx(ast, 'App.tsrx');
+		expect(element.children).toEqual(children);
+		expect(read(element)).toEqual(['a ', '{}', ' b ', '{}', '\n\t']);
+	});
+});
+
+describe('isLayoutWhitespace', () => {
+	/** @type {Array<[string, unknown, boolean]>} */
+	const cases = [
+		['empty text', { type: 'JSXText', value: '' }, true],
+		['a line break with indentation', { type: 'JSXText', value: '\n\t\t' }, true],
+		['a blank line', { type: 'JSXText', value: '\n\n  ' }, true],
+		['a carriage return', { type: 'JSXText', value: '\r\n' }, true],
+		['a space between children', { type: 'JSXText', value: ' ' }, false],
+		['a tab between children', { type: 'JSXText', value: '\t' }, false],
+		['a non-breaking space on its own line', { type: 'JSXText', value: '\n\u00a0\n' }, false],
+		['text with words', { type: 'JSXText', value: '\n  a\n' }, false],
+		['a node that is not text', { type: 'JSXElement', value: '\n' }, false],
+		['nothing', undefined, false],
+	];
+
+	it.each(cases)('reads %s', (_label, node, expected) => {
+		expect(isLayoutWhitespace(node)).toBe(expected);
 	});
 });

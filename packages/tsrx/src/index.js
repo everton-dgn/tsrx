@@ -23,7 +23,7 @@ export { create_scopes as createScopes, ScopeRoot, Scope } from './scope.js';
 
 // Errors
 export { error } from './errors.js';
-export { DIAGNOSTIC_CODES } from './diagnostics.js';
+export { DIAGNOSTIC_CODES, TS_ERRORS, TSRX_ERRORS } from './diagnostics.js';
 
 // Constants
 export {
@@ -89,11 +89,13 @@ export {
 	is_function_or_component_node as isFunctionOrComponentNode,
 	has_location,
 	is_inside_component as isInsideComponent,
+	is_submodule_declaration as isSubmoduleDeclaration,
 	is_template_directive as isTemplateDirective,
 	is_tsrx_render_output_node as isTsrxRenderOutputNode,
 	is_code_block_function_body as isCodeBlockFunctionBody,
 	is_statement_list_item as isStatementListItem,
 	is_statement_position as isStatementPosition,
+	is_layout_whitespace as isLayoutWhitespace,
 } from './utils/ast.js';
 
 // Shared TSRX semantic analysis
@@ -169,6 +171,7 @@ export {
 	create_hook_safe_helper as createHookSafeHelper,
 	create_element_ref_target_type as createElementRefTargetType,
 	create_element_ref_target_type_for_name as createElementRefTargetTypeForName,
+	create_script_body as createScriptBody,
 	build_return_expression as buildReturnExpression,
 	createJsxTransform,
 	extract_jsx_setup_declarations as extractJsxSetupDeclarations,
@@ -260,12 +263,14 @@ export { prune_css as pruneCss } from './analyze/prune.js';
 export { create_scope_root as createScopeRoot } from './transform/jsx/style-scopes.js';
 export {
 	TSRX_DO_WHILE_STATEMENT_ERROR,
+	TSRX_DYNAMIC_TAG_EXPRESSION_ERROR,
 	TSRX_FORGOTTEN_STATEMENT_CONTAINER_ERROR,
 	TSRX_FOR_IN_STATEMENT_ERROR,
 	TSRX_FOR_STATEMENT_ERROR,
 	TSRX_IF_BREAK_ERROR,
 	TSRX_IF_CONTINUE_ERROR,
 	TSRX_IF_RETURN_ERROR,
+	TSRX_JSX_SPREAD_CHILD_ERROR,
 	TSRX_LOOP_BREAK_ERROR,
 	TSRX_LOOP_CONTINUE_ERROR,
 	TSRX_LOOP_RETURN_ERROR,
@@ -293,6 +298,7 @@ export {
 	TSRX_STYLE_STANDALONE_NEEDS_FRAGMENT_ERROR,
 	TSRX_CSS_GLOBAL_NESTED_IN_PSEUDOCLASS_ERROR,
 	TSRX_CSS_GLOBAL_MIDDLE_PLACEMENT_ERROR,
+	TSRX_CSS_IMPORT_ERROR,
 	tsrx_style_apply_target_error as tsrxStyleApplyTargetError,
 	tsrx_style_apply_before_declaration_error as tsrxStyleApplyBeforeDeclarationError,
 	tsrx_style_unknown_attribute_error as tsrxStyleUnknownAttributeError,

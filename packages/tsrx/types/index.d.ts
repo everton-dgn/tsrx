@@ -49,14 +49,6 @@ export interface StyleRefOptions {
 	visitExpression?: (expression: AST.Expression) => AST.Expression;
 }
 
-/**
- * Walk state for the style-expression class-map collection: the nearest
- * prelude-level selector, which carries the class map entries found beneath it.
- */
-export interface ClassMapCollectionState {
-	enclosing_selector: AST.CSS.ComplexSelector | null;
-}
-
 export function createStyleRefSetupStatements(
 	refAttributes: ESTreeJSX.JSXAttribute[],
 	styleMap: AST.Expression,
@@ -142,8 +134,17 @@ export interface BaseNodeMetaData {
 	 */
 	string_literal_source_span?: boolean;
 	is_capitalized?: boolean;
-	commentContainerId?: number;
+	/**
+	 * A `prettier-ignore` comment attached elsewhere keeps this node as written,
+	 * like Prettier's `prettierIgnore` for the union member after one.
+	 */
+	prettierIgnore?: boolean;
 	parenthesized?: boolean;
+	/**
+	 * Offset of the outermost `(` of a parenthesized expression. Only grouping
+	 * parens count, not the parens of a call, an `if` or other syntax around them.
+	 */
+	paren_start?: number;
 	native_tsrx?: boolean;
 	/** The function's body came from a `@{ … }` code block that has been lowered. */
 	native_tsrx_body?: boolean;
@@ -184,11 +185,11 @@ export interface BaseNodeMetaData {
 	styleApplies?: StyleApplyResolution[];
 	/** An assigned block is the target of some `apply` in its module. */
 	styleApplied?: boolean;
-	/** An assigned block is exported from its module. */
-	styleExported?: boolean;
-	/** An assigned block's `$class` is read somewhere in its module (an element or a child prop opts into the theme). */
-	styleClassRead?: boolean;
-	/** How an assigned block renders: `theme` keeps every selector, `class-map` prunes (D4/D5). */
+	/**
+	 * How an assigned block renders: always `theme`, which keeps every selector
+	 * (D4/D5). `class-map` is no longer produced; the member stays for consumer
+	 * compilers that choose a render mode from it.
+	 */
 	styleKind?: 'theme' | 'class-map';
 	/** The transform's style pre-pass already rendered this assigned block's sheet. */
 	tsrx_style_prepared?: boolean;
@@ -202,7 +203,6 @@ export interface BaseNodeMetaData {
 		scopedClasses: TopScopedClasses;
 		hash: string;
 	};
-	elementLeadingComments?: AST.Comment[];
 	returns?: AST.ReturnStatement[];
 	has_return?: boolean;
 	has_throw?: boolean;
@@ -341,6 +341,7 @@ declare module 'estree' {
 	type Accessibility = 'public' | 'protected' | 'private'; // missing in acorn-typescript types
 	interface MethodDefinition {
 		typeParameters?: TSTypeParameterDeclaration;
+		decorators: Decorator[];
 		accessibility?: Accessibility;
 		optional?: boolean;
 		abstract?: boolean;
@@ -356,6 +357,12 @@ declare module 'estree' {
 		override?: boolean;
 		declare?: boolean;
 		accessor?: boolean;
+		typeAnnotation?: TSTypeAnnotation;
+		decorators: Decorator[];
+	}
+
+	interface BaseClass {
+		decorators: Decorator[];
 	}
 
 	interface ClassDeclaration {
@@ -394,7 +401,9 @@ declare module 'estree' {
 	}
 
 	// A `@decorator` on a class, class member, or parameter. The parser emits
-	// these, but estree has no node type for them.
+	// these, but estree has no node type for them. Classes, methods, and
+	// properties always carry the `decorators` array of ESTree's decorators
+	// extension, empty when undecorated.
 	interface Decorator extends AST.BaseNode {
 		type: 'Decorator';
 		expression: AST.Expression;
@@ -453,12 +462,11 @@ declare module 'estree' {
 		/** Loose-mode recovery: the element was never closed. */
 		unclosed?: boolean;
 		/**
-		 * Raw-text `<script>` body captured verbatim by the parser's
-		 * `#parseScriptElement` (analogous to {@link JSXStyleElement.css}). Present only
-		 * on `<script>` elements that have a body. The parser also mirrors the body as
-		 * a single `JSXText` child so generic element consumers emit it; consumers that
-		 * handle `content` directly (target transforms, the Prettier plugin, the
-		 * type-only editor output) skip the children instead of emitting both.
+		 * Raw-text `<script>` body, everything up to the closing tag, as written
+		 * (analogous to {@link JSXStyleElement.css}): no comments, no character
+		 * references, no `{…}` expressions. Present on every `<script>` element
+		 * that has a closing tag (an empty string for `<script></script>`), and
+		 * such an element has no children: `content` is its only body.
 		 */
 		content?: string;
 		/**
@@ -583,6 +591,7 @@ declare module 'estree' {
 		| ESTreeJSX.JSXElement
 		| ESTreeJSX.JSXFragment
 		| ESTreeJSX.JSXExpressionContainer
+		| ESTreeJSX.JSXSpreadChild
 		| ESTreeJSX.JSXText
 		| JSXTemplateDirective
 		| JSXTemplateStatement;
@@ -617,7 +626,20 @@ declare module 'estree' {
 	}
 
 	interface Comment {
-		context?: Parse.CommentMetaData | null;
+		/**
+		 * A `prettier-ignore` comment that marks another node instead of the
+		 * one it's attached to (see `BaseNodeMetaData.prettierIgnore`).
+		 */
+		unignore?: boolean;
+		/**
+		 * A comment that the parser moved to where Prettier's next pass finds
+		 * it on a line of its own, with the comments next to it that have this
+		 * flag too, so that it prints as it would there: after the last body of
+		 * a chain of arrow functions called right away, which prints below its
+		 * `=>`, Prettier prints them on the line after that body, and its next
+		 * pass gives them to the first argument.
+		 */
+		ownLine?: boolean;
 	}
 
 	// For now only ObjectExpression needs printInline
@@ -687,11 +709,6 @@ declare module 'estree' {
 	}
 	interface ImportExpression {
 		phase?: 'defer' | null;
-		/**
-		 * acorn parks an ordinary `import(source, options)` call's second
-		 * argument here; only a deferred import fills in `options`.
-		 */
-		arguments?: AST.Expression[];
 	}
 	interface ImportSpecifier {
 		importKind: TSESTree.ImportSpecifier['importKind'];
@@ -853,12 +870,6 @@ declare module 'estree' {
 				rule: Rule | null;
 				used: boolean;
 				is_global?: boolean;
-				/**
-				 * The selector carries a class the generated style-expression class
-				 * map exposes, so render preparation must keep it (see
-				 * `mark_class_map_selectors`).
-				 */
-				class_map_selector?: boolean;
 			};
 		}
 
@@ -983,7 +994,8 @@ declare module 'estree-jsx' {
 	 * fragments carry the parser's widened TSRX shape, which plain estree-jsx
 	 * elements are assignable to.
 	 */
-	type JSXRenderChild = AST.TSRXJSXElement | AST.TSRXJSXFragment | JSXExpressionContainer | JSXText;
+	type JSXRenderChild =
+		AST.TSRXJSXElement | AST.TSRXJSXFragment | JSXExpressionContainer | JSXSpreadChild | JSXText;
 
 	/**
 	 * A JSX child that evaluates to a single expression, so it can be captured
@@ -1098,6 +1110,7 @@ declare module 'estree' {
 		TSConstructorType: TSConstructorType;
 		TSConstructSignatureDeclaration: TSConstructSignatureDeclaration;
 		TSDeclareFunction: TSDeclareFunction;
+		TSEnumBody: TSEnumBody;
 		TSEnumDeclaration: TSEnumDeclaration;
 		TSEnumMember: TSEnumMember;
 		TSExportAssignment: TSExportAssignment;
@@ -1238,9 +1251,13 @@ declare module 'estree' {
 	}
 	interface TSEnumDeclaration extends Omit<
 		AcornTSNode<TSESTree.TSEnumDeclaration>,
-		'id' | 'members'
+		'id' | 'members' | 'body'
 	> {
 		id: AST.Identifier;
+		// acorn-typescript keeps the members on the declaration; core puts them in a body
+		body: TSEnumBody;
+	}
+	interface TSEnumBody extends Omit<AcornTSNode<TSESTree.TSEnumBody>, 'members'> {
 		members: TSEnumMember[];
 	}
 	interface TSEnumMember extends Omit<AcornTSNode<TSESTree.TSEnumMember>, 'id' | 'initializer'> {
@@ -1273,13 +1290,21 @@ declare module 'estree' {
 	> {
 		id: AST.Identifier;
 		moduleReference: EntityName | TSExternalModuleReference;
+		/**
+		 * `export import A = B`. acorn-typescript sets this flag rather than
+		 * wrapping the declaration in an `ExportNamedDeclaration`.
+		 */
+		isExport?: boolean;
 	}
 	interface TSImportType extends Omit<
 		AcornTSNode<TSESTree.TSImportType>,
-		'argument' | 'qualifier' | 'typeParameters'
+		'argument' | 'options' | 'qualifier' | 'typeArguments' | 'typeParameters'
 	> {
 		argument: TypeNode;
+		/** The import attributes, `{ with: { … } }` in `import('mod', { with: { … } })`. */
+		options: AST.ObjectExpression | null;
 		qualifier: EntityName | null;
+		typeArguments: TSTypeParameterInstantiation | undefined;
 		// looks like acorn-typescript has typeParameters
 		typeParameters: TSTypeParameterDeclaration | undefined | undefined;
 	}
@@ -1352,7 +1377,12 @@ declare module 'estree' {
 		AcornTSNode<TSESTree.TSModuleDeclaration>,
 		'body' | 'global' | 'id'
 	> {
-		body: TSModuleBlock;
+		/**
+		 * The block, or for a dotted name the declaration of the next name part:
+		 * `module A.B` parses as `A` whose body is `B`. Missing for the shorthand
+		 * `declare module '<specifier>';`.
+		 */
+		body?: TSModuleBlock | TSModuleDeclaration;
 		/** A string literal for `declare module '<specifier>'`. */
 		id: AST.Identifier | AST.Literal;
 		metadata: BaseNodeMetaData & {
@@ -1448,7 +1478,8 @@ declare module 'estree' {
 	> {
 		constraint: TypeNode | undefined;
 		default: TypeNode | undefined;
-		name: string; // for some reason acorn-typescript uses string instead of Identifier
+		// acorn-typescript keeps only the name's string; core keeps the node (#873)
+		name: Identifier;
 	}
 	interface TSTypeParameterDeclaration extends Omit<
 		AcornTSNode<TSESTree.TSTypeParameterDeclaration>,
@@ -1617,7 +1648,11 @@ export interface StyleClassMapOptions {
 	hash?: string | null;
 }
 
-/** How `prepareStylesheetForRender` treats a sheet's selectors (D4). */
+/**
+ * How `prepareStylesheetForRender` treats a sheet's selectors (D4): `scope` for
+ * a standalone block, `theme` for an assigned one. Every mode keeps every
+ * selector; `class-map` renders as `theme` for earlier consumers.
+ */
 export type StyleRenderMode = 'scope' | 'class-map' | 'theme';
 
 /**

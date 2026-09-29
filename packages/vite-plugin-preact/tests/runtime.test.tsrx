@@ -2,12 +2,14 @@ import { lazy } from 'preact/compat';
 import { act } from 'preact/test-utils';
 import { useState } from 'preact/hooks';
 import { mergeRefs } from '@tsrx/preact/ref';
-import {
-	runSwitchFallthroughRuntimeTests,
-} from '@tsrx/core/test-harness/runtime/switch-fallthrough';
-import {
-	runTsxExpressionTsrxRuntimeTests,
-} from '@tsrx/core/test-harness/runtime/tsx-expression-tsrx';
+import { runSwitchFallthroughRuntimeTests } from '@tsrx/core/test-harness/runtime/switch-fallthrough';
+import { runTsxExpressionTsrxRuntimeTests } from '@tsrx/core/test-harness/runtime/tsx-expression-tsrx';
+import { runJsxTextWhitespaceRuntimeTests } from '@tsrx/core/test-harness/runtime/jsx-text-whitespace';
+import { runScriptBodyRuntimeTests } from '@tsrx/core/test-harness/runtime/script-body';
+import { runNullishSpreadRefRuntimeTests } from '@tsrx/core/test-harness/runtime/nullish-spread-ref';
+import { runExpressionSpreadRefRuntimeTests } from '@tsrx/core/test-harness/runtime/expression-spread-ref';
+import { runGeneratorSpreadRefRuntimeTests } from '@tsrx/core/test-harness/runtime/generator-spread-ref';
+import { runSpreadRefOrderRuntimeTests } from '@tsrx/core/test-harness/runtime/spread-ref-order';
 
 function text(selector: string): string | null {
 	return container.querySelector(selector)?.textContent ?? null;
@@ -38,7 +40,9 @@ function DynamicSwitchApp() @{
 		<button
 			class="dynamic-switch-toggle"
 			onClick={() => setTag(tag === 'section' ? 'article' : 'section')}
-		>{'toggle'}</button>
+		>
+			{'toggle'}
+		</button>
 	</>
 }
 
@@ -51,7 +55,9 @@ function ExplicitHtmlApp() @{
 			onClick={() => {
 				setMarkup('<strong class="html-node">updated</strong>');
 			}}
-		>{'update'}</button>
+		>
+			{'update'}
+		</button>
 	</>
 }
 
@@ -69,13 +75,17 @@ function SpreadHtmlApp() @{
 					dangerouslySetInnerHTML: { __html: '<i class="html-node">spread update</i>' },
 				});
 			}}
-		>{'spread'}</button>
+		>
+			{'spread'}
+		</button>
 		<button
 			class="spread-html-update-markup"
 			onClick={() => {
 				setMarkup('<strong class="html-node">updated</strong>');
 			}}
-		>{'markup'}</button>
+		>
+			{'markup'}
+		</button>
 	</>
 }
 
@@ -93,14 +103,18 @@ function ForFilteredApp() @{
 	const items = ['a', '', 'c'];
 	const visibleItems = items.filter(Boolean);
 	@for (const item of visibleItems) {
-		<li class="continue-item" key={item}>{item}</li>
+		<li class="continue-item" key={item}>
+			{item}
+		</li>
 	}
 }
 
 function ForOverSetApp() @{
 	const items = new Set<string>(['x', 'y', 'z']);
 	@for (const item of items) {
-		<li class="set-item" key={item}>{item}</li>
+		<li class="set-item" key={item}>
+			{item}
+		</li>
 	}
 }
 
@@ -111,7 +125,9 @@ function ForOverMapApp() @{
 		['c', 3],
 	]);
 	@for (const [key, value] of entries) {
-		<li class="map-item" {key}>{key + ':' + value}</li>
+		<li class="map-item" {key}>
+			{key + ':' + value}
+		</li>
 	}
 }
 
@@ -123,7 +139,9 @@ function ForOverCustomIterableApp() @{
 	}
 	const items = iter();
 	@for (const item of items) {
-		<li class="generator-item" key={item}>{item}</li>
+		<li class="generator-item" key={item}>
+			{item}
+		</li>
 	}
 }
 
@@ -245,6 +263,31 @@ function MultiSpreadExplicitRefApp() @{
 	/>
 }
 
+// ── Conditional host spreads ──
+
+let conditional_spread_and_node: HTMLInputElement | null = null;
+let conditional_spread_null_node: HTMLInputElement | null = null;
+
+function ConditionalSpreadApp(props: { enabled: boolean }) @{
+	<>
+		<input class="conditional-spread" {...(props.enabled && { disabled: true })} />
+		<input
+			class="conditional-spread"
+			ref={(node: HTMLInputElement | null) => {
+				conditional_spread_and_node = node;
+			}}
+			{...(props.enabled && { disabled: true })}
+		/>
+		<input
+			class="conditional-spread"
+			ref={(node: HTMLInputElement | null) => {
+				conditional_spread_null_node = node;
+			}}
+			{...(props.enabled ? { disabled: true } : null)}
+		/>
+	</>
+}
+
 const named_ref_object: { current: HTMLInputElement | null } = { current: null };
 
 function NamedRefObjectApp() {
@@ -268,17 +311,73 @@ function TsrxExpressionHookApp() @{
 		<button class="tsrx-expression-hook-toggle" onClick={() => setActive(!active)}>
 			{active ? 'hide' : 'show'}
 		</button>
-		<button class="tsrx-expression-hook-label" onClick={() => setLabel('second')}>{'label'}</button>
+		<button class="tsrx-expression-hook-label" onClick={() => setLabel('second')}>
+			{'label'}
+		</button>
 		<TsrxExpressionHookPanel {active} {label} />
+	</>
+}
+
+type KeyedBranchItem = { id: string; visible: boolean };
+
+function KeyedBranchRow({ item }: { item: KeyedBranchItem }) @{
+	const [initial] = useState(item.id);
+
+	<li class="keyed-branch-row">{`${item.id}:${initial}`}</li>
+}
+
+function ForKeyedIfApp() @{
+	const [items, setItems] = useState<KeyedBranchItem[]>([
+		{ id: 'a', visible: true },
+		{ id: 'b', visible: true },
+	]);
+
+	<>
+		<ul>
+			@for (const item of items; key item.id) {
+				@if (item.visible) {
+					<KeyedBranchRow item={item} />
+				}
+			}
+		</ul>
+		<button class="reverse-keyed-if" onClick={() => setItems([...items].reverse())}>
+			{'reverse'}
+		</button>
+	</>
+}
+
+function ForKeyedSwitchApp() @{
+	const [items, setItems] = useState<KeyedBranchItem[]>([
+		{ id: 'a', visible: true },
+		{ id: 'b', visible: true },
+	]);
+
+	<>
+		<ul>
+			@for (const item of items; key item.id) {
+				@switch (item.visible) {
+					@case true: {
+						<KeyedBranchRow item={item} />
+					}
+					@default: {
+						<li>{'hidden'}</li>
+					}
+				}
+			}
+		</ul>
+		<button class="reverse-keyed-switch" onClick={() => setItems([...items].reverse())}>
+			{'reverse'}
+		</button>
 	</>
 }
 
 describe('@tsrx/vite-plugin-preact runtime', () => {
 	it('renders nothing for an empty pending fallback then resolves', async () => {
 		let resolve_fn: (mod: { default: typeof ResolvedChild }) => void;
-		const loader = () => new Promise<{ default: typeof ResolvedChild }>((r) => {
-			resolve_fn = r;
-		});
+		const loader = () =>
+			new Promise<{ default: typeof ResolvedChild }>((r) => {
+				resolve_fn = r;
+			});
 
 		await render(EmptyPendingSuspenseApp, { loader });
 		expect(container.innerHTML).toBe('');
@@ -350,10 +449,7 @@ describe('@tsrx/vite-plugin-preact runtime', () => {
 		await render(ForFilteredApp);
 		expect(
 			Array.from(container.querySelectorAll('.continue-item'), (item) => item.textContent),
-		).toEqual([
-			'a',
-			'c',
-		]);
+		).toEqual(['a', 'c']);
 	});
 
 	it('renders for-of over a Set via map_iterable', async () => {
@@ -378,11 +474,7 @@ describe('@tsrx/vite-plugin-preact runtime', () => {
 		await render(ForOverCustomIterableApp);
 		expect(
 			Array.from(container.querySelectorAll('.generator-item'), (el) => el.textContent),
-		).toEqual([
-			'one',
-			'two',
-			'three',
-		]);
+		).toEqual(['one', 'two', 'three']);
 	});
 
 	it('merges explicit callback refs with native refs', async () => {
@@ -432,6 +524,20 @@ describe('@tsrx/vite-plugin-preact runtime', () => {
 		expect(container.querySelector('.multi-spread-explicit-ref')!.hasAttribute('ref')).toBe(false);
 	});
 
+	for (const enabled of [false, true]) {
+		it(`renders conditional host spreads when the condition is ${enabled}`, async () => {
+			conditional_spread_and_node = null;
+			conditional_spread_null_node = null;
+			await render(ConditionalSpreadApp, { enabled });
+			const inputs = Array.from(
+				container.querySelectorAll('.conditional-spread'),
+			) as HTMLInputElement[];
+			expect(inputs.map((input) => input.disabled)).toEqual([enabled, enabled, enabled]);
+			expect(conditional_spread_and_node).toBe(inputs[1]);
+			expect(conditional_spread_null_node).toBe(inputs[2]);
+		});
+	}
+
 	it('assigns named ref props backed by Preact-style ref objects', async () => {
 		named_ref_object.current = null;
 		await render(NamedRefObjectApp);
@@ -458,7 +564,31 @@ describe('@tsrx/vite-plugin-preact runtime', () => {
 		});
 		expect(container.querySelector('.tsrx-expression-hook-count')?.textContent).toBe('second:1');
 	});
+
+	for (const [directive, App, reverse] of [
+		['@if', ForKeyedIfApp, '.reverse-keyed-if'],
+		['@switch', ForKeyedSwitchApp, '.reverse-keyed-switch'],
+	] as const) {
+		it(`keeps row state with its item when a keyed loop renders through ${directive}`, async () => {
+			const rows = () =>
+				Array.from(container.querySelectorAll('.keyed-branch-row'), (row) => row.textContent);
+
+			await render(App);
+			expect(rows()).toEqual(['a:a', 'b:b']);
+
+			await act(() => {
+				(container.querySelector(reverse) as HTMLButtonElement).click();
+			});
+			expect(rows()).toEqual(['b:b', 'a:a']);
+		});
+	}
 });
 
 runSwitchFallthroughRuntimeTests();
 runTsxExpressionTsrxRuntimeTests();
+runJsxTextWhitespaceRuntimeTests({ nbsp: 'trimmed' });
+runScriptBodyRuntimeTests();
+runNullishSpreadRefRuntimeTests();
+runExpressionSpreadRefRuntimeTests();
+runGeneratorSpreadRefRuntimeTests();
+runSpreadRefOrderRuntimeTests();

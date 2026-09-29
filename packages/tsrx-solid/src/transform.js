@@ -18,7 +18,10 @@
 
 import { walk } from 'zimmerframe';
 import {
+	DIAGNOSTIC_CODES,
+	TSRX_ERRORS,
 	createJsxTransform,
+	createScriptBody as create_script_body,
 	error,
 	mergeDuplicateRefs,
 	validateAtMostOneRefAttribute,
@@ -54,18 +57,6 @@ import {
 } from '@tsrx/core';
 
 import { builders as b } from '@tsrx/core';
-
-const TSRX_FOR_RETURN_ERROR =
-	'Return statements are not allowed inside TSRX template for...of loops. Filter the iterable before rendering or use an @empty fallback for empty lists.';
-const TSRX_FOR_BREAK_ERROR =
-	'Break statements are not allowed inside TSRX template for...of loops.';
-const TSRX_FOR_CONTINUE_ERROR =
-	'Continue statements are not allowed inside TSRX template for...of loops. Filter the iterable before rendering.';
-const TSRX_IF_RETURN_ERROR =
-	'Return statements are not allowed inside TSRX template @if blocks. Move the return before the template output or render conditionally instead.';
-const TSRX_IF_BREAK_ERROR = 'Break statements are not allowed inside TSRX template @if blocks.';
-const TSRX_IF_CONTINUE_ERROR =
-	'Continue statements are not allowed inside TSRX template @if blocks. Filter before rendering or use conditional output instead.';
 
 /**
  * Solid platform descriptor consumed by `createJsxTransform`. Everything
@@ -105,6 +96,10 @@ const solid_platform = {
 		// `ref` attributes collapse to `ref={[a, b, ...]}` rather than
 		// going through a `mergeRefs` helper.
 		multiRefStrategy: 'array',
+		// Solid's compiler escapes a string child into its HTML template, and a
+		// `<script>` element's text there isn't decoded; `innerHTML` renders the
+		// body as written on the client and the server.
+		scriptBody: 'innerHTML',
 	},
 	validation: {
 		requireUseServerForAwait: true,
@@ -153,6 +148,7 @@ const solid_platform = {
 				adjusted_node,
 				ctx?.errors,
 				ctx?.comments,
+				DIAGNOSTIC_CODES.TARGET_AWAIT_UNSUPPORTED,
 			);
 		},
 		controlFlow: {
@@ -249,7 +245,7 @@ function to_jsx_child(node, transform_context) {
 		case 'JSXForExpression':
 			if (node.statementType !== 'ForOfStatement') {
 				error(
-					'TSRX `@for` currently supports `for...of` loops in template output.',
+					TSRX_ERRORS.FOR_OF_ONLY,
 					transform_context.filename,
 					node,
 					transform_context.errors,
@@ -545,15 +541,30 @@ function validate_for_body_control_flow(node, transform_context, is_root = true)
 	}
 
 	if (current.type === 'ReturnStatement') {
-		error(TSRX_FOR_RETURN_ERROR, transform_context.filename, current, transform_context.errors);
+		error(
+			TSRX_ERRORS.FOR_RETURN_STATEMENT,
+			transform_context.filename,
+			current,
+			transform_context.errors,
+		);
 		return;
 	}
 	if (current.type === 'BreakStatement') {
-		error(TSRX_FOR_BREAK_ERROR, transform_context.filename, current, transform_context.errors);
+		error(
+			TSRX_ERRORS.FOR_BREAK_STATEMENT,
+			transform_context.filename,
+			current,
+			transform_context.errors,
+		);
 		return;
 	}
 	if (current.type === 'ContinueStatement') {
-		error(TSRX_FOR_CONTINUE_ERROR, transform_context.filename, current, transform_context.errors);
+		error(
+			TSRX_ERRORS.FOR_CONTINUE_STATEMENT,
+			transform_context.filename,
+			current,
+			transform_context.errors,
+		);
 		return;
 	}
 
@@ -591,15 +602,30 @@ function validate_if_body_control_flow(node, transform_context) {
 	const current = /** @type {AST.TraversableAstNode} */ (node);
 
 	if (current.type === 'ReturnStatement') {
-		error(TSRX_IF_RETURN_ERROR, transform_context.filename, current, transform_context.errors);
+		error(
+			TSRX_ERRORS.IF_RETURN_STATEMENT,
+			transform_context.filename,
+			current,
+			transform_context.errors,
+		);
 		return;
 	}
 	if (current.type === 'BreakStatement') {
-		error(TSRX_IF_BREAK_ERROR, transform_context.filename, current, transform_context.errors);
+		error(
+			TSRX_ERRORS.IF_BREAK_STATEMENT,
+			transform_context.filename,
+			current,
+			transform_context.errors,
+		);
 		return;
 	}
 	if (current.type === 'ContinueStatement') {
-		error(TSRX_IF_CONTINUE_ERROR, transform_context.filename, current, transform_context.errors);
+		error(
+			TSRX_ERRORS.IF_CONTINUE_STATEMENT,
+			transform_context.filename,
+			current,
+			transform_context.errors,
+		);
 		return;
 	}
 
@@ -1199,6 +1225,7 @@ function try_statement_to_jsx_child(node, transform_context) {
 			finalizer,
 			transform_context.errors,
 			transform_context.comments,
+			DIAGNOSTIC_CODES.TEMPLATE_TRY_FINALLY,
 		);
 	}
 
@@ -1209,6 +1236,7 @@ function try_statement_to_jsx_child(node, transform_context) {
 			node,
 			transform_context.errors,
 			transform_context.comments,
+			DIAGNOSTIC_CODES.TEMPLATE_TRY_HANDLER,
 		);
 		return to_jsx_expression_container(create_null_literal());
 	}
@@ -1975,13 +2003,7 @@ function inject_solid_imports(program, transform_context) {
 function to_jsx_element(node, transform_context) {
 	if (node.type === 'JSXElement' && !node.metadata?.native_tsrx) return node;
 
-	// A raw-text `<script>` body (mirrored by the parser as a JSXText child of
-	// `node.content`) must not appear in the type-only editor TSX: raw JS/TS
-	// (`{`, `<`) doesn't lex as JSX text there and would surface bogus syntactic
-	// diagnostics. The embedded TS document built from `scriptMappings` covers
-	// the body in the editor; runtime output keeps the text child.
-	const walked_children =
-		transform_context.typeOnly && typeof node.content === 'string' ? [] : node.children || [];
+	const walked_children = node.children || [];
 
 	if (!node.openingElement?.name) {
 		return tsrx_node_to_jsx_expression(node, transform_context, true);
@@ -1997,8 +2019,17 @@ function to_jsx_element(node, transform_context) {
 		node,
 	);
 
-	const selfClosing = !!node.openingElement.selfClosing;
-	const children = create_element_children(walked_children, transform_context);
+	// A raw-text `<script>` body is `node.content`, printed in the form Solid
+	// renders exactly. The type-only editor TSX leaves it out: the embedded TS
+	// document built from `scriptMappings` covers it there.
+	const script_body = transform_context.typeOnly
+		? null
+		: create_script_body(node, transform_context.platform.jsx.scriptBody);
+	if (script_body) attributes.push(...script_body.attributes);
+	const selfClosing = script_body ? script_body.selfClosing : !!node.openingElement.selfClosing;
+	const children = script_body
+		? script_body.children
+		: create_element_children(walked_children, transform_context);
 
 	const openingElement = set_loc(
 		b.jsx_opening_element(name, attributes, selfClosing, node.openingElement?.typeArguments),
@@ -2070,8 +2101,14 @@ function create_element_children(children, transform_context) {
  */
 function transform_element_attributes(raw_attrs, is_composite, transform_context, element) {
 	validateAtMostOneRefAttribute(raw_attrs, transform_context);
+	// Core's JSXOpeningElement visitor has already lowered the host ref/spread
+	// of an element in plain-JS expression position; lowering it again nests a
+	// second spread binding and ref array around the first.
+	const already_lowered = element?.openingElement?.metadata?.host_ref_spread_lowered === true;
 	return mergeDuplicateRefs(
-		normalize_solid_host_ref_spreads(raw_attrs, !is_composite, transform_context),
+		already_lowered
+			? raw_attrs
+			: normalize_solid_host_ref_spreads(raw_attrs, !is_composite, transform_context),
 		transform_context,
 	);
 }
@@ -2097,8 +2134,19 @@ function normalize_solid_host_ref_spreads(attrs, is_host, transform_context) {
 				return [attr];
 			}
 
-			transform_context.needs_normalize_spread_props = true;
-			const normalized = b.call(NORMALIZE_SPREAD_PROPS_INTERNAL_NAME, attr.argument);
+			// Like core's lowering, a bag whose `ref` the element reads goes through
+			// the ref-attr normalizer, whose result types that `ref`.
+			if (needs_synthetic_spread_ref) {
+				transform_context.needs_normalize_spread_props_for_ref_attr = true;
+			} else {
+				transform_context.needs_normalize_spread_props = true;
+			}
+			const normalized = b.call(
+				needs_synthetic_spread_ref
+					? NORMALIZE_SPREAD_PROPS_FOR_REF_ATTR_INTERNAL_NAME
+					: NORMALIZE_SPREAD_PROPS_INTERNAL_NAME,
+				attr.argument,
+			);
 
 			if (needs_synthetic_spread_ref) {
 				const normalized_id = create_generated_identifier(
@@ -2110,9 +2158,14 @@ function normalize_solid_host_ref_spreads(attrs, is_host, transform_context) {
 					argument: clone_identifier(normalized_id),
 				};
 				const loc_info = has_location(attr) ? attr : undefined;
+				// A spread bag may be nullish (`{...props.optional}`) and spread to
+				// nothing, as in native JSX, so its ref is read without throwing.
 				const ref_attr = b.jsx_attribute(
 					b.jsx_id('ref'),
-					b.jsx_expression_container(b.member(clone_identifier(normalized_id), 'ref'), loc_info),
+					b.jsx_expression_container(
+						b.maybe_member(clone_identifier(normalized_id), 'ref'),
+						loc_info,
+					),
 					false,
 					loc_info,
 				);

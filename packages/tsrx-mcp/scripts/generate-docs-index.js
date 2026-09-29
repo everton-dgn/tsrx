@@ -54,6 +54,7 @@ export async function generate_docs_index() {
 		specification_source,
 	);
 	const style_grammar = extract_string_array_constant('STYLE_GRAMMAR', specification_source);
+	const script_grammar = extract_string_array_constant('SCRIPT_GRAMMAR', specification_source);
 	const style_scope_example = extract_string_array_constant(
 		'STYLE_SCOPE_EXAMPLE',
 		specification_source,
@@ -114,7 +115,8 @@ Source: website-tsrx/src/pages/specification.tsrx#components`,
 		{
 			slug: 'text-and-template-expressions',
 			title: 'Text and Template Expressions',
-			use_cases: 'text children, jsx text, comments, string literals, expression containers',
+			use_cases:
+				'text children, jsx text, comments, string literals, expression containers, script elements, raw text',
 			content: `# Text and Template Expressions
 
 Static text is JSXText and can be written directly between tags. Dynamic values use normal JSX expression containers.
@@ -130,13 +132,17 @@ function Greeting({ name }: { name: string }) @{
 
 JavaScript comments are also allowed between template children and are not rendered. Use braces for JavaScript expressions, including string literals that should be evaluated as JavaScript.
 
+A \`<script>\` body is raw text, like a \`<style>\` body, in a template and in plain TSX: everything up to \`</script>\`, kept as written, with its comments, \`<\`, \`>\`, character references, and line breaks. \`{…}\` in it is text, not an expression container: \`<script>{code}</script>\` is a script whose text is \`{code}\`. The body ends at \`</script\`, optional whitespace, and \`>\`; any other \`</script\` in it, in any letter case, is the \`TSRX1004\` error, so write \`<\\/script\` instead. For a body computed at runtime, use the target's property on a self-closing \`<script>\`: \`dangerouslySetInnerHTML={{ __html: code }}\` in React, Preact, and Hono, \`innerHTML={code}\` in Solid and Vue. Whether a script runs is each target's decision.
+
 Specification grammar:
 
 \`\`\`text
 ${template_expression_grammar}
+
+${script_grammar}
 \`\`\`
 
-Source: website-tsrx/src/pages/specification.tsrx#templates`,
+Source: website-tsrx/src/pages/specification.tsrx#templates, website-tsrx/src/pages/specification.tsrx#script`,
 		},
 		{
 			slug: 'expression-values',
@@ -220,7 +226,7 @@ A \`<style>\` block written as template content is a standalone block. It is a c
 ${style_scope_example}
 \`\`\`
 
-Assign a \`<style>\` block to get an object: \`$class\` (the block's hash class, preceded by the \`$class\` of every block it applies) plus one property per class name (\`styles.card\`). An assigned block that is exported, applied, or whose \`$class\` is read is a theme and keeps every selector; otherwise it is a class map and keeps only its class selectors. \`<style apply={theme} />\` adds \`theme.$class\` to every element of a scope, \`<style apply={theme}>...</style>\` also declares local rules that come after the theme's and so win at equal specificity, and \`class={theme.$class}\` adds it to one element. \`apply\` takes an identifier, a member expression, or an array of those, and every target must be an assigned block that is imported or declared before the applying block.
+Assign a \`<style>\` block to get an object: \`$class\` (the block's hash class, preceded by the \`$class\` of every block it applies) plus one property per class name (\`styles.card\`). Every assigned block is a theme and keeps every selector, element and descendant selectors included: \`$class\` is an ordinary string that any JavaScript use can carry to an element. \`<style apply={theme} />\` adds \`theme.$class\` to every element of a scope, \`<style apply={theme}>...</style>\` also declares local rules that come after the theme's and so win at equal specificity, and \`class={theme.$class}\` adds it to one element. \`apply\` takes an identifier, a member expression, or an array of those, and every target must be an assigned block that is imported or declared before the applying block.
 
 \`\`\`tsx
 ${style_theme_example}
@@ -228,7 +234,7 @@ ${style_theme_example}
 
 Later rules win: CSS is output in source order, outer first. Outer before inner: a scope's sheets come before the sheets of the scopes nested in it. Applied theme before the block that applies it: an applied block's CSS always comes before the CSS of the block that applies it. Source order within a scope: the later block wins.
 
-\`:global(...)\` marks the wrapped part of a selector as unscoped: it gets no hash class, everything outside the parentheses is still scoped, and it may only start or end a selector (\`tsrx-css-global-placement\` otherwise). Bare \`:global(.toast)\` outputs \`.toast\`, a page-wide rule that matches anywhere on the page. Prefixed \`.card :global(.note)\` outputs \`.card.<hash> .note\`: only elements below the scoped \`.card\`, a child component's internals included, never upward. Leading \`:global(.theme-dark) .card\` outputs \`.theme-dark .card.<hash>\`, and compound \`.card:global(.is-open)\` outputs \`.card.<hash>.is-open\`. The block form \`:global { .toast { ... } body { ... } }\` drops its wrapper (left behind as a comment) and outputs \`.toast { ... } body { ... }\`, several page-wide rules at once. Both forms work with CSS nesting: \`.card { :global { .note { ... } } }\` and \`.card { :global(.note) { ... } }\` both output \`.card.<hash> { .note { ... } }\`, the same reach as the prefixed form with the scoped prefix written once, while plain nesting \`.card { .note { ... } }\` outputs \`.card.<hash> { .note.<hash> { ... } }\`, both parts scoped. A scoped rule adds one hash class to its first compound only; later compounds get \`:where(.<hash>)\`, which adds no specificity. So a scoped \`.note.<hash>\` (0,2,0) beats a bare \`:global(.note)\` (0,1,0) from anywhere, a \`theme.$class\` or class-map rule carries its hash and beats a bare global too, and a prefixed \`.card.<hash> .note\` (0,3,0) beats a child's own \`.note.<hash>\`.
+\`:global(...)\` marks the wrapped part of a selector as unscoped: it gets no hash class, everything outside the parentheses is still scoped, and it may only start or end a selector (\`TSRX3011\` otherwise). Bare \`:global(.toast)\` outputs \`.toast\`, a page-wide rule that matches anywhere on the page. Prefixed \`.card :global(.note)\` outputs \`.card.<hash> .note\`: only elements below the scoped \`.card\`, a child component's internals included, never upward. Leading \`:global(.theme-dark) .card\` outputs \`.theme-dark .card.<hash>\`, and compound \`.card:global(.is-open)\` outputs \`.card.<hash>.is-open\`. The block form \`:global { .toast { ... } body { ... } }\` drops its wrapper (left behind as a comment) and outputs \`.toast { ... } body { ... }\`, several page-wide rules at once. Both forms work with CSS nesting: \`.card { :global { .note { ... } } }\` and \`.card { :global(.note) { ... } }\` both output \`.card.<hash> { .note { ... } }\`, the same reach as the prefixed form with the scoped prefix written once, while plain nesting \`.card { .note { ... } }\` outputs \`.card.<hash> { .note.<hash> { ... } }\`, both parts scoped. A scoped rule adds one hash class to its first compound only; later compounds get \`:where(.<hash>)\`, which adds no specificity. So a scoped \`.note.<hash>\` (0,2,0) beats a bare \`:global(.note)\` (0,1,0) from anywhere, a \`theme.$class\` or class-map rule carries its hash and beats a bare global too, and a prefixed \`.card.<hash> .note\` (0,3,0) beats a child's own \`.note.<hash>\`.
 
 Prefer passing \`theme.$class\` (or a class-map entry) as a prop over \`:global\` for a child you own: the dependency is a visible prop, the child decides which elements receive it, renaming a class inside the child cannot silently break the parent, and the hash keeps the rule on the elements that carry it. With \`:global\` the child has no say and cannot see who styles it. To style several of a child's classes, nest one \`:global { ... }\` block under your scoped selector. Never write a bare \`:global\` selector or a top-level \`:global { ... }\` block for anything but page-level elements.
 
@@ -292,7 +298,7 @@ const Body = expanded ? ExpandedBody : CompactBody;
 <{Body} item={item} />
 \`\`\`
 
-The tag expression must resolve to an element name: an identifier, member access, static string, or a runtime expression composed of those. Calls, spreads, string concatenation, string interpolation, and static non-string literals are not valid dynamic tag expressions.
+The tag expression must be an identifier (\`tag\`), a member access including chains (\`props.as\`, \`this.tag\`, \`registry[name]\`, \`items[0]\`, where each computed key is an identifier, a string or number literal, or a member access), or a string literal (\`'section'\`). Any other expression is a compile error: a conditional, \`||\`, \`??\` or \`&&\`, parentheses and type-only wrappers (\`as\`, \`satisfies\`, \`!\`), optional member access, calls, \`new\`, spreads, string concatenation, template literals, assignments, sequences, functions, elements, and literals other than strings. A non-self-closing element repeats the expression in its closing tag, so compute anything more above the element and use the result: \`const Tag = c ? Child : Fallback;\` followed by \`<{Tag} />\`.
 
 For React host classes, use \`className\`. For Preact, Solid, Vue, and Ripple host classes, use \`class\`.
 

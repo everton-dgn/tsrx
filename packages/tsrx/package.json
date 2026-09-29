@@ -3,7 +3,7 @@
   "description": "Core compiler infrastructure for TSRX syntax",
   "license": "MIT",
   "author": "Dominic Gannaway",
-  "version": "0.2.4",
+  "version": "0.4.0",
   "type": "module",
   "repository": {
     "type": "git",
@@ -37,6 +37,10 @@
       "types": "./src/vite/dep-scan.js",
       "default": "./src/vite/dep-scan.js"
     },
+    "./vite/worker": {
+      "types": "./src/vite/worker.js",
+      "default": "./src/vite/worker.js"
+    },
     "./config": {
       "types": "./types/config.d.ts",
       "default": "./src/config.js"
@@ -67,7 +71,10 @@
     },
     "./test-harness/source-mappings": "./tests/shared/source-mappings.js",
     "./test-harness/compile": "./tests/shared/compile.js",
+    "./test-harness/css-references": "./tests/shared/css-references.js",
     "./test-harness/dep-scan": "./tests/shared/dep-scan.js",
+    "./test-harness/worker": "./tests/shared/worker.js",
+    "./test-harness/script-body-server": "./tests/shared/script-body-server.js",
     "./test-harness/runtime/*": "./tests/shared/runtime/*.js",
     "./test-harness/runtime/*.js": "./tests/shared/runtime/*.js",
     "./test-harness/runtime/*.tsrx": "./tests/shared/runtime/*.tsrx",

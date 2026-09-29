@@ -1,0 +1,26 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`let.js format 1`] = `
+====================================options=====================================
+parsers: ["acorn", "espree", "meriyah", "babel"]
+                                                      printWidth: 80 (default) |
+=====================================input======================================
+foo.let;
+let.foo;
+new let();
+({ let: "foo" });
+(let, "foo");
+void let;
+var let = "foo";
+
+=====================================output=====================================
+foo.let;
+let.foo;
+new let();
+({ let: "foo" });
+(let, "foo");
+void let;
+var let = "foo";
+
+================================================================================
+`;
