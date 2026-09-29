@@ -14,15 +14,35 @@
  * serves the workspace (VS Code restarts the extension host when TypeScript 7
  * is switched on or off, which resets this). Nothing else has to know which
  * TypeScript VS Code runs, and no setting is read.
+ *
+ * A mistake can also reach VS Code twice on TypeScript 5.9 or 6: the parser
+ * collects some mistakes that TypeScript's parser accepts (a rest element's
+ * default, a redeclared `let`), and where the generated code keeps the code the
+ * mistake is in, tsserver reports it too. The extension drops the server's copy
+ * of such an error, one with a TypeScript code, while tsserver shows the same
+ * code at the same place, as the language server itself does when it hosts
+ * TypeScript (`compileErrorDiagnosticPlugin.js`). TypeScript's copy has its
+ * quick fixes.
+ */
+
+/**
+ * The parts of a VS Code diagnostic this module reads.
+ * @typedef {object} DiagnosticLike
+ * @property {string} [source]
+ * @property {string | number | { value: string | number }} [code]
+ * @property {string} [message]
+ * @property {{ start: { line: number, character: number } }} [range]
  */
 
 /** `DIAGNOSTIC_SOURCE` of `@tsrx/content-mapper/src/protocol.js`. */
 export const MAPPER_DIAGNOSTIC_SOURCE = 'tsrx';
 /** `source` of `@tsrx/language-server`'s compile-error diagnostics. */
 export const SERVER_COMPILE_ERROR_SOURCE = 'TSRX';
+/** `source` of the diagnostics VS Code's own TypeScript reports. */
+export const TYPESCRIPT_DIAGNOSTIC_SOURCE = 'ts';
 
 /**
- * @param {readonly { source?: string }[]} diagnostics
+ * @param {readonly DiagnosticLike[]} diagnostics
  * @returns {boolean}
  */
 export function has_mapper_diagnostics(diagnostics) {
@@ -30,24 +50,83 @@ export function has_mapper_diagnostics(diagnostics) {
 }
 
 /**
- * @param {readonly { source?: string }[]} diagnostics
+ * @param {readonly DiagnosticLike[]} diagnostics
  * @returns {boolean}
  */
 export function has_server_compile_errors(diagnostics) {
-	return diagnostics.some((diagnostic) => diagnostic.source === SERVER_COMPILE_ERROR_SOURCE);
+	return diagnostics.some(is_server_compile_error);
+}
+
+/**
+ * @param {DiagnosticLike} diagnostic
+ * @returns {boolean}
+ */
+function is_server_compile_error(diagnostic) {
+	return diagnostic.source === SERVER_COMPILE_ERROR_SOURCE;
+}
+
+/**
+ * @param {DiagnosticLike['code']} code
+ * @returns {string | number | undefined}
+ */
+function code_value(code) {
+	return typeof code === 'object' ? code.value : code;
+}
+
+/**
+ * Whether VS Code's TypeScript shows the mistake of `diagnostic`, a server
+ * compile error, itself: `diagnostic` has a TypeScript code (`TS1186`) and
+ * TypeScript has a diagnostic with that code (`1186`) that starts at the same
+ * place.
+ * @param {DiagnosticLike} diagnostic
+ * @param {readonly DiagnosticLike[]} all_diagnostics Every diagnostic VS Code holds for the file.
+ * @returns {boolean}
+ */
+export function reported_by_typescript(diagnostic, all_diagnostics) {
+	const code = code_value(diagnostic.code);
+	const start = diagnostic.range?.start;
+	if (typeof code !== 'string' || !/^TS\d+$/.test(code) || !start) {
+		return false;
+	}
+	const number = Number(code.slice(2));
+	return all_diagnostics.some(
+		(other) =>
+			other.source === TYPESCRIPT_DIAGNOSTIC_SOURCE &&
+			Number(code_value(other.code)) === number &&
+			other.range?.start.line === start.line &&
+			other.range.start.character === start.character,
+	);
+}
+
+/**
+ * @param {DiagnosticLike} diagnostic
+ * @returns {string}
+ */
+function diagnostic_key(diagnostic) {
+	const start = diagnostic.range?.start;
+	return `${code_value(diagnostic.code)}\0${diagnostic.message}\0${start?.line}:${start?.character}`;
 }
 
 /**
  * Session-wide memory of whether TypeScript 7's content mapper reports for this
- * workspace, learned from the diagnostics VS Code holds.
+ * workspace, learned from the diagnostics VS Code holds, and of the server's
+ * diagnostics for each file before filtering, so a compile error dropped while
+ * TypeScript showed the same mistake comes back when TypeScript stops.
  */
 export class CompileErrorDedupe {
 	/** True once the mapper has reported for any `.tsrx` file in this session. */
 	mapper_seen = false;
 
 	/**
+	 * The server's diagnostics for each file (by URI) as it last reported them,
+	 * before filtering, and whether it pushed them or VS Code pulled them.
+	 * @type {Map<string, { diagnostics: readonly DiagnosticLike[], pushed: boolean }>}
+	 */
+	received = new Map();
+
+	/**
 	 * Learn from the diagnostics VS Code holds for a file.
-	 * @param {readonly { source?: string }[]} all_diagnostics
+	 * @param {readonly DiagnosticLike[]} all_diagnostics
 	 * @returns {boolean} Whether this call is the first sighting of the mapper.
 	 */
 	observe(all_diagnostics) {
@@ -59,20 +138,57 @@ export class CompileErrorDedupe {
 	}
 
 	/**
-	 * The server's diagnostics for a file, minus its compile errors while the
-	 * mapper serves the workspace (or already reports for this very file).
-	 * @template {{ source?: string }} T
+	 * Remember the server's diagnostics for a file, and filter them.
+	 * @template {DiagnosticLike} T
+	 * @param {string} uri
 	 * @param {readonly T[]} server_diagnostics
-	 * @param {readonly { source?: string }[]} all_diagnostics Every diagnostic VS Code holds for the file.
+	 * @param {readonly DiagnosticLike[]} all_diagnostics Every diagnostic VS Code holds for the file.
+	 * @param {boolean} pushed Whether the server pushed them, rather than VS Code pulling them.
+	 * @returns {T[]}
+	 */
+	receive(uri, server_diagnostics, all_diagnostics, pushed) {
+		this.received.set(uri, { diagnostics: [...server_diagnostics], pushed });
+		return this.filter(server_diagnostics, all_diagnostics);
+	}
+
+	/**
+	 * The server's diagnostics for a file, minus its compile errors while the
+	 * mapper serves the workspace (or already reports for this very file), and
+	 * minus each compile error that VS Code's TypeScript shows itself
+	 * ({@link reported_by_typescript}).
+	 * @template {DiagnosticLike} T
+	 * @param {readonly T[]} server_diagnostics
+	 * @param {readonly DiagnosticLike[]} all_diagnostics Every diagnostic VS Code holds for the file.
 	 * @returns {T[]}
 	 */
 	filter(server_diagnostics, all_diagnostics) {
 		this.observe(all_diagnostics);
-		if (!this.mapper_seen) {
-			return [...server_diagnostics];
-		}
 		return server_diagnostics.filter(
-			(diagnostic) => diagnostic.source !== SERVER_COMPILE_ERROR_SOURCE,
+			(diagnostic) =>
+				!is_server_compile_error(diagnostic) ||
+				(!this.mapper_seen && !reported_by_typescript(diagnostic, all_diagnostics)),
+		);
+	}
+
+	/**
+	 * Whether the server's compile errors VS Code shows for a file differ from
+	 * what {@link filter} gives now for the server's last diagnostics, as when
+	 * TypeScript's diagnostics for the file have changed since. Refreshing the
+	 * server's diagnostics for the file settles it, so this is false again after.
+	 * Without the server's last diagnostics, the ones VS Code shows stand in.
+	 * @param {string} uri
+	 * @param {readonly DiagnosticLike[]} all_diagnostics Every diagnostic VS Code holds for the file.
+	 * @returns {boolean}
+	 */
+	needs_refresh(uri, all_diagnostics) {
+		const shown = all_diagnostics.filter(is_server_compile_error);
+		const received = this.received.get(uri)?.diagnostics ?? shown;
+		const wanted = this.filter(received, all_diagnostics).filter(is_server_compile_error);
+		const shown_keys = shown.map(diagnostic_key).sort();
+		const wanted_keys = wanted.map(diagnostic_key).sort();
+		return (
+			shown_keys.length !== wanted_keys.length ||
+			shown_keys.some((key, index) => key !== wanted_keys[index])
 		);
 	}
 }
