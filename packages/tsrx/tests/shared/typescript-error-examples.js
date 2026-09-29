@@ -353,7 +353,7 @@ let a = 2;`,
 	},
 	{ error: UPSTREAM_ERRORS.EXPORT_NOT_DEFINED, source: 'export { missing };', collected: true },
 	{ error: UPSTREAM_ERRORS.OPTIONAL_CHAIN_ASSIGNMENT, source: 'a?.b = 1;', collected: true },
-	{ error: UPSTREAM_ERRORS.IMPORT_META_PROPERTY, source: 'import.source("a");', collected: true },
+	{ error: UPSTREAM_ERRORS.IMPORT_META_PROPERTY, source: 'import.foo;', collected: true },
 	{ error: UPSTREAM_ERRORS.NEW_TARGET_OUTSIDE_FUNCTION, source: 'new.target;', collected: true },
 	{
 		error: UPSTREAM_ERRORS.SUPER_OUTSIDE_METHOD,
