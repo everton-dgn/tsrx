@@ -9,6 +9,8 @@
  * it from their own entry file.
  */
 
+import { Console } from 'node:console';
+
 /**
  * @typedef {{ jsonrpc: '2.0', id?: number | string | null, method: string, params?: unknown }} RequestMessage
  */
@@ -122,5 +124,13 @@ export function run_mapper_server(mapper, streams = {}) {
  * compiler, for example) can never corrupt the protocol stream on stdout.
  */
 export function redirect_console_to_stderr() {
-	console.log = console.info = console.warn = console.debug = (...args) => console.error(...args);
+	// Every method on a Console writes through that instance's streams. Copy
+	// the methods of one bound to stderr (`dir`, `table`, `count`, timers,
+	// groups, and the rest), not only `log` / `info` / `warn` / `debug`.
+	const stderr = new Console(process.stderr, process.stderr);
+	for (const key of Object.keys(stderr)) {
+		if (typeof stderr[key] === 'function') {
+			console[key] = stderr[key].bind(stderr);
+		}
+	}
 }

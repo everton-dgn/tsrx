@@ -70,7 +70,7 @@ export function build_export_stub(program) {
 	}
 
 	for (const name of names) {
-		if (!identifier_pattern.test(name)) continue;
+		if (!is_identifier_name(name)) continue;
 		lines.push(`export declare const ${name}: any;`);
 		lines.push(`export type ${name} = any;`);
 	}
@@ -97,6 +97,22 @@ function type_modifier(node) {
 const identifier_pattern = /^[\p{ID_Start}_$][\p{ID_Continue}$]*$/u;
 
 /**
+ * `null`, `true`, and `false` match {@link identifier_pattern} but are literal
+ * tokens, not binding identifiers (`export declare const null` does not parse).
+ * Export specifiers quote them (`export { "null" as n } from`).
+ * @type {Set<string>}
+ */
+const literal_names = new Set(['null', 'true', 'false']);
+
+/**
+ * @param {string} name
+ * @returns {boolean}
+ */
+function is_identifier_name(name) {
+	return identifier_pattern.test(name) && !literal_names.has(name);
+}
+
+/**
  * The name an export binds, as a plain string: `a` for `export { a }` and
  * `foo-bar` for `export { "foo-bar" as a } from`.
  * @param {AST.Identifier | AST.Literal | AST.Expression} node
@@ -109,15 +125,15 @@ function export_name(node) {
 }
 
 /**
- * The name as it must be written back in a re-export: an identifier as is, an
- * arbitrary module namespace name (`export { "foo-bar" as a } from`,
- * `export * as "ns-name" from`) quoted, so the stub stays valid TypeScript.
+ * The name as it must be written back in a re-export: an identifier as is,
+ * anything else (`export { "foo-bar" as a } from`, `export * as "ns-name" from`,
+ * `export { "null" as n } from`) quoted, so the stub stays valid TypeScript.
  * @param {AST.Identifier | AST.Literal | AST.Expression} node
  * @returns {string}
  */
 function print_name(node) {
 	const name = export_name(node);
-	return identifier_pattern.test(name) ? name : JSON.stringify(name);
+	return is_identifier_name(name) ? name : JSON.stringify(name);
 }
 
 /**

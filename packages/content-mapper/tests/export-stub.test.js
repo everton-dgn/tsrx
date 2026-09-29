@@ -46,6 +46,21 @@ export default function Component() @{
 export default _default;`);
 	});
 
+	it('quotes literal names that are not binding identifiers', () => {
+		const text = stub(`
+export { "null" as n, "true" as t, x as "false" } from './a.tsrx';
+export * as "null" from './b.tsrx';
+const kept = 1;
+export { kept, kept as null, kept as true, kept as false };
+`);
+		expect(text).toContain(`export { "null" as n, "true" as t, x as "false" } from "./a.tsrx";`);
+		expect(text).toContain(`export * as "null" from "./b.tsrx";`);
+		expect(text).toContain('export declare const kept: any;');
+		expect(text).toContain('export type kept = any;');
+		expect(text).not.toMatch(/export declare const (?:null|true|false)\b/);
+		expect(text).not.toMatch(/export type (?:null|true|false) =/);
+	});
+
 	it('quotes arbitrary module namespace names in re-exports', () => {
 		const text = stub(`
 export { "foo-bar" as baz, qux as "quux corge" } from './a.tsrx';
