@@ -8,7 +8,6 @@ export interface CounterProps {
 export function Counter({ start, label = 'Count' }: CounterProps) @{
 	const [count, setCount] = useState(start);
 	<button type="button" onClick={() => setCount(count + 1)}>
-		{label}:
-		{count}
+		{label}:{count}
 	</button>
 }

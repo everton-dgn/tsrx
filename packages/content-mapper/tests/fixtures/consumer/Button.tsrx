@@ -6,5 +6,7 @@ export interface ButtonProps {
 }
 
 export default function Button({ label, onPress }: ButtonProps) @{
-	<button type="button" onClick={onPress}>{label}</button>
+	<button type="button" onClick={onPress}>
+		{label}
+	</button>
 }
