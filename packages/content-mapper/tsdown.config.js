@@ -24,8 +24,10 @@ export default defineConfig({
 		// the forbid-typescript test instead of being inlined. The TSRX target compiler
 		// is loaded by path at runtime, and `jsonc-parser` (tsconfig reading) is a
 		// runtime dependency because its UMD entry requires its `./impl/*` files, which
-		// a bundle cannot follow. Everything else is inlined.
-		neverBundle: ['typescript', 'jsonc-parser', /^@tsrx\/core(?:\/.*)?$/],
+		// a bundle cannot follow. Everything else is inlined, including
+		// `@tsrx/core/diagnostics` (the error codes), a file that imports nothing,
+		// while the rest of `@tsrx/core` stays out.
+		neverBundle: ['typescript', 'jsonc-parser', /^@tsrx\/core(?!\/diagnostics$)(?:\/.*)?$/],
 		alwaysBundle: /.+/,
 		onlyBundle: false,
 	},

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { MAPPER_CODES } from '@tsrx/core/diagnostics';
 import {
 	consumer_fixture_files,
 	create_native_workspace,
@@ -218,8 +219,8 @@ describe('native tsc incremental builds', () => {
 		fs.writeFileSync(config_path, config.replace('"@tsrx/react"', '"@tsrx/does-not-exist"'));
 		const misconfigured = run_native_tsc(dir, args);
 		expect(parse_tsc_output(misconfigured.output).map((d) => [d.file, d.code])).toEqual([
-			['Button.tsrx', 'tsrx1002'],
-			['Panel.tsrx', 'tsrx1002'],
+			['Button.tsrx', `tsrx${MAPPER_CODES.NO_COMPILER}`],
+			['Panel.tsrx', `tsrx${MAPPER_CODES.NO_COMPILER}`],
 		]);
 		expect(misconfigured.status).not.toBe(0);
 		fs.writeFileSync(config_path, config);

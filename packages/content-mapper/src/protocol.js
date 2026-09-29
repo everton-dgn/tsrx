@@ -42,17 +42,11 @@ export const SpanMapFeature = /** @type {const} */ ({
 /** Diagnostic-directive policies (unused by TSRX today; kept for completeness). */
 export const DiagnosticDirectivePolicy = /** @type {const} */ ({ Ignore: 0, Expect: 1 });
 
-/** Prefix for mapper-authored diagnostics: `error tsrx(1000): ...`. */
+/**
+ * Prefix for mapper-authored diagnostics: `error tsrx2002: ...`. The numbers
+ * are `MAPPER_CODES` and the prefixes in `@tsrx/core/diagnostics`.
+ */
 export const DIAGNOSTIC_SOURCE = 'tsrx';
-
-/** Numeric code for a fatal compile error (the file could not be transformed). */
-export const DIAGNOSTIC_CODE_COMPILE_ERROR = 1000;
-/** Numeric code for a usage error that carries no string code. */
-export const DIAGNOSTIC_CODE_USAGE_ERROR = 1001;
-/** Numeric code when no TSRX compiler can be resolved for a file. */
-export const DIAGNOSTIC_CODE_NO_COMPILER = 1002;
-/** Numeric code when the project's TSRX configuration is invalid. */
-export const DIAGNOSTIC_CODE_INVALID_CONFIG = 1003;
 
 /**
  * @typedef {[

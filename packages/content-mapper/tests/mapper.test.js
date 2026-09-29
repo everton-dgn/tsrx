@@ -2,21 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-	create_tsrx_content_mapper,
-	numeric_code,
-	to_diagnostic,
-	validate_options,
-} from '../src/mapper.js';
-import {
-	DIAGNOSTIC_CODE_COMPILE_ERROR,
-	DIAGNOSTIC_CODE_INVALID_CONFIG,
-	DIAGNOSTIC_CODE_NO_COMPILER,
-	DIAGNOSTIC_CODE_USAGE_ERROR,
-	SpanMapKind,
-} from '../src/protocol.js';
+import { create_tsrx_content_mapper, to_diagnostic, validate_options } from '../src/mapper.js';
+import { SpanMapKind } from '../src/protocol.js';
 import { blank_script_bodies } from '@tsrx/typescript-plugin/src/transform.js';
-import { TS_ERRORS, TSRX_ERRORS } from '@tsrx/core/diagnostics';
+import { MAPPER_CODES, TS_ERRORS, TSRX_ERRORS } from '@tsrx/core/diagnostics';
 import { fileURLToPath } from 'node:url';
 import {
 	consumer_fixture_dir,
@@ -25,6 +14,7 @@ import {
 	mapper_server_path,
 	parse_tsc_output,
 	run_native_tsc,
+	typescript_mapper_code,
 } from './fixture-utils.js';
 
 /** @type {Array<() => void>} */
@@ -63,43 +53,57 @@ describe('validate_options', () => {
 			['languageFeatures'],
 			['bogus'],
 		]);
-		expect(optionDiagnostics.every((d) => d.code === DIAGNOSTIC_CODE_INVALID_CONFIG)).toBe(true);
+		expect(optionDiagnostics.every((d) => d.code === MAPPER_CODES.INVALID_CONFIG)).toBe(true);
 		expect(validate_options([]).optionDiagnostics[0].path).toEqual([]);
 	});
 });
 
 describe('to_diagnostic', () => {
-	it('keeps positions, clamps to the content and derives numeric codes', () => {
+	it('keeps positions, clamps to the content and sends a TSRX code as its number', () => {
 		const unclosed = TSRX_ERRORS.UNCLOSED_TAG('div');
 		const error = /** @type {any} */ (new Error(unclosed.message));
 		error.pos = 10;
 		error.end = 14;
 		error.code = unclosed.code;
-		expect(to_diagnostic(error, 100, DIAGNOSTIC_CODE_USAGE_ERROR)).toEqual({
+		// TypeScript shows it as `tsrx1001`, so the message doesn't repeat the code.
+		expect(to_diagnostic(error, 100, MAPPER_CODES.USAGE_ERROR)).toEqual({
 			start: 10,
 			length: 4,
-			code: numeric_code(unclosed.code),
-			messageText: `${unclosed.message} [${unclosed.code}]`,
+			code: Number(unclosed.code.slice('TSRX'.length)),
+			messageText: unclosed.message,
 		});
 		// An error without a code, as a compiler outside this repository may throw.
 		const uncoded = /** @type {any} */ (new Error(TS_ERRORS.UNEXPECTED_TOKEN.message));
 		uncoded.pos = 12;
-		expect(to_diagnostic(uncoded, 12, DIAGNOSTIC_CODE_COMPILE_ERROR)).toEqual({
+		expect(to_diagnostic(uncoded, 12, MAPPER_CODES.COMPILE_ERROR)).toEqual({
 			start: 12,
 			length: 0,
-			code: DIAGNOSTIC_CODE_COMPILE_ERROR,
+			code: MAPPER_CODES.COMPILE_ERROR,
 			messageText: TS_ERRORS.UNEXPECTED_TOKEN.message,
 		});
 	});
 
-	it('produces stable codes in the 10000..99999 range', () => {
-		const { code } = TSRX_ERRORS.UNCLOSED_TAG;
-		expect(numeric_code(code)).toBe(numeric_code(code));
-		expect(numeric_code(code)).not.toBe(
-			numeric_code(TSRX_ERRORS.TEMPLATE_EXPRESSION_TRAILING_SEMICOLON.code),
-		);
-		expect(numeric_code('x')).toBeGreaterThanOrEqual(10000);
-		expect(numeric_code('x')).toBeLessThan(100000);
+	it('sends a TypeScript code with its prefix and keeps it in the message', () => {
+		const { code, message } = TS_ERRORS.UNEXPECTED_TOKEN;
+		const error = /** @type {any} */ (new Error(message));
+		error.pos = 3;
+		error.code = code;
+		expect(to_diagnostic(error, 100, MAPPER_CODES.COMPILE_ERROR)).toEqual({
+			start: 3,
+			length: 1,
+			code: typescript_mapper_code(code),
+			messageText: `${message} [${code}]`,
+		});
+	});
+
+	it("gives TSRX codes, TypeScript codes and the mapper's own codes separate numbers", () => {
+		const tsrx = Object.values(TSRX_ERRORS).map(({ code }) => Number(code.slice('TSRX'.length)));
+		const typescript = Object.values(TS_ERRORS).map(({ code }) => typescript_mapper_code(code));
+		const mapper = Object.values(MAPPER_CODES);
+		const all = [...new Set(tsrx), ...new Set(typescript), ...mapper];
+		expect(new Set(all).size).toBe(all.length);
+		expect(mapper).toEqual([771000, 771001, 771002, 771003]);
+		expect(typescript_mapper_code(TS_ERRORS.REST_ELEMENT_INITIALIZER.code)).toBe(111186);
 	});
 });
 
@@ -197,7 +201,9 @@ describe('create_tsrx_content_mapper', () => {
 		expect(result.text).toContain('export declare const PanelProps: any;');
 		expect(result.text).toContain('export default _default;');
 		expect(result.diagnostics).toHaveLength(1);
-		expect(result.diagnostics?.[0].code).toBe(DIAGNOSTIC_CODE_COMPILE_ERROR);
+		expect(result.diagnostics?.[0].code).toBe(
+			typescript_mapper_code(TS_ERRORS.UNEXPECTED_TOKEN.code),
+		);
 		expect(result.diagnostics?.[0].start).toBeGreaterThanOrEqual(broken.indexOf('{{{'));
 		expect(result.diagnostics?.[0].start).toBeLessThanOrEqual(broken.indexOf('{{{') + 3);
 
@@ -205,6 +211,36 @@ describe('create_tsrx_content_mapper', () => {
 		const fresh = create_tsrx_content_mapper();
 		const first = fresh.transform({ fileName: file, content: broken });
 		expect(first.text).toBe('export {};\n');
+	});
+
+	it('leaves errors with a TypeScript code to TypeScript and sends TSRX ones', () => {
+		const mapper = create_tsrx_content_mapper();
+		mapper.openProject({
+			configFileName: path.join(consumer_fixture_dir, 'tsconfig.json'),
+			projectHandle: 'p1',
+			compilerOptions: {},
+		});
+		const content = `${fixture('Panel.tsrx').replace('{label}', '{label;}')}
+const [...rest = [1]] = [1];
+export { rest };
+`;
+		const result = mapper.transform({
+			fileName: path.join(consumer_fixture_dir, 'Panel.tsrx'),
+			content,
+			projectHandle: 'p1',
+		});
+		// The rest element's default (TS1186) stays in the generated code, where
+		// TypeScript reports it.
+		expect(result.text).toContain('...rest = [1]');
+		const semicolon = TSRX_ERRORS.TEMPLATE_EXPRESSION_TRAILING_SEMICOLON;
+		expect(result.diagnostics).toEqual([
+			{
+				start: content.indexOf('{label;}') + '{label'.length,
+				length: 1,
+				code: Number(semicolon.code.slice('TSRX'.length)),
+				messageText: semicolon.message,
+			},
+		]);
 	});
 
 	it('keeps the export stub across a project reopen while the file still fails', () => {
@@ -250,9 +286,8 @@ describe('create_tsrx_content_mapper', () => {
 		});
 		expect(result.text).toBe('export {};\n');
 		expect(result.mappings).toEqual([]);
-		expect(result.diagnostics?.[0].code).toBe(DIAGNOSTIC_CODE_INVALID_CONFIG);
+		expect(result.diagnostics?.[0].code).toBe(MAPPER_CODES.INVALID_CONFIG);
 		expect(result.diagnostics?.[0].messageText).toContain('@tsrx/does-not-exist');
-		expect(DIAGNOSTIC_CODE_NO_COMPILER).not.toBe(DIAGNOSTIC_CODE_INVALID_CONFIG);
 	});
 
 	it('changes the config identity when a watched tsconfig changes', () => {

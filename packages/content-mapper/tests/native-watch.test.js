@@ -2,10 +2,12 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { TS_ERRORS } from '@tsrx/core/diagnostics';
 import {
 	consumer_fixture_files,
 	create_native_workspace,
 	native_tsc_path,
+	typescript_mapper_code,
 } from './fixture-utils.js';
 
 /** @type {Array<() => void>} */
@@ -81,7 +83,12 @@ describe('native tsc --watch', () => {
 		// The mapper's compile error surfaces in the first watch pass. Its export
 		// stub types Panel's exports as `any`, so main.ts's cross-file error is
 		// intentionally absent while Panel.tsrx is broken.
-		expect(log.output).toMatch(/Panel\.tsrx\(\d+,\d+\): error tsrx1000: Unexpected token/);
+		const { code } = TS_ERRORS.UNEXPECTED_TOKEN;
+		expect(log.output).toMatch(
+			new RegExp(
+				`Panel\\.tsrx\\(\\d+,\\d+\\): error tsrx${typescript_mapper_code(code)}: Unexpected token`,
+			),
+		);
 		expect(log.output).not.toContain('TS2322');
 		expect(log.output).toMatch(/Found 1 error\. Watching for file changes/);
 		expect(fs.existsSync(path.join(created.dir, 'Panel.tsrx'))).toBe(true);

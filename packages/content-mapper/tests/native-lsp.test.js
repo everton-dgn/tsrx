@@ -9,10 +9,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { TS_ERRORS, TSRX_ERRORS } from '@tsrx/core/diagnostics';
 import {
 	consumer_fixture_files,
 	create_native_workspace,
 	mapper_server_path,
+	typescript_mapper_code,
 } from './fixture-utils.js';
 import { parse_jsonc } from '@tsrx/typescript-plugin/src/jsonc.js';
 import { NativeLspClient, position_of, range_text } from './lsp-client.js';
@@ -305,11 +307,40 @@ describe('native language server on a configured project', () => {
 		client.change('Button.tsrx', broken);
 		const diagnostics = await client.diagnostics('Button.tsrx');
 		expect(diagnostics.map((d) => [d.source, d.code, range_text(broken, d.range)])).toEqual([
-			['tsrx', 1000, '+'],
+			['tsrx', typescript_mapper_code(TS_ERRORS.UNEXPECTED_TOKEN.code), '+'],
 		]);
-		expect(diagnostics[0].message).toContain('Unexpected token');
+		expect(diagnostics[0].message).toBe(
+			`${TS_ERRORS.UNEXPECTED_TOKEN.message} (9:23) [${TS_ERRORS.UNEXPECTED_TOKEN.code}]`,
+		);
 		// The export stub keeps `main.ts` at its one real error while Button.tsrx is broken.
 		expect((await client.diagnostics('main.ts')).map((d) => d.code)).toEqual([2322]);
+		client.change('Button.tsrx', files['Button.tsrx']);
+		expect(await client.diagnostics('Button.tsrx')).toEqual([]);
+	});
+
+	it('leaves a mistake with a TypeScript code to TypeScript and reports a TSRX one by its number', async () => {
+		const rest_default = `${files['Button.tsrx']}const [...rest = [1]] = [1];\nexport { rest };\n`;
+		client.change('Button.tsrx', rest_default);
+		// TypeScript reports it from the generated code, once.
+		expect(
+			(await client.diagnostics('Button.tsrx')).map((d) => [
+				d.source,
+				d.code,
+				range_text(rest_default, d.range),
+			]),
+		).toEqual([['ts', Number(TS_ERRORS.REST_ELEMENT_INITIALIZER.code.slice('TS'.length)), '=']]);
+
+		const semicolon = files['Button.tsrx'].replace('{label}', '{label;}');
+		client.change('Button.tsrx', semicolon);
+		const { code } = TSRX_ERRORS.TEMPLATE_EXPRESSION_TRAILING_SEMICOLON;
+		expect(
+			(await client.diagnostics('Button.tsrx')).map((d) => [
+				d.source,
+				d.code,
+				range_text(semicolon, d.range),
+			]),
+		).toEqual([['tsrx', Number(code.slice('TSRX'.length)), ';']]);
+
 		client.change('Button.tsrx', files['Button.tsrx']);
 		expect(await client.diagnostics('Button.tsrx')).toEqual([]);
 	});

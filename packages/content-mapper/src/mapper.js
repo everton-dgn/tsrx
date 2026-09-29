@@ -16,14 +16,9 @@ import {
 	source_uses_platform_flag,
 } from '@tsrx/typescript-plugin/src/language.js';
 import { transform_tsrx } from '@tsrx/typescript-plugin/src/transform.js';
+import { MAPPER_CODES, TYPESCRIPT_CODE_PREFIX } from '@tsrx/core/diagnostics';
 import { build_export_stub } from './export-stub.js';
-import {
-	DIAGNOSTIC_CODE_COMPILE_ERROR,
-	DIAGNOSTIC_CODE_INVALID_CONFIG,
-	DIAGNOSTIC_CODE_NO_COMPILER,
-	DIAGNOSTIC_CODE_USAGE_ERROR,
-	DIAGNOSTIC_SOURCE,
-} from './protocol.js';
+import { DIAGNOSTIC_SOURCE } from './protocol.js';
 import { to_span_mappings } from './span-mappings.js';
 
 const require = createRequire(import.meta.url);
@@ -136,7 +131,7 @@ export function create_tsrx_content_mapper(context = {}) {
 			return failure(state, file_name, content, {
 				start: 0,
 				length: 0,
-				code: DIAGNOSTIC_CODE_INVALID_CONFIG,
+				code: MAPPER_CODES.INVALID_CONFIG,
 				messageText: error_message(error),
 			});
 		}
@@ -144,7 +139,7 @@ export function create_tsrx_content_mapper(context = {}) {
 			return failure(state, file_name, content, {
 				start: 0,
 				length: 0,
-				code: DIAGNOSTIC_CODE_NO_COMPILER,
+				code: MAPPER_CODES.NO_COMPILER,
 				messageText:
 					`No TSRX compiler found for ${file_name}. Install a target compiler ` +
 					'(for example @tsrx/react) next to the project, or select one with ' +
@@ -168,20 +163,21 @@ export function create_tsrx_content_mapper(context = {}) {
 			return failure(state, file_name, content, {
 				start: 0,
 				length: 0,
-				code: DIAGNOSTIC_CODE_INVALID_CONFIG,
+				code: MAPPER_CODES.INVALID_CONFIG,
 				messageText: error_message(error),
 			});
 		}
 
 		const result = transform_tsrx(compiler, file_name, content, { platform });
 		if (result.fatalError) {
-			// The file could not be transformed, whatever the mistake, so a fatal
-			// error is always `DIAGNOSTIC_CODE_COMPILE_ERROR`; its own code, which
-			// every TSRX error has, stays in the message.
-			return failure(state, file_name, content, {
-				...to_diagnostic(result.fatalError, content.length, DIAGNOSTIC_CODE_COMPILE_ERROR),
-				code: DIAGNOSTIC_CODE_COMPILE_ERROR,
-			});
+			// The file has no generated code for TypeScript to check, so the error
+			// goes to TypeScript whatever its code.
+			return failure(
+				state,
+				file_name,
+				content,
+				to_diagnostic(result.fatalError, content.length, MAPPER_CODES.COMPILE_ERROR),
+			);
 		}
 		if (result.sourceAst) {
 			state.lastGood.set(file_name, result.sourceAst);
@@ -191,9 +187,12 @@ export function create_tsrx_content_mapper(context = {}) {
 		const mappings = to_span_mappings(result.mappings, result.text, content, {
 			languageFeatures: language_features,
 		});
-		const diagnostics = result.errors.map((error) =>
-			to_diagnostic(error, content.length, DIAGNOSTIC_CODE_USAGE_ERROR),
-		);
+		// An error with a TypeScript code is a mistake TypeScript reports itself
+		// from the generated code, with its own message and quick fixes, so only
+		// the others go to TypeScript.
+		const diagnostics = result.errors
+			.filter((error) => !TYPESCRIPT_CODE.test(error.code ?? ''))
+			.map((error) => to_diagnostic(error, content.length, MAPPER_CODES.USAGE_ERROR));
 		return {
 			text: result.text,
 			extension: '.tsx',
@@ -338,7 +337,7 @@ export function validate_options(raw) {
 		optionDiagnostics.push({
 			path: [],
 			messageText: 'Content mapper options must be an object.',
-			code: DIAGNOSTIC_CODE_INVALID_CONFIG,
+			code: MAPPER_CODES.INVALID_CONFIG,
 		});
 		return { options, optionDiagnostics };
 	}
@@ -353,7 +352,7 @@ export function validate_options(raw) {
 					optionDiagnostics.push({
 						path: [key],
 						messageText: '"compiler" must be a bare package specifier such as "@tsrx/react".',
-						code: DIAGNOSTIC_CODE_INVALID_CONFIG,
+						code: MAPPER_CODES.INVALID_CONFIG,
 					});
 				}
 				break;
@@ -364,7 +363,7 @@ export function validate_options(raw) {
 					optionDiagnostics.push({
 						path: [key],
 						messageText: '"platform" must be "web", "ios", or "android".',
-						code: DIAGNOSTIC_CODE_INVALID_CONFIG,
+						code: MAPPER_CODES.INVALID_CONFIG,
 					});
 				}
 				break;
@@ -375,7 +374,7 @@ export function validate_options(raw) {
 					optionDiagnostics.push({
 						path: [key],
 						messageText: '"languageFeatures" must be a boolean.',
-						code: DIAGNOSTIC_CODE_INVALID_CONFIG,
+						code: MAPPER_CODES.INVALID_CONFIG,
 					});
 				}
 				break;
@@ -383,17 +382,23 @@ export function validate_options(raw) {
 				optionDiagnostics.push({
 					path: [key],
 					messageText: `Unknown content mapper option "${key}".`,
-					code: DIAGNOSTIC_CODE_INVALID_CONFIG,
+					code: MAPPER_CODES.INVALID_CONFIG,
 				});
 		}
 	}
 	return { options, optionDiagnostics };
 }
 
+const TSRX_CODE = /^TSRX(\d+)$/;
+const TYPESCRIPT_CODE = /^TS(\d+)$/;
+
 /**
  * Translate a compiler `CompileError` into a mapper diagnostic in original
- * offsets. Coded errors keep their string code in the message and derive a
- * stable numeric code from it; uncoded ones use `fallback_code`.
+ * offsets. TypeScript shows the mapper's diagnostics as `tsrx<number>`, so a
+ * TSRX code goes as its number (`TSRX2002` → `2002`) and a TypeScript code as
+ * `TYPESCRIPT_CODE_PREFIX` then its number (`TS1005` → `111005`), which keeps
+ * the code in the message too. An error without either uses `fallback_code`
+ * and keeps any other code in the message.
  * @param {CompileError} error
  * @param {number} content_length
  * @param {number} fallback_code
@@ -402,35 +407,23 @@ export function validate_options(raw) {
 export function to_diagnostic(error, content_length, fallback_code) {
 	const start = typeof error.pos === 'number' ? error.pos : 0;
 	const end = typeof error.end === 'number' && error.end > start ? error.end : start + 1;
-	const code =
-		typeof error.code === 'string' && error.code ? numeric_code(error.code) : fallback_code;
+	const code = typeof error.code === 'string' ? error.code : '';
+	const tsrx = TSRX_CODE.exec(code);
+	const typescript = TYPESCRIPT_CODE.exec(code);
 	const message = String(error.message ?? error);
 	return clamp_diagnostic(
 		{
 			start,
 			length: end - start,
-			code,
-			messageText:
-				typeof error.code === 'string' && error.code ? `${message} [${error.code}]` : message,
+			code: tsrx
+				? Number(tsrx[1])
+				: typescript
+					? Number(`${TYPESCRIPT_CODE_PREFIX}${typescript[1]}`)
+					: fallback_code,
+			messageText: code && !tsrx ? `${message} [${code}]` : message,
 		},
 		content_length,
 	);
-}
-
-/**
- * Stable numeric code for a TSRX string diagnostic code (FNV-1a 32-bit,
- * folded into the 10000..99999 range so it never collides with the fixed
- * codes below 10000).
- * @param {string} code
- * @returns {number}
- */
-export function numeric_code(code) {
-	let hash = 0x811c9dc5;
-	for (let index = 0; index < code.length; index++) {
-		hash ^= code.charCodeAt(index);
-		hash = Math.imul(hash, 0x01000193);
-	}
-	return 10000 + ((hash >>> 0) % 90000);
 }
 
 /**

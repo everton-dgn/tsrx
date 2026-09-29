@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TYPESCRIPT_CODE_PREFIX } from '@tsrx/core/diagnostics';
 
 export const consumer_fixture_dir = fileURLToPath(new URL('./fixtures/consumer/', import.meta.url));
 
@@ -17,6 +18,16 @@ export const consumer_fixture_dir = fileURLToPath(new URL('./fixtures/consumer/'
  */
 
 /**
+ * The number TypeScript shows for a mapper diagnostic with a TypeScript code:
+ * `TYPESCRIPT_CODE_PREFIX` then the code's number (`TS1012` → `111012`).
+ * @param {string} code
+ * @returns {number}
+ */
+export function typescript_mapper_code(code) {
+	return Number(`${TYPESCRIPT_CODE_PREFIX}${code.slice('TS'.length)}`);
+}
+
+/**
  * The parity reference shared by the classic (`tsrx-tsc`) and native
  * (`tsc --runExternalCode`) checks of the consumer fixture.
  * @returns {{ exitCode: number, diagnostics: ExpectedDiagnostic[] }}
@@ -29,7 +40,7 @@ export function read_expected_diagnostics() {
 
 /**
  * Parse `tsc --pretty false` output into comparable records. Codes are
- * `TS2322` for TypeScript's own diagnostics and `tsrx1000` (diagnostic source
+ * `TS2322` for TypeScript's own diagnostics and `tsrx2002` (diagnostic source
  * plus numeric code) for mapper-authored ones. Continuation lines (indented
  * message detail) are folded into the preceding diagnostic.
  * @param {string} output

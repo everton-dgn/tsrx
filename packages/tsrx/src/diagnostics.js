@@ -122,6 +122,34 @@ export const DIAGNOSTIC_CODES = {
 };
 
 /**
+ * TypeScript 7's content-mapper protocol takes a number as an error's code, and
+ * shows every error `@tsrx/content-mapper` reports as `tsrx<number>`. Each kind
+ * of code gets its own numbers:
+ *
+ * - a TSRX code, its number: `TSRX2002` → `2002`
+ * - a TypeScript code, `TYPESCRIPT_CODE_PREFIX` then its number: `TS1005` → `111005`
+ * - the mapper's own errors, `MAPPER_CODE_PREFIX` then theirs ({@link MAPPER_CODES})
+ */
+export const TYPESCRIPT_CODE_PREFIX = '11';
+/** See {@link TYPESCRIPT_CODE_PREFIX}. */
+export const MAPPER_CODE_PREFIX = '77';
+
+/** @param {number} number */
+const mapper_code = (number) => Number(`${MAPPER_CODE_PREFIX}${number}`);
+
+/** The errors `@tsrx/content-mapper` reports itself. */
+export const MAPPER_CODES = {
+	/** A file that doesn't compile, with an error that has no code. */
+	COMPILE_ERROR: mapper_code(1000),
+	/** An error without a TSRX or TypeScript code. */
+	USAGE_ERROR: mapper_code(1001),
+	/** No TSRX compiler found for a file. */
+	NO_COMPILER: mapper_code(1002),
+	/** The project's TSRX configuration is invalid. */
+	INVALID_CONFIG: mapper_code(1003),
+};
+
+/**
  * An error TSRX reports: its code, TSRX's own or TypeScript's for a mistake
  * TypeScript also reports, and its message.
  * @typedef {{ code: string, message: string }} Diagnostic
