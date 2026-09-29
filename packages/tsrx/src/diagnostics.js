@@ -139,6 +139,7 @@ export const DIAGNOSTIC_CODES = {
  * @param {(...values: string[]) => string} message
  * @returns {DiagnosticWithValues}
  */
+/* @__NO_SIDE_EFFECTS__ */
 function with_values(code, message) {
 	return Object.assign(
 		(/** @type {string[]} */ ...values) => ({ code, message: message(...values) }),
@@ -1301,7 +1302,7 @@ function message_pattern(entry) {
  * error it is: the entry, or the {@link UpstreamError}.
  * @type {Array<{ pattern: RegExp, error: UpstreamError | Diagnostic | DiagnosticWithValues }>}
  */
-const UPSTREAM_LOOKUP = UPSTREAM_LOOKUP_ROWS.map((row) => {
+const UPSTREAM_LOOKUP = /* @__PURE__ */ UPSTREAM_LOOKUP_ROWS.map((row) => {
 	if (Array.isArray(row)) return { pattern: row[0], error: { pattern: row[0], code: row[1] } };
 	if ('pattern' in row) return { pattern: row.pattern, error: row };
 	return { pattern: message_pattern(row), error: row };

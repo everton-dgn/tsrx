@@ -74,6 +74,7 @@
       "default": "./src/runtime/iterable.js"
     },
     "./test-harness/source-mappings": "./tests/shared/source-mappings.js",
+    "./test-harness/typescript-error-examples": "./tests/shared/typescript-error-examples.js",
     "./test-harness/compile": "./tests/shared/compile.js",
     "./test-harness/css-references": "./tests/shared/css-references.js",
     "./test-harness/dep-scan": "./tests/shared/dep-scan.js",
