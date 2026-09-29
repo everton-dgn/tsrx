@@ -2,8 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-// Core's error tables only, not the whole compiler; this file imports nothing.
-import { TS_ERRORS, TSRX_ERRORS } from '../../tsrx/src/diagnostics.js';
+import { TS_ERRORS, TSRX_ERRORS } from '@tsrx/core/diagnostics';
 import {
 	CompileErrorDedupe,
 	MAPPER_DIAGNOSTIC_SOURCE,

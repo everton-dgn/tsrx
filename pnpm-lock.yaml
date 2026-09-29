@@ -1267,6 +1267,9 @@ importers:
         specifier: catalog:default
         version: 3.1.0
     devDependencies:
+      '@tsrx/core':
+        specifier: workspace:*
+        version: link:../tsrx
       '@types/adm-zip':
         specifier: catalog:default
         version: 0.5.8

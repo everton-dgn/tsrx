@@ -16,7 +16,7 @@ import {
 	SpanMapKind,
 } from '../src/protocol.js';
 import { blank_script_bodies } from '@tsrx/typescript-plugin/src/transform.js';
-import { TS_ERRORS, TSRX_ERRORS } from '@tsrx/core';
+import { TS_ERRORS, TSRX_ERRORS } from '@tsrx/core/diagnostics';
 import { fileURLToPath } from 'node:url';
 import {
 	consumer_fixture_dir,

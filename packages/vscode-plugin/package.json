@@ -61,6 +61,7 @@
     "@types/vscode": "catalog:default"
   },
   "devDependencies": {
+    "@tsrx/core": "workspace:*",
     "tsdown": "catalog:default",
     "@vscode/vsce": "catalog:default",
     "adm-zip": "catalog:default",
