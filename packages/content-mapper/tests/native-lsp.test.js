@@ -301,11 +301,11 @@ describe('native language server on a configured project', () => {
 	});
 
 	it('reports a compile error at the authored construct and keeps importers resolving', async () => {
-		const broken = files['Button.tsrx'].replace('<button type="button"', '<button type="button"><');
+		const broken = files['Button.tsrx'].replace('<button type="button"', '<button type="button" +');
 		client.change('Button.tsrx', broken);
 		const diagnostics = await client.diagnostics('Button.tsrx');
 		expect(diagnostics.map((d) => [d.source, d.code, range_text(broken, d.range)])).toEqual([
-			['tsrx', 1000, '>'],
+			['tsrx', 1000, '+'],
 		]);
 		expect(diagnostics[0].message).toContain('Unexpected token');
 		// The export stub keeps `main.ts` at its one real error while Button.tsrx is broken.

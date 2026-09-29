@@ -72,12 +72,12 @@ describe('to_diagnostic', () => {
 		const error = /** @type {any} */ (new Error('Unclosed tag'));
 		error.pos = 10;
 		error.end = 14;
-		error.code = 'tsrx-unclosed-tag';
+		error.code = 'TSRX1001';
 		expect(to_diagnostic(error, 100, DIAGNOSTIC_CODE_USAGE_ERROR)).toEqual({
 			start: 10,
 			length: 4,
-			code: numeric_code('tsrx-unclosed-tag'),
-			messageText: 'Unclosed tag [tsrx-unclosed-tag]',
+			code: numeric_code('TSRX1001'),
+			messageText: 'Unclosed tag [TSRX1001]',
 		});
 		const uncoded = /** @type {any} */ (new Error('Unexpected token'));
 		uncoded.pos = 12;
@@ -90,8 +90,8 @@ describe('to_diagnostic', () => {
 	});
 
 	it('produces stable codes in the 10000..99999 range', () => {
-		expect(numeric_code('tsrx-unclosed-tag')).toBe(numeric_code('tsrx-unclosed-tag'));
-		expect(numeric_code('tsrx-unclosed-tag')).not.toBe(numeric_code('tsrx-jsx-expression-value'));
+		expect(numeric_code('TSRX1001')).toBe(numeric_code('TSRX1001'));
+		expect(numeric_code('TSRX1001')).not.toBe(numeric_code('TSRX1007'));
 		expect(numeric_code('x')).toBeGreaterThanOrEqual(10000);
 		expect(numeric_code('x')).toBeLessThan(100000);
 	});

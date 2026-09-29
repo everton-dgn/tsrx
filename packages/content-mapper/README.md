@@ -107,11 +107,11 @@ One precedence rule, highest first:
   declarations of a `<script type="module">` body are hoisted to module level in
   front of the block, where TypeScript resolves them like any other import.
 - TSRX compile errors as mapper diagnostics in the original file, printed as
-  `error tsrx<code>`. Code `1000` is a fatal compile error, `1001` a usage error
-  without a string code, `1002` no compiler found, `1003` invalid configuration;
-  string-coded diagnostics such as `tsrx-unclosed-tag` get a stable numeric code
-  in the `10000` to `99999` range and keep the string code in brackets in the
-  message.
+  `error tsrx<code>`. Code `1000` is a fatal compile error, whatever its own code,
+  `1001` a usage error without a string code, `1002` no compiler found, `1003`
+  invalid configuration. A usage error with a string code, such as `TSRX1001` or
+  `TS1186`, gets a stable numeric code in the `10000` to `99999` range. Every
+  coded error keeps its string code in brackets in the message.
 - While a file cannot be compiled, a stub that re-declares its exports as `any`
   (values and types), so importers keep resolving and the author sees exactly one
   error at the failing construct. `<style>` bodies are never TypeScript's concern

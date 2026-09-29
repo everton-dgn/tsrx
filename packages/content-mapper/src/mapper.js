@@ -175,12 +175,13 @@ export function create_tsrx_content_mapper(context = {}) {
 
 		const result = transform_tsrx(compiler, file_name, content, { platform });
 		if (result.fatalError) {
-			return failure(
-				state,
-				file_name,
-				content,
-				to_diagnostic(result.fatalError, content.length, DIAGNOSTIC_CODE_COMPILE_ERROR),
-			);
+			// The file could not be transformed, whatever the mistake, so a fatal
+			// error is always `DIAGNOSTIC_CODE_COMPILE_ERROR`; its own code, which
+			// every TSRX error has, stays in the message.
+			return failure(state, file_name, content, {
+				...to_diagnostic(result.fatalError, content.length, DIAGNOSTIC_CODE_COMPILE_ERROR),
+				code: DIAGNOSTIC_CODE_COMPILE_ERROR,
+			});
 		}
 		if (result.sourceAst) {
 			state.lastGood.set(file_name, result.sourceAst);
