@@ -16,6 +16,7 @@ import {
 	SpanMapKind,
 } from '../src/protocol.js';
 import { blank_script_bodies } from '@tsrx/typescript-plugin/src/transform.js';
+import { TS_ERRORS, TSRX_ERRORS } from '@tsrx/core';
 import { fileURLToPath } from 'node:url';
 import {
 	consumer_fixture_dir,
@@ -69,29 +70,34 @@ describe('validate_options', () => {
 
 describe('to_diagnostic', () => {
 	it('keeps positions, clamps to the content and derives numeric codes', () => {
-		const error = /** @type {any} */ (new Error('Unclosed tag'));
+		const unclosed = TSRX_ERRORS.UNCLOSED_TAG('div');
+		const error = /** @type {any} */ (new Error(unclosed.message));
 		error.pos = 10;
 		error.end = 14;
-		error.code = 'TSRX1001';
+		error.code = unclosed.code;
 		expect(to_diagnostic(error, 100, DIAGNOSTIC_CODE_USAGE_ERROR)).toEqual({
 			start: 10,
 			length: 4,
-			code: numeric_code('TSRX1001'),
-			messageText: 'Unclosed tag [TSRX1001]',
+			code: numeric_code(unclosed.code),
+			messageText: `${unclosed.message} [${unclosed.code}]`,
 		});
-		const uncoded = /** @type {any} */ (new Error('Unexpected token'));
+		// An error without a code, as a compiler outside this repository may throw.
+		const uncoded = /** @type {any} */ (new Error(TS_ERRORS.UNEXPECTED_TOKEN.message));
 		uncoded.pos = 12;
 		expect(to_diagnostic(uncoded, 12, DIAGNOSTIC_CODE_COMPILE_ERROR)).toEqual({
 			start: 12,
 			length: 0,
 			code: DIAGNOSTIC_CODE_COMPILE_ERROR,
-			messageText: 'Unexpected token',
+			messageText: TS_ERRORS.UNEXPECTED_TOKEN.message,
 		});
 	});
 
 	it('produces stable codes in the 10000..99999 range', () => {
-		expect(numeric_code('TSRX1001')).toBe(numeric_code('TSRX1001'));
-		expect(numeric_code('TSRX1001')).not.toBe(numeric_code('TSRX1007'));
+		const { code } = TSRX_ERRORS.UNCLOSED_TAG;
+		expect(numeric_code(code)).toBe(numeric_code(code));
+		expect(numeric_code(code)).not.toBe(
+			numeric_code(TSRX_ERRORS.TEMPLATE_EXPRESSION_TRAILING_SEMICOLON.code),
+		);
 		expect(numeric_code('x')).toBeGreaterThanOrEqual(10000);
 		expect(numeric_code('x')).toBeLessThan(100000);
 	});
