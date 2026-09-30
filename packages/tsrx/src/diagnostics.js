@@ -202,7 +202,7 @@ function with_values(code, message) {
  * @returns {string}
  */
 function tsrx_code(key) {
-	if (!Object.hasOwn(DIAGNOSTIC_CODES, key)) {
+	if (!(key in DIAGNOSTIC_CODES)) {
 		throw new Error(`DIAGNOSTIC_CODES has no ${key}`);
 	}
 	return DIAGNOSTIC_CODES[key];
