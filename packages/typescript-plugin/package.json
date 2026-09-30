@@ -35,7 +35,8 @@
     "@tsrx/core": "workspace:*",
     "@types/estree": "catalog:default",
     "@types/node": "catalog:default",
-    "tsdown": "catalog:default"
+    "tsdown": "catalog:default",
+    "typescript": "catalog:default"
   },
   "peerDependencies": {
     "typescript": "catalog:peer",

@@ -136,10 +136,10 @@ long as TypeScript 5.9 and 6 are supported.
    pnpm add -D typescript@next @tsrx/content-mapper
    ```
 
-   Use the exact nightly recorded in this repository's root `package.json`
-   (`@typescript/typescript-<os>-<arch>` under `optionalDependencies`) if you need
-   the tested build; the `README.md` "Native TypeScript binary" section explains
-   the launcher and platform packages. The mapper needs no other TypeScript.
+   Use the exact nightly this repository runs (`ts_native` in
+   `pnpm-workspace.yaml`) if you need the tested build; the `README.md` "Native
+   TypeScript binary" section explains the launcher and platform packages. The
+   mapper needs no other TypeScript.
 
 2. Declare the mapper in every `tsconfig.json` that contains `.tsrx` files.
    TypeScript 5 ignores the key, so the same file keeps working with `tsrx-tsc`:

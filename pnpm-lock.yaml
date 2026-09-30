@@ -201,19 +201,22 @@ catalogs:
     zod:
       specifier: ^4.3.6
       version: 4.3.6
+  native:
+    typescript:
+      specifier: 7.1.0-dev.20260930.4
+      version: 7.1.0-dev.20260930.4
   peer:
     eslint:
       specifier: '>=9.0.0'
       version: 10.3.0
-    typescript:
-      specifier: ^5.9.3 || ^6.0.0
-      version: 5.9.3
 
 overrides:
   esrap: ^2.3.2
   semver: ^7.7.4
   babel-preset-solid: 2.0.0-rc.2
   babel-plugin-jsx-dom-expressions: 0.50.0-next.14
+
+packageExtensionsChecksum: sha256-qCB7e8vZElXq981YATPkxRTk4R5pjIQM090RjT1N7K4=
 
 importers:
 
@@ -239,7 +242,7 @@ importers:
         version: link:packages/tsrx-react
       '@tsrx/ripple':
         specifier: catalog:default
-        version: 0.2.0(@typescript-eslint/types@8.56.1)(typescript@5.9.3)
+        version: 0.2.0(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))(typescript@7.1.0-dev.20260930.4)
       '@tsrx/solid':
         specifier: workspace:*
         version: link:packages/tsrx-solid
@@ -263,7 +266,7 @@ importers:
         version: 3.9.9
       rulesync:
         specifier: catalog:default
-        version: 8.17.0(supports-color@7.2.0)(valibot@1.4.2(typescript@5.9.3))
+        version: 8.17.0(supports-color@7.2.0)(valibot@1.4.2(typescript@7.1.0-dev.20260930.4))
       solid-js:
         specifier: catalog:default
         version: 2.0.0-rc.3
@@ -274,8 +277,8 @@ importers:
         specifier: catalog:default
         version: 5.6.0
       typescript:
-        specifier: catalog:default
-        version: 5.9.3
+        specifier: catalog:native
+        version: 7.1.0-dev.20260930.4
       vite-plugin-solid:
         specifier: 3.0.0-next.5
         version: 3.0.0-next.5(@solidjs/web@2.0.0-rc.3(solid-js@2.0.0-rc.3))(solid-js@2.0.0-rc.3)(supports-color@7.2.0)(vite@8.1.5(@types/node@24.11.0)(esbuild@0.27.3)(jiti@2.6.1)(yaml@2.9.1))
@@ -285,28 +288,6 @@ importers:
       wait-on:
         specifier: catalog:default
         version: 9.0.10(debug@4.4.3(supports-color@7.2.0))
-    optionalDependencies:
-      '@typescript/typescript-darwin-arm64':
-        specifier: 7.1.0-dev.20260918.1
-        version: 7.1.0-dev.20260918.1
-      '@typescript/typescript-darwin-x64':
-        specifier: 7.1.0-dev.20260918.1
-        version: 7.1.0-dev.20260918.1
-      '@typescript/typescript-linux-arm':
-        specifier: 7.1.0-dev.20260918.1
-        version: 7.1.0-dev.20260918.1
-      '@typescript/typescript-linux-arm64':
-        specifier: 7.1.0-dev.20260918.1
-        version: 7.1.0-dev.20260918.1
-      '@typescript/typescript-linux-x64':
-        specifier: 7.1.0-dev.20260918.1
-        version: 7.1.0-dev.20260918.1
-      '@typescript/typescript-win32-arm64':
-        specifier: 7.1.0-dev.20260918.1
-        version: 7.1.0-dev.20260918.1
-      '@typescript/typescript-win32-x64':
-        specifier: 7.1.0-dev.20260918.1
-        version: 7.1.0-dev.20260918.1
 
   grammars/tree-sitter:
     dependencies:
@@ -475,7 +456,7 @@ importers:
         version: link:../tsrx-react
       '@tsrx/ripple':
         specifier: catalog:default
-        version: 0.2.0(@typescript-eslint/types@8.56.1)(typescript@5.9.3)
+        version: 0.2.0(@typescript-eslint/types@8.56.1(typescript@5.9.3))(typescript@5.9.3)
       '@tsrx/solid':
         specifier: workspace:*
         version: link:../tsrx-solid
@@ -502,13 +483,13 @@ importers:
         version: 19.2.4
       ripple:
         specifier: catalog:default
-        version: 0.4.0(@typescript-eslint/types@8.56.1)(typescript@5.9.3)
+        version: 0.4.0(@typescript-eslint/types@8.56.1(typescript@5.9.3))(typescript@5.9.3)
       solid-js:
         specifier: catalog:default
         version: 2.0.0-rc.3
       tsdown:
         specifier: catalog:default
-        version: 0.23.0(@volar/typescript@2.4.28)(typescript@5.9.3)
+        version: 0.23.0(@volar/typescript@2.4.28(typescript@5.9.3))(typescript@5.9.3)
       typescript:
         specifier: catalog:default
         version: 5.9.3
@@ -536,7 +517,7 @@ importers:
         version: 24.11.0
       tsdown:
         specifier: catalog:default
-        version: 0.23.0(@volar/typescript@2.4.28)(typescript@5.9.3)
+        version: 0.23.0(@volar/typescript@2.4.28(typescript@5.9.3))(typescript@5.9.3)
       typescript:
         specifier: catalog:default
         version: 5.9.3
@@ -563,7 +544,7 @@ importers:
         version: 10.3.0(jiti@2.6.1)(supports-color@7.2.0)
       tsdown:
         specifier: catalog:default
-        version: 0.23.0(@volar/typescript@2.4.28)(typescript@5.9.3)
+        version: 0.23.0(@volar/typescript@2.4.28(typescript@5.9.3))(typescript@5.9.3)
       typescript:
         specifier: catalog:default
         version: 5.9.3
@@ -583,19 +564,16 @@ importers:
         version: link:../typescript-plugin
       '@volar/language-server':
         specifier: catalog:default
-        version: 2.4.28
+        version: 2.4.28(typescript@5.9.3)
       jsonc-parser:
         specifier: catalog:default
         version: 3.3.1
-      typescript:
-        specifier: catalog:peer
-        version: 5.9.3
       volar-service-css:
         specifier: catalog:default
-        version: 0.0.70(@volar/language-service@2.4.28)
+        version: 0.0.70(@volar/language-service@2.4.28(typescript@5.9.3))
       volar-service-typescript:
         specifier: catalog:default
-        version: 0.0.70(@volar/language-service@2.4.28)
+        version: 0.0.70(@volar/language-service@2.4.28(typescript@5.9.3))(typescript@5.9.3)
       vscode-languageserver-textdocument:
         specifier: catalog:default
         version: 1.0.12
@@ -611,10 +589,13 @@ importers:
         version: 2.4.28
       '@volar/language-service':
         specifier: catalog:default
-        version: 2.4.28
+        version: 2.4.28(typescript@5.9.3)
       tsdown:
         specifier: catalog:default
-        version: 0.23.0(@volar/typescript@2.4.28)(typescript@5.9.3)
+        version: 0.23.0(@volar/typescript@2.4.28(typescript@5.9.3))(typescript@5.9.3)
+      typescript:
+        specifier: catalog:default
+        version: 5.9.3
 
   packages/nvim-plugin: {}
 
@@ -783,7 +764,7 @@ importers:
         version: 8.18.0
       esrap:
         specifier: ^2.3.2
-        version: 2.3.2(@typescript-eslint/types@8.56.1)
+        version: 2.3.2(@typescript-eslint/types@8.56.1(typescript@5.9.3))
       get-tsconfig:
         specifier: catalog:default
         version: 5.0.0-beta.6
@@ -799,7 +780,7 @@ importers:
         version: 24.11.0
       '@typescript-eslint/types':
         specifier: catalog:default
-        version: 8.56.1
+        version: 8.56.1(typescript@5.9.3)
       '@volar/language-core':
         specifier: catalog:default
         version: 2.4.28
@@ -876,7 +857,7 @@ importers:
         version: link:../tsrx-preact-runtime
       esrap:
         specifier: ^2.3.2
-        version: 2.3.2(@typescript-eslint/types@8.56.1)
+        version: 2.3.2(@typescript-eslint/types@8.56.1(typescript@5.9.3))
       zimmerframe:
         specifier: catalog:default
         version: 1.1.4
@@ -913,7 +894,7 @@ importers:
         version: link:../tsrx-react-runtime
       esrap:
         specifier: ^2.3.2
-        version: 2.3.2(@typescript-eslint/types@8.56.1)
+        version: 2.3.2(@typescript-eslint/types@8.56.1(typescript@5.9.3))
       react:
         specifier: '>=18'
         version: 19.2.4
@@ -962,7 +943,7 @@ importers:
         version: link:../tsrx-solid-runtime
       esrap:
         specifier: ^2.3.2
-        version: 2.3.2(@typescript-eslint/types@8.56.1)
+        version: 2.3.2(@typescript-eslint/types@8.56.1(typescript@5.9.3))
       solid-js:
         specifier: catalog:default
         version: 2.0.0-rc.3
@@ -1002,7 +983,7 @@ importers:
         version: link:../tsrx-vue-runtime
       esrap:
         specifier: ^2.3.2
-        version: 2.3.2(@typescript-eslint/types@8.56.1)
+        version: 2.3.2(@typescript-eslint/types@8.56.1(typescript@5.9.3))
       is-reference:
         specifier: catalog:default
         version: 3.0.3
@@ -1067,7 +1048,7 @@ importers:
         version: link:../tsrx-react
       '@tsrx/ripple':
         specifier: catalog:default
-        version: 0.2.0(@typescript-eslint/types@8.56.1)(typescript@5.9.3)
+        version: 0.2.0(@typescript-eslint/types@8.56.1(typescript@5.9.3))(typescript@5.9.3)
       '@tsrx/solid':
         specifier: workspace:*
         version: link:../tsrx-solid
@@ -1079,19 +1060,16 @@ importers:
         version: 2.4.28
       '@volar/typescript':
         specifier: catalog:default
-        version: 2.4.28
+        version: 2.4.28(typescript@5.9.3)
       jsonc-parser:
         specifier: catalog:default
         version: 3.3.1
       octane:
         specifier: '*'
-        version: 0.1.6(@typescript-eslint/types@8.56.1)
+        version: 0.1.6(@typescript-eslint/types@8.56.1(typescript@5.9.3))
       resolve-pkg-maps:
         specifier: catalog:default
         version: 1.0.0
-      typescript:
-        specifier: catalog:peer
-        version: 5.9.3
     devDependencies:
       '@tsrx/core':
         specifier: workspace:*
@@ -1104,7 +1082,10 @@ importers:
         version: 24.11.0
       tsdown:
         specifier: catalog:default
-        version: 0.23.0(@volar/typescript@2.4.28)(typescript@5.9.3)
+        version: 0.23.0(@volar/typescript@2.4.28(typescript@5.9.3))(typescript@5.9.3)
+      typescript:
+        specifier: catalog:default
+        version: 5.9.3
 
   packages/vite-plugin-hono:
     dependencies:
@@ -1247,10 +1228,10 @@ importers:
         version: 2.4.28
       '@volar/language-server':
         specifier: catalog:default
-        version: 2.4.28
+        version: 2.4.28(typescript@5.9.3)
       '@volar/typescript':
         specifier: catalog:default
-        version: 2.4.28
+        version: 2.4.28(typescript@5.9.3)
       '@volar/vscode':
         specifier: catalog:default
         version: 2.4.28
@@ -1259,7 +1240,7 @@ importers:
         version: 3.3.1
       volar-service-typescript:
         specifier: catalog:default
-        version: 0.0.70(@volar/language-service@2.4.28)
+        version: 0.0.70(@volar/language-service@2.4.28(typescript@5.9.3))(typescript@5.9.3)
       vscode-languageclient:
         specifier: catalog:default
         version: 9.0.1
@@ -1287,7 +1268,7 @@ importers:
         version: 4.0.1
       tsdown:
         specifier: catalog:default
-        version: 0.23.0(@volar/typescript@2.4.28)(typescript@5.9.3)
+        version: 0.23.0(@volar/typescript@2.4.28(typescript@5.9.3))(typescript@5.9.3)
 
   packages/zed-plugin: {}
 
@@ -1422,7 +1403,7 @@ importers:
         version: link:../packages/tsrx-react
       '@tsrx/ripple':
         specifier: catalog:default
-        version: 0.2.0(@typescript-eslint/types@8.56.1)(typescript@5.9.3)
+        version: 0.2.0(@typescript-eslint/types@8.56.1(typescript@5.9.3))(typescript@5.9.3)
       '@tsrx/solid':
         specifier: workspace:*
         version: link:../packages/tsrx-solid
@@ -1461,7 +1442,7 @@ importers:
         version: link:../packages/tsrx-react
       '@tsrx/ripple':
         specifier: catalog:default
-        version: 0.2.0(@typescript-eslint/types@8.56.1)(typescript@5.9.3)
+        version: 0.2.0(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))(typescript@7.1.0-dev.20260930.4)
       '@tsrx/solid':
         specifier: workspace:*
         version: link:../packages/tsrx-solid
@@ -1470,7 +1451,7 @@ importers:
         version: link:../packages/tsrx-vue
       octane:
         specifier: ^0.1.6
-        version: 0.1.6(@typescript-eslint/types@8.56.1)
+        version: 0.1.6(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))
       prettier:
         specifier: 'catalog:'
         version: 3.9.9
@@ -1479,11 +1460,11 @@ importers:
         version: 4.0.1
       vue:
         specifier: 3.6.0-beta.12
-        version: 3.6.0-beta.12(typescript@5.9.3)
+        version: 3.6.0-beta.12(typescript@7.1.0-dev.20260930.4)
     devDependencies:
       '@ripple-ts/vite-plugin':
         specifier: catalog:default
-        version: 0.4.0(@typescript-eslint/types@8.56.1)(typescript@5.9.3)
+        version: 0.4.0(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))(typescript@7.1.0-dev.20260930.4)(vite@8.1.5(@types/node@24.11.0)(esbuild@0.27.3)(jiti@2.6.1)(yaml@2.9.1))
       '@tsrx/typescript-plugin':
         specifier: workspace:*
         version: link:../packages/typescript-plugin
@@ -1492,10 +1473,10 @@ importers:
         version: 24.11.0
       ripple:
         specifier: catalog:default
-        version: 0.4.0(@typescript-eslint/types@8.56.1)(typescript@5.9.3)
+        version: 0.4.0(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))(typescript@7.1.0-dev.20260930.4)
       typescript:
-        specifier: catalog:default
-        version: 5.9.3
+        specifier: catalog:native
+        version: 7.1.0-dev.20260930.4
       vite:
         specifier: catalog:default
         version: 8.1.5(@types/node@24.11.0)(esbuild@0.27.3)(jiti@2.6.1)(yaml@2.9.1)
@@ -2656,6 +2637,11 @@ packages:
   '@ripple-ts/vite-plugin@0.4.0':
     resolution: {integrity: sha512-kQB7oF9bhn6dbUS95SHIyqZCHpD9Lmv0JRAJODYHRRCO15jmY3uIP8pLS+KoAixNXQtMgZ3PeWp0Crukr7Ov2A==}
     hasBin: true
+    peerDependencies:
+      vite: '*'
+    peerDependenciesMeta:
+      vite:
+        optional: true
 
   '@rolldown/binding-android-arm-eabi@1.2.9':
     resolution: {integrity: sha512-tNISae1QEf/vkb3xkRcjV5SEdzPE97We5IVaa2Z8jSszQPZ8U60B/YCYpw4QI7VidYsBtKavczXf+DyDs9WGxw==}
@@ -3196,6 +3182,11 @@ packages:
   '@typescript-eslint/types@8.56.1':
     resolution: {integrity: sha512-dbMkdIUkIkchgGDIv7KLUpa0Mda4IYjo4IAMJUZ+3xNoUXxMsk9YtKpTHSChRS85o+H9ftm51gsK1dZReY9CVw==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+    peerDependencies:
+      typescript: '*'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@typescript-eslint/typescript-estree@8.56.1':
     resolution: {integrity: sha512-qzUL1qgalIvKWAf9C1HpvBjif+Vm6rcT5wZd4VoMb9+Km3iS3Cv9DY6dMRMDtPnwRAFyAi7YXJpTIEXLvdfPxg==}
@@ -3207,44 +3198,44 @@ packages:
     resolution: {integrity: sha512-KiROIzYdEV85YygXw6BI/Dx4fnBlFQu6Mq4QE4MOH9fFnhohw6wX/OAvDY2/C+ut0I3RSPKenvZJIVYqJNkhEw==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
 
-  '@typescript/typescript-darwin-arm64@7.1.0-dev.20260918.1':
-    resolution: {integrity: sha512-i263kT2BBuTn7LC8hGNGmWXtFqON6F8H4GAXZg2b4VhotLazpJ7O7FRiv6VABk7xuNmNPtl0z3Iay4aytTq6lg==}
+  '@typescript/typescript-darwin-arm64@7.1.0-dev.20260930.4':
+    resolution: {integrity: sha512-/k0in+czN7835T9HwQ7r73/PmhkLn+5yhreiO9zPGpErXkv7P97ksHK9ImSFSAs2/gXboazzPpsOl+mk0zA1iQ==}
     engines: {node: '>=16.20.0'}
     cpu: [arm64]
     os: [darwin]
 
-  '@typescript/typescript-darwin-x64@7.1.0-dev.20260918.1':
-    resolution: {integrity: sha512-NSfGs+r/NHqOkXL3wRG+NFK3JFZOg/Vo0IRX/INjSLXPPCikCvdiCHCc3yYq++4Za8s7Lo+2OqqWWd0PF1eJMg==}
+  '@typescript/typescript-darwin-x64@7.1.0-dev.20260930.4':
+    resolution: {integrity: sha512-ITDKKWveMkFtQYPwpWqerAKmYAwh1kGIzzn2NEomufg/LBrbdo0F4LSotLmO2wq0vDQlTFZBMjikNOgQpxU09w==}
     engines: {node: '>=16.20.0'}
     cpu: [x64]
     os: [darwin]
 
-  '@typescript/typescript-linux-arm64@7.1.0-dev.20260918.1':
-    resolution: {integrity: sha512-UZcVCzoBt8iPaYsEaAVL5aeYIkRwEo95HCGWF1j4hdJk1OGSBJzwvX1WChNvXl8atFgvPMwAZ/W3ZnSYr55PaQ==}
+  '@typescript/typescript-linux-arm64@7.1.0-dev.20260930.4':
+    resolution: {integrity: sha512-3zBDMDf+XNflm7d7JlL+eCeSq8eb0TtYE5GTs7c8NkA6RxlabvUTYsfH7MEPvEpawODuU89knqE5AsOlpNQxEg==}
     engines: {node: '>=16.20.0'}
     cpu: [arm64]
     os: [linux]
 
-  '@typescript/typescript-linux-arm@7.1.0-dev.20260918.1':
-    resolution: {integrity: sha512-wRDzA3YW/vfOKzoTSayVrwu2qB6h5hzvgoEWQFIiU2/tiHFTgQAlUZZ4iiJIIlsycvi35ILGSJQ711XgAjazow==}
+  '@typescript/typescript-linux-arm@7.1.0-dev.20260930.4':
+    resolution: {integrity: sha512-0qLPMj5LqB/0dQLIdysmpF/CBoj4JWKaXrCtls7eIy3wRj+zxLJH9xw6EjIznxH3cTw0K/auVzGd11rRa09xaQ==}
     engines: {node: '>=16.20.0'}
     cpu: [arm]
     os: [linux]
 
-  '@typescript/typescript-linux-x64@7.1.0-dev.20260918.1':
-    resolution: {integrity: sha512-D1Vo4+Xk4VFHWR24Nu36nxTJgBukLfc5EpTVKKhnx5rUfOwjQT5zl0ACfQbpOs+9VSZ1F6cp2671RqeiYIiPwA==}
+  '@typescript/typescript-linux-x64@7.1.0-dev.20260930.4':
+    resolution: {integrity: sha512-nit0a2o1oZLc15Vxx01WmEwxh58mNru+fbdrl2w2ntsrs277G4E5bTVlmjusQTMQrYaoGPQ87dHP4iiGCwGR0w==}
     engines: {node: '>=16.20.0'}
     cpu: [x64]
     os: [linux]
 
-  '@typescript/typescript-win32-arm64@7.1.0-dev.20260918.1':
-    resolution: {integrity: sha512-6+sGONGu2WbIVxEzuCldSommoFKaPvXn5egIpTJ+Eg9HqqAiTDt7Y8G4RjvSwxFdbUQrCZcNQ0HJa6vobe6xAg==}
+  '@typescript/typescript-win32-arm64@7.1.0-dev.20260930.4':
+    resolution: {integrity: sha512-+82D46C7JiTuMEY9R8sbSphs68rJcMZs9QvN0yx+PwQkuFx64OfrC5mQ2XYHKBgmx2y9MYaVsb9/3eZsCOuf6A==}
     engines: {node: '>=16.20.0'}
     cpu: [arm64]
     os: [win32]
 
-  '@typescript/typescript-win32-x64@7.1.0-dev.20260918.1':
-    resolution: {integrity: sha512-JMsB5StrIAOnSVP7PFpy7r88D6MqTMOZW7oPV15dSwUxvRe+7BMtThZhECeSzHxf8OlyCMZFsIH7aKEb+WS2iw==}
+  '@typescript/typescript-win32-x64@7.1.0-dev.20260930.4':
+    resolution: {integrity: sha512-bwUDNgcarVhWX6HF5uOFtPStCfOE9tLtDMYO8auDoLMp1GYXWxlet7Lh+SN2x506wtA8170nY1+3IHZwWPwd/w==}
     engines: {node: '>=16.20.0'}
     cpu: [x64]
     os: [win32]
@@ -3296,15 +3287,30 @@ packages:
 
   '@volar/language-server@2.4.28':
     resolution: {integrity: sha512-NqcLnE5gERKuS4PUFwlhMxf6vqYo7hXtbMFbViXcbVkbZ905AIVWhnSo0ZNBC2V127H1/2zP7RvVOVnyITFfBw==}
+    peerDependencies:
+      typescript: '*'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@volar/language-service@2.4.28':
     resolution: {integrity: sha512-Rh/wYCZJrI5vCwMk9xyw/Z+MsWxlJY1rmMZPsxUoJKfzIRjS/NF1NmnuEcrMbEVGja00aVpCsInJfixQTMdvLw==}
+    peerDependencies:
+      typescript: '*'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@volar/source-map@2.4.28':
     resolution: {integrity: sha512-yX2BDBqJkRXfKw8my8VarTyjv48QwxdJtvRgUpNE5erCsgEUdI2DsLbpa+rOQVAJYshY99szEcRDmyHbF10ggQ==}
 
   '@volar/typescript@2.4.28':
     resolution: {integrity: sha512-Ja6yvWrbis2QtN4ClAKreeUZPVYMARDYZl9LMEv1iQ1QdepB6wn0jTRxA9MftYmYa4DQ4k/DaSZpFPUfxl8giw==}
+    peerDependencies:
+      typescript: '*'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@volar/vscode@2.4.28':
     resolution: {integrity: sha512-+08veB0c0l3Tp4afvVniQQSImVu4BgcojrBYYrKuR58ycch9raFfsS5NZBLFIlLes1XsggNOntyy7WpYW5AKnA==}
@@ -6075,6 +6081,11 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
+  typescript@7.1.0-dev.20260930.4:
+    resolution: {integrity: sha512-SHLXGxB3FtSbkBdHOIPJibBMRJinqsXaYHzcheJO5cKYP6x2Sdmq3c9iU8lnGwEBU7D9KEBsWZiTz7nA1DO4Kw==}
+    engines: {node: '>=16.20.0'}
+    hasBin: true
+
   uc.micro@2.1.0:
     resolution: {integrity: sha512-ARDJmphmdvUk6Glw7y9DQ2bFkKBHwQHLi2lsaH6PPmz/Ka9sFOBsBluozhDltWmnv9u/cF6Rt87znRTPV+yp/A==}
 
@@ -6326,8 +6337,11 @@ packages:
     resolution: {integrity: sha512-l46Bx4cokkUedTd74ojO5H/zqHZJ8SUuyZ0IB8JN4jfRqUM3bQFBHoOwlZCyZmOeO0A3RQNkMnFclxO4c++gsg==}
     peerDependencies:
       '@volar/language-service': ~2.4.0
+      typescript: '*'
     peerDependenciesMeta:
       '@volar/language-service':
+        optional: true
+      typescript:
         optional: true
 
   vscode-css-languageservice@6.3.10:
@@ -7718,11 +7732,13 @@ snapshots:
 
   '@ripple-ts/adapter@0.4.0': {}
 
-  '@ripple-ts/vite-plugin@0.4.0(@typescript-eslint/types@8.56.1)(typescript@5.9.3)':
+  '@ripple-ts/vite-plugin@0.4.0(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))(typescript@7.1.0-dev.20260930.4)(vite@8.1.5(@types/node@24.11.0)(esbuild@0.27.3)(jiti@2.6.1)(yaml@2.9.1))':
     dependencies:
       '@ripple-ts/adapter': 0.4.0
-      '@tsrx/core': 0.2.0(@typescript-eslint/types@8.56.1)
-      '@tsrx/ripple': 0.2.0(@typescript-eslint/types@8.56.1)(typescript@5.9.3)
+      '@tsrx/core': 0.2.0(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))
+      '@tsrx/ripple': 0.2.0(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))(typescript@7.1.0-dev.20260930.4)
+    optionalDependencies:
+      vite: 8.1.5(@types/node@24.11.0)(esbuild@0.27.3)(jiti@2.6.1)(yaml@2.9.1)
     transitivePeerDependencies:
       - '@typescript-eslint/types'
       - typescript
@@ -8075,7 +8091,7 @@ snapshots:
 
   '@toon-format/toon@2.1.0': {}
 
-  '@tsrx/core@0.1.40(@typescript-eslint/types@8.56.1)':
+  '@tsrx/core@0.1.40(@typescript-eslint/types@8.56.1(typescript@5.9.3))':
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
       '@noble/hashes': 2.2.0
@@ -8083,14 +8099,29 @@ snapshots:
       '@types/estree': 1.0.8
       '@types/estree-jsx': 1.0.5
       acorn: 8.16.0
-      esrap: 2.3.2(@typescript-eslint/types@8.56.1)
+      esrap: 2.3.2(@typescript-eslint/types@8.56.1(typescript@5.9.3))
       is-reference: 3.0.3
       magic-string: 0.30.21
       zimmerframe: 1.1.4
     transitivePeerDependencies:
       - '@typescript-eslint/types'
 
-  '@tsrx/core@0.2.0(@typescript-eslint/types@8.56.1)':
+  '@tsrx/core@0.1.40(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))':
+    dependencies:
+      '@jridgewell/sourcemap-codec': 1.5.5
+      '@noble/hashes': 2.2.0
+      '@sveltejs/acorn-typescript': 1.0.13(acorn@8.16.0)
+      '@types/estree': 1.0.8
+      '@types/estree-jsx': 1.0.5
+      acorn: 8.16.0
+      esrap: 2.3.2(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))
+      is-reference: 3.0.3
+      magic-string: 0.30.21
+      zimmerframe: 1.1.4
+    transitivePeerDependencies:
+      - '@typescript-eslint/types'
+
+  '@tsrx/core@0.2.0(@typescript-eslint/types@8.56.1(typescript@5.9.3))':
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
       '@noble/hashes': 2.2.0
@@ -8099,22 +8130,50 @@ snapshots:
       '@types/estree': 1.0.8
       '@types/estree-jsx': 1.0.5
       acorn: 8.17.0
-      esrap: 2.3.2(@typescript-eslint/types@8.56.1)
+      esrap: 2.3.2(@typescript-eslint/types@8.56.1(typescript@5.9.3))
       get-tsconfig: 5.0.0-beta.6
       magic-string: 0.30.21
       zimmerframe: 1.1.4
     transitivePeerDependencies:
       - '@typescript-eslint/types'
 
-  '@tsrx/ripple@0.2.0(@typescript-eslint/types@8.56.1)(typescript@5.9.3)':
+  '@tsrx/core@0.2.0(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))':
     dependencies:
-      '@tsrx/core': 0.2.0(@typescript-eslint/types@8.56.1)
-      esrap: 2.3.2(@typescript-eslint/types@8.56.1)
+      '@jridgewell/sourcemap-codec': 1.5.5
+      '@noble/hashes': 2.2.0
+      '@sveltejs/acorn-typescript': 1.0.13(acorn@8.17.0)
+      '@tsrx/runtime': 0.2.0
+      '@types/estree': 1.0.8
+      '@types/estree-jsx': 1.0.5
+      acorn: 8.17.0
+      esrap: 2.3.2(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))
+      get-tsconfig: 5.0.0-beta.6
+      magic-string: 0.30.21
+      zimmerframe: 1.1.4
+    transitivePeerDependencies:
+      - '@typescript-eslint/types'
+
+  '@tsrx/ripple@0.2.0(@typescript-eslint/types@8.56.1(typescript@5.9.3))(typescript@5.9.3)':
+    dependencies:
+      '@tsrx/core': 0.2.0(@typescript-eslint/types@8.56.1(typescript@5.9.3))
+      esrap: 2.3.2(@typescript-eslint/types@8.56.1(typescript@5.9.3))
       is-reference: 3.0.3
       source-map: 0.7.6
       zimmerframe: 1.1.4
     optionalDependencies:
       typescript: 5.9.3
+    transitivePeerDependencies:
+      - '@typescript-eslint/types'
+
+  '@tsrx/ripple@0.2.0(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))(typescript@7.1.0-dev.20260930.4)':
+    dependencies:
+      '@tsrx/core': 0.2.0(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))
+      esrap: 2.3.2(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))
+      is-reference: 3.0.3
+      source-map: 0.7.6
+      zimmerframe: 1.1.4
+    optionalDependencies:
+      typescript: 7.1.0-dev.20260930.4
     transitivePeerDependencies:
       - '@typescript-eslint/types'
 
@@ -8221,10 +8280,10 @@ snapshots:
 
   '@typescript-eslint/parser@8.56.1(eslint@10.3.0(jiti@2.6.1)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)':
     dependencies:
-      '@typescript-eslint/scope-manager': 8.56.1
-      '@typescript-eslint/types': 8.56.1
+      '@typescript-eslint/scope-manager': 8.56.1(typescript@5.9.3)
+      '@typescript-eslint/types': 8.56.1(typescript@5.9.3)
       '@typescript-eslint/typescript-estree': 8.56.1(supports-color@7.2.0)(typescript@5.9.3)
-      '@typescript-eslint/visitor-keys': 8.56.1
+      '@typescript-eslint/visitor-keys': 8.56.1(typescript@5.9.3)
       debug: 4.4.3(supports-color@7.2.0)
       eslint: 10.3.0(jiti@2.6.1)(supports-color@7.2.0)
       typescript: 5.9.3
@@ -8234,29 +8293,38 @@ snapshots:
   '@typescript-eslint/project-service@8.56.1(supports-color@7.2.0)(typescript@5.9.3)':
     dependencies:
       '@typescript-eslint/tsconfig-utils': 8.56.1(typescript@5.9.3)
-      '@typescript-eslint/types': 8.56.1
+      '@typescript-eslint/types': 8.56.1(typescript@5.9.3)
       debug: 4.4.3(supports-color@7.2.0)
       typescript: 5.9.3
     transitivePeerDependencies:
       - supports-color
 
-  '@typescript-eslint/scope-manager@8.56.1':
+  '@typescript-eslint/scope-manager@8.56.1(typescript@5.9.3)':
     dependencies:
-      '@typescript-eslint/types': 8.56.1
-      '@typescript-eslint/visitor-keys': 8.56.1
+      '@typescript-eslint/types': 8.56.1(typescript@5.9.3)
+      '@typescript-eslint/visitor-keys': 8.56.1(typescript@5.9.3)
+    transitivePeerDependencies:
+      - typescript
 
   '@typescript-eslint/tsconfig-utils@8.56.1(typescript@5.9.3)':
     dependencies:
       typescript: 5.9.3
 
-  '@typescript-eslint/types@8.56.1': {}
+  '@typescript-eslint/types@8.56.1(typescript@5.9.3)':
+    optionalDependencies:
+      typescript: 5.9.3
+
+  '@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4)':
+    optionalDependencies:
+      typescript: 7.1.0-dev.20260930.4
+    optional: true
 
   '@typescript-eslint/typescript-estree@8.56.1(supports-color@7.2.0)(typescript@5.9.3)':
     dependencies:
       '@typescript-eslint/project-service': 8.56.1(supports-color@7.2.0)(typescript@5.9.3)
       '@typescript-eslint/tsconfig-utils': 8.56.1(typescript@5.9.3)
-      '@typescript-eslint/types': 8.56.1
-      '@typescript-eslint/visitor-keys': 8.56.1
+      '@typescript-eslint/types': 8.56.1(typescript@5.9.3)
+      '@typescript-eslint/visitor-keys': 8.56.1(typescript@5.9.3)
       debug: 4.4.3(supports-color@7.2.0)
       minimatch: 10.2.4
       semver: 7.7.4
@@ -8266,30 +8334,32 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@typescript-eslint/visitor-keys@8.56.1':
+  '@typescript-eslint/visitor-keys@8.56.1(typescript@5.9.3)':
     dependencies:
-      '@typescript-eslint/types': 8.56.1
+      '@typescript-eslint/types': 8.56.1(typescript@5.9.3)
       eslint-visitor-keys: 5.0.1
+    transitivePeerDependencies:
+      - typescript
 
-  '@typescript/typescript-darwin-arm64@7.1.0-dev.20260918.1':
+  '@typescript/typescript-darwin-arm64@7.1.0-dev.20260930.4':
     optional: true
 
-  '@typescript/typescript-darwin-x64@7.1.0-dev.20260918.1':
+  '@typescript/typescript-darwin-x64@7.1.0-dev.20260930.4':
     optional: true
 
-  '@typescript/typescript-linux-arm64@7.1.0-dev.20260918.1':
+  '@typescript/typescript-linux-arm64@7.1.0-dev.20260930.4':
     optional: true
 
-  '@typescript/typescript-linux-arm@7.1.0-dev.20260918.1':
+  '@typescript/typescript-linux-arm@7.1.0-dev.20260930.4':
     optional: true
 
-  '@typescript/typescript-linux-x64@7.1.0-dev.20260918.1':
+  '@typescript/typescript-linux-x64@7.1.0-dev.20260930.4':
     optional: true
 
-  '@typescript/typescript-win32-arm64@7.1.0-dev.20260918.1':
+  '@typescript/typescript-win32-arm64@7.1.0-dev.20260930.4':
     optional: true
 
-  '@typescript/typescript-win32-x64@7.1.0-dev.20260918.1':
+  '@typescript/typescript-win32-x64@7.1.0-dev.20260930.4':
     optional: true
 
   '@typespec/ts-http-runtime@0.3.3(supports-color@7.2.0)':
@@ -8302,9 +8372,9 @@ snapshots:
 
   '@ungap/structured-clone@1.3.0': {}
 
-  '@valibot/to-json-schema@1.6.0(valibot@1.4.2(typescript@5.9.3))':
+  '@valibot/to-json-schema@1.6.0(valibot@1.4.2(typescript@7.1.0-dev.20260930.4))':
     dependencies:
-      valibot: 1.4.2(typescript@5.9.3)
+      valibot: 1.4.2(typescript@7.1.0-dev.20260930.4)
 
   '@vitest/expect@4.1.6':
     dependencies:
@@ -8351,32 +8421,38 @@ snapshots:
     dependencies:
       '@volar/source-map': 2.4.28
 
-  '@volar/language-server@2.4.28':
+  '@volar/language-server@2.4.28(typescript@5.9.3)':
     dependencies:
       '@volar/language-core': 2.4.28
-      '@volar/language-service': 2.4.28
-      '@volar/typescript': 2.4.28
+      '@volar/language-service': 2.4.28(typescript@5.9.3)
+      '@volar/typescript': 2.4.28(typescript@5.9.3)
       path-browserify: 1.0.1
       request-light: 0.7.0
       vscode-languageserver: 9.0.1
       vscode-languageserver-protocol: 3.17.5
       vscode-languageserver-textdocument: 1.0.12
       vscode-uri: 3.1.0
+    optionalDependencies:
+      typescript: 5.9.3
 
-  '@volar/language-service@2.4.28':
+  '@volar/language-service@2.4.28(typescript@5.9.3)':
     dependencies:
       '@volar/language-core': 2.4.28
       vscode-languageserver-protocol: 3.17.5
       vscode-languageserver-textdocument: 1.0.12
       vscode-uri: 3.1.0
+    optionalDependencies:
+      typescript: 5.9.3
 
   '@volar/source-map@2.4.28': {}
 
-  '@volar/typescript@2.4.28':
+  '@volar/typescript@2.4.28(typescript@5.9.3)':
     dependencies:
       '@volar/language-core': 2.4.28
       path-browserify: 1.0.1
       vscode-uri: 3.1.0
+    optionalDependencies:
+      typescript: 5.9.3
 
   '@volar/vscode@2.4.28':
     dependencies:
@@ -8676,6 +8752,12 @@ snapshots:
       '@vue/compiler-ssr': 3.6.0-beta.12
       '@vue/shared': 3.6.0-beta.12
       vue: 3.6.0-beta.12(typescript@5.9.3)
+
+  '@vue/server-renderer@3.6.0-beta.12(vue@3.6.0-beta.12(typescript@7.1.0-dev.20260930.4))':
+    dependencies:
+      '@vue/compiler-ssr': 3.6.0-beta.12
+      '@vue/shared': 3.6.0-beta.12
+      vue: 3.6.0-beta.12(typescript@7.1.0-dev.20260930.4)
 
   '@vue/shared@3.5.29': {}
 
@@ -9369,11 +9451,17 @@ snapshots:
     dependencies:
       estraverse: 5.3.0
 
-  esrap@2.3.2(@typescript-eslint/types@8.56.1):
+  esrap@2.3.2(@typescript-eslint/types@8.56.1(typescript@5.9.3)):
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
     optionalDependencies:
-      '@typescript-eslint/types': 8.56.1
+      '@typescript-eslint/types': 8.56.1(typescript@5.9.3)
+
+  esrap@2.3.2(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4)):
+    dependencies:
+      '@jridgewell/sourcemap-codec': 1.5.5
+    optionalDependencies:
+      '@typescript-eslint/types': 8.56.1(typescript@7.1.0-dev.20260930.4)
 
   esrecurse@4.3.0:
     dependencies:
@@ -9493,7 +9581,7 @@ snapshots:
     dependencies:
       fast-string-width: 3.0.2
 
-  fastmcp@3.34.0(@valibot/to-json-schema@1.6.0(valibot@1.4.2(typescript@5.9.3)))(effect@3.20.0)(supports-color@7.2.0)(sury@10.0.4):
+  fastmcp@3.34.0(@valibot/to-json-schema@1.6.0(valibot@1.4.2(typescript@7.1.0-dev.20260930.4)))(effect@3.20.0)(supports-color@7.2.0)(sury@10.0.4):
     dependencies:
       '@modelcontextprotocol/sdk': 1.29.0(supports-color@7.2.0)(zod@4.3.6)
       '@standard-schema/spec': 1.1.0
@@ -9505,7 +9593,7 @@ snapshots:
       strict-event-emitter-types: 2.0.0
       undici: 7.25.0
       uri-templates: 0.2.0
-      xsschema: 0.4.4(@valibot/to-json-schema@1.6.0(valibot@1.4.2(typescript@5.9.3)))(effect@3.20.0)(sury@10.0.4)(zod-to-json-schema@3.25.1(zod@4.3.6))(zod@4.3.6)
+      xsschema: 0.4.4(@valibot/to-json-schema@1.6.0(valibot@1.4.2(typescript@7.1.0-dev.20260930.4)))(effect@3.20.0)(sury@10.0.4)(zod-to-json-schema@3.25.1(zod@4.3.6))(zod@4.3.6)
       yargs: 18.0.0
       zod: 4.3.6
       zod-to-json-schema: 3.25.1(zod@4.3.6)
@@ -10383,11 +10471,19 @@ snapshots:
 
   obug@3.0.0: {}
 
-  octane@0.1.6(@typescript-eslint/types@8.56.1):
+  octane@0.1.6(@typescript-eslint/types@8.56.1(typescript@5.9.3)):
     dependencies:
-      '@tsrx/core': 0.1.40(@typescript-eslint/types@8.56.1)
+      '@tsrx/core': 0.1.40(@typescript-eslint/types@8.56.1(typescript@5.9.3))
       devalue: 5.8.1
-      esrap: 2.3.2(@typescript-eslint/types@8.56.1)
+      esrap: 2.3.2(@typescript-eslint/types@8.56.1(typescript@5.9.3))
+    transitivePeerDependencies:
+      - '@typescript-eslint/types'
+
+  octane@0.1.6(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4)):
+    dependencies:
+      '@tsrx/core': 0.1.40(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))
+      devalue: 5.8.1
+      esrap: 2.3.2(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))
     transitivePeerDependencies:
       - '@typescript-eslint/types'
 
@@ -10729,10 +10825,10 @@ snapshots:
 
   reusify@1.1.0: {}
 
-  ripple@0.4.0(@typescript-eslint/types@8.56.1)(typescript@5.9.3):
+  ripple@0.4.0(@typescript-eslint/types@8.56.1(typescript@5.9.3))(typescript@5.9.3):
     dependencies:
-      '@tsrx/core': 0.2.0(@typescript-eslint/types@8.56.1)
-      '@tsrx/ripple': 0.2.0(@typescript-eslint/types@8.56.1)(typescript@5.9.3)
+      '@tsrx/core': 0.2.0(@typescript-eslint/types@8.56.1(typescript@5.9.3))
+      '@tsrx/ripple': 0.2.0(@typescript-eslint/types@8.56.1(typescript@5.9.3))(typescript@5.9.3)
       clsx: 2.1.1
       devalue: 5.9.2
       esm-env: 1.2.2
@@ -10740,7 +10836,18 @@ snapshots:
       - '@typescript-eslint/types'
       - typescript
 
-  rolldown-plugin-dts@0.28.6(@volar/typescript@2.4.28)(rolldown@1.2.9)(typescript@5.9.3):
+  ripple@0.4.0(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))(typescript@7.1.0-dev.20260930.4):
+    dependencies:
+      '@tsrx/core': 0.2.0(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))
+      '@tsrx/ripple': 0.2.0(@typescript-eslint/types@8.56.1(typescript@7.1.0-dev.20260930.4))(typescript@7.1.0-dev.20260930.4)
+      clsx: 2.1.1
+      devalue: 5.9.2
+      esm-env: 1.2.2
+    transitivePeerDependencies:
+      - '@typescript-eslint/types'
+      - typescript
+
+  rolldown-plugin-dts@0.28.6(@volar/typescript@2.4.28(typescript@5.9.3))(rolldown@1.2.9)(typescript@5.9.3):
     dependencies:
       dts-resolver: 3.0.0
       get-tsconfig: 5.0.0-beta.6
@@ -10750,7 +10857,7 @@ snapshots:
       yuku-codegen: 0.10.2
       yuku-parser: 0.10.2
     optionalDependencies:
-      '@volar/typescript': 2.4.28
+      '@volar/typescript': 2.4.28(typescript@5.9.3)
       typescript: 5.9.3
     transitivePeerDependencies:
       - oxc-resolver
@@ -10807,17 +10914,17 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  rulesync@8.17.0(supports-color@7.2.0)(valibot@1.4.2(typescript@5.9.3)):
+  rulesync@8.17.0(supports-color@7.2.0)(valibot@1.4.2(typescript@7.1.0-dev.20260930.4)):
     dependencies:
       '@modelcontextprotocol/sdk': 1.27.1(supports-color@7.2.0)(zod@4.3.6)
       '@octokit/request-error': 7.1.0
       '@octokit/rest': 22.0.1
       '@toon-format/toon': 2.1.0
-      '@valibot/to-json-schema': 1.6.0(valibot@1.4.2(typescript@5.9.3))
+      '@valibot/to-json-schema': 1.6.0(valibot@1.4.2(typescript@7.1.0-dev.20260930.4))
       commander: 14.0.3
       effect: 3.20.0
       es-toolkit: 1.45.1
-      fastmcp: 3.34.0(@valibot/to-json-schema@1.6.0(valibot@1.4.2(typescript@5.9.3)))(effect@3.20.0)(supports-color@7.2.0)(sury@10.0.4)
+      fastmcp: 3.34.0(@valibot/to-json-schema@1.6.0(valibot@1.4.2(typescript@7.1.0-dev.20260930.4)))(effect@3.20.0)(supports-color@7.2.0)(sury@10.0.4)
       globby: 16.1.1
       gray-matter: 4.0.3
       js-yaml: 4.1.1
@@ -11235,7 +11342,7 @@ snapshots:
     dependencies:
       muggle-string: 0.4.1
 
-  tsdown@0.23.0(@volar/typescript@2.4.28)(typescript@5.9.3):
+  tsdown@0.23.0(@volar/typescript@2.4.28(typescript@5.9.3))(typescript@5.9.3):
     dependencies:
       cac: 7.0.0
       defu: 6.1.7
@@ -11245,7 +11352,7 @@ snapshots:
       obug: 2.2.1
       picomatch: 4.0.7
       rolldown: 1.2.9
-      rolldown-plugin-dts: 0.28.6(@volar/typescript@2.4.28)(rolldown@1.2.9)(typescript@5.9.3)
+      rolldown-plugin-dts: 0.28.6(@volar/typescript@2.4.28(typescript@5.9.3))(rolldown@1.2.9)(typescript@5.9.3)
       tinyexec: 1.3.1
       tinyglobby: 0.2.17
       tree-kill: 1.2.2
@@ -11298,6 +11405,16 @@ snapshots:
       semver: 7.7.4
 
   typescript@5.9.3: {}
+
+  typescript@7.1.0-dev.20260930.4:
+    optionalDependencies:
+      '@typescript/typescript-darwin-arm64': 7.1.0-dev.20260930.4
+      '@typescript/typescript-darwin-x64': 7.1.0-dev.20260930.4
+      '@typescript/typescript-linux-arm': 7.1.0-dev.20260930.4
+      '@typescript/typescript-linux-arm64': 7.1.0-dev.20260930.4
+      '@typescript/typescript-linux-x64': 7.1.0-dev.20260930.4
+      '@typescript/typescript-win32-arm64': 7.1.0-dev.20260930.4
+      '@typescript/typescript-win32-x64': 7.1.0-dev.20260930.4
 
   uc.micro@2.1.0: {}
 
@@ -11388,9 +11505,9 @@ snapshots:
 
   uuid@8.3.2: {}
 
-  valibot@1.4.2(typescript@5.9.3):
+  valibot@1.4.2(typescript@7.1.0-dev.20260930.4):
     optionalDependencies:
-      typescript: 5.9.3
+      typescript: 7.1.0-dev.20260930.4
 
   validate-html-nesting@1.2.4: {}
 
@@ -11507,15 +11624,15 @@ snapshots:
     transitivePeerDependencies:
       - msw
 
-  volar-service-css@0.0.70(@volar/language-service@2.4.28):
+  volar-service-css@0.0.70(@volar/language-service@2.4.28(typescript@5.9.3)):
     dependencies:
       vscode-css-languageservice: 6.3.10
       vscode-languageserver-textdocument: 1.0.12
       vscode-uri: 3.1.0
     optionalDependencies:
-      '@volar/language-service': 2.4.28
+      '@volar/language-service': 2.4.28(typescript@5.9.3)
 
-  volar-service-typescript@0.0.70(@volar/language-service@2.4.28):
+  volar-service-typescript@0.0.70(@volar/language-service@2.4.28(typescript@5.9.3))(typescript@5.9.3):
     dependencies:
       path-browserify: 1.0.1
       semver: 7.7.4
@@ -11524,7 +11641,8 @@ snapshots:
       vscode-nls: 5.2.0
       vscode-uri: 3.1.0
     optionalDependencies:
-      '@volar/language-service': 2.4.28
+      '@volar/language-service': 2.4.28(typescript@5.9.3)
+      typescript: 5.9.3
 
   vscode-css-languageservice@6.3.10:
     dependencies:
@@ -11613,6 +11731,17 @@ snapshots:
     optionalDependencies:
       typescript: 5.9.3
 
+  vue@3.6.0-beta.12(typescript@7.1.0-dev.20260930.4):
+    dependencies:
+      '@vue/compiler-dom': 3.6.0-beta.12
+      '@vue/compiler-sfc': 3.6.0-beta.12
+      '@vue/runtime-dom': 3.6.0-beta.12
+      '@vue/runtime-vapor': 3.6.0-beta.12(@vue/runtime-dom@3.6.0-beta.12)
+      '@vue/server-renderer': 3.6.0-beta.12(vue@3.6.0-beta.12(typescript@7.1.0-dev.20260930.4))
+      '@vue/shared': 3.6.0-beta.12
+    optionalDependencies:
+      typescript: 7.1.0-dev.20260930.4
+
   w3c-keyname@2.2.8: {}
 
   w3c-xmlserializer@5.0.0:
@@ -11687,9 +11816,9 @@ snapshots:
 
   xmlchars@2.2.0: {}
 
-  xsschema@0.4.4(@valibot/to-json-schema@1.6.0(valibot@1.4.2(typescript@5.9.3)))(effect@3.20.0)(sury@10.0.4)(zod-to-json-schema@3.25.1(zod@4.3.6))(zod@4.3.6):
+  xsschema@0.4.4(@valibot/to-json-schema@1.6.0(valibot@1.4.2(typescript@7.1.0-dev.20260930.4)))(effect@3.20.0)(sury@10.0.4)(zod-to-json-schema@3.25.1(zod@4.3.6))(zod@4.3.6):
     optionalDependencies:
-      '@valibot/to-json-schema': 1.6.0(valibot@1.4.2(typescript@5.9.3))
+      '@valibot/to-json-schema': 1.6.0(valibot@1.4.2(typescript@7.1.0-dev.20260930.4))
       effect: 3.20.0
       sury: 10.0.4
       zod: 4.3.6

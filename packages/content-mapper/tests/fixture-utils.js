@@ -1,9 +1,12 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TYPESCRIPT_CODE_PREFIX } from '@tsrx/core/diagnostics';
+import { resolve_native_tsc_binary } from '@tsrx/typescript-plugin/src/native-tsc.js';
+import { is_native_typescript_package } from '@tsrx/typescript-plugin/src/typescript-version.js';
 
 export const consumer_fixture_dir = fileURLToPath(new URL('./fixtures/consumer/', import.meta.url));
 
@@ -72,12 +75,14 @@ const package_dir = fileURLToPath(new URL('../', import.meta.url));
 export const mapper_server_path = path.join(package_dir, 'src', 'server.js');
 
 /**
- * Absolute path of the pinned native TypeScript 7 binary for this platform,
- * resolved from the repository root's `@typescript/typescript-<os>-<arch>`
- * optional dependency. Throws when it is missing: the native path must be
- * exercised in CI, never skipped. `TSRX_NATIVE_TSC=<path>` overrides it to run
- * the suite against another TypeScript build (a newer nightly, or the oldest
- * one the mapper still supports).
+ * Absolute path of the native TypeScript 7 binary for this platform: the
+ * `@typescript/typescript-<os>-<arch>` package of the repository root's
+ * `typescript` (the 7.1 nightly pinned by the `native` catalog in
+ * `pnpm-workspace.yaml`), found the way its launcher finds it. Throws when it
+ * is missing: the native path must be exercised in CI, never skipped.
+ * `TSRX_NATIVE_TSC=<path>` overrides it to run the suite against another
+ * TypeScript build (a newer nightly, or the oldest one the mapper still
+ * supports).
  * @returns {string}
  */
 export function native_tsc_path() {
@@ -88,20 +93,16 @@ export function native_tsc_path() {
 		}
 		return override;
 	}
-	const package_name = `@typescript/typescript-${process.platform}-${process.arch}`;
-	const binary = path.join(
-		repo_root,
-		'node_modules',
-		package_name,
-		'lib',
-		process.platform === 'win32' ? 'tsc.exe' : 'tsc',
+	const typescript_package_json = createRequire(path.join(repo_root, 'package.json')).resolve(
+		'typescript/package.json',
 	);
-	if (!fs.existsSync(binary)) {
+	const { version } = JSON.parse(fs.readFileSync(typescript_package_json, 'utf8'));
+	if (!is_native_typescript_package(version)) {
 		throw new Error(
-			`Native TypeScript binary not found at ${binary}. Install the pinned ${package_name} package (pnpm install).`,
+			`The repository root resolves typescript@${version}, not the TypeScript 7 nightly of the native catalog (pnpm install).`,
 		);
 	}
-	return binary;
+	return resolve_native_tsc_binary(typescript_package_json);
 }
 
 /**

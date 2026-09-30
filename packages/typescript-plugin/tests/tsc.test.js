@@ -217,11 +217,15 @@ node_module.Module._resolveFilename = function (request, ...rest) {
 require(${JSON.stringify(cli_path)});
 `,
 	);
+	// pnpm's vitest shim sets NODE_PATH to the repository's hoisted packages,
+	// which include the real TypeScript 7 platform package of the root
+	// `typescript`; the stub project must resolve only what it installs.
+	const { NODE_PATH: _node_path, ...inherited } = process.env;
 	const result = spawnSync(process.execPath, [runner_path, ...args], {
 		cwd: workspace,
 		encoding: 'utf8',
 		timeout: 30_000,
-		env: { ...process.env, ...env },
+		env: { ...inherited, ...env },
 	});
 	expect(result.error).toBeUndefined();
 	return { status: result.status, output: result.stdout + result.stderr };

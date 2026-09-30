@@ -16,7 +16,7 @@ https://github.com/tsrx-org/tsrx/issues/136.
   not in the stable 7.0 line: `typescript@7.0.2` rejects `--runExternalCode`
   (TS5023) and ignores `contentMappers`. `7.1.0-dev.20260822.1` is the oldest
   nightly that passes this package's test suite (`7.1.0-dev.20260821.1` fails it);
-  the repository pins `7.1.0-dev.20260918.1`. Run the suite against another build
+  the repository runs `7.1.0-dev.20260930.4`. Run the suite against another build
   with `TSRX_NATIVE_TSC=<path to tsc>`.
 - **`--runExternalCode`.** TypeScript only spawns the mapper when the user opts
   in; the mapper never enables it. Without the flag, a `contentMappers` entry is
@@ -267,34 +267,33 @@ and installs next to the package.
 
 ### Native TypeScript binary
 
-The mapper is tested against an exact TypeScript 7 nightly. The `typescript@7.x`
-package is only a thin launcher: its `bin/tsc` calls `lib/getExePath.js`, which
-resolves the platform package `@typescript/typescript-<os>-<arch>` and runs
-`lib/tsc` (or `lib/tsc.exe`) from it. That platform package is self-contained (the
-Go binary plus the `lib.*.d.ts` library files), so this repository pins the
-platform packages directly instead of the launcher:
+The repository's root `typescript` is the exact TypeScript 7.1 nightly the mapper
+is tested against: the `native` catalog in `pnpm-workspace.yaml` (`ts_native`).
+The `typescript@7.x` package is only a thin launcher: its `bin/tsc` calls
+`lib/getExePath.js`, which resolves the platform package
+`@typescript/typescript-<os>-<arch>` (an optional dependency of the launcher, so
+pnpm installs only the one matching the current platform) and runs `lib/tsc` (or
+`lib/tsc.exe`) from it.
 
-- `package.json` at the repository root lists every
-  `@typescript/typescript-<os>-<arch>` package under `optionalDependencies` at the
-  exact nightly version. pnpm installs only the one matching the current
-  `process.platform` and `process.arch`.
-- Pinning the platform packages avoids a `tsc` bin conflict with the classic
-  `typescript` catalog entry, which stays on the 5.x line for the Volar path.
-- The pinned nightly is also listed under `minimumReleaseAgeExclude` in
-  `pnpm-workspace.yaml` because it is newer than the workspace's release-age
-  policy.
-- `pnpm typecheck` runs the same pinned platform packages through
-  `scripts/native-tsc.js`, since the root `typescript` must stay on the 5.x line
-  for the tooling's JavaScript API.
+- `pnpm typecheck` runs that `tsc` directly, with `--runExternalCode` for the
+  projects that declare the mapper in `contentMappers`.
+- The packages whose code or tests use TypeScript's JavaScript API
+  (`@tsrx/typescript-plugin`, `@tsrx/language-server`, `@tsrx/core`'s tests and
+  the others that list it) keep `typescript` from the `default` catalog, the 5.x
+  line.
+- Packages whose declaration files import `typescript` without declaring it get it
+  as an optional peer through `packageExtensions`, so they take the `typescript`
+  of the package that uses them rather than the root launcher.
+- The nightly is also listed under `minimumReleaseAgeExclude` because it is newer
+  than the workspace's release-age policy.
 
-Tests locate the binary as
-`node_modules/@typescript/typescript-${process.platform}-${process.arch}/lib/tsc`
-resolved from the repository root. A missing binary fails the test instead of
-skipping it.
+Tests locate the binary the way the launcher does, through the platform package of
+the `typescript` resolved from the repository root. A missing binary fails the
+test instead of skipping it.
 
-To move to a newer nightly, update the version in the root `package.json`
-(`optionalDependencies`) and in `pnpm-workspace.yaml`
-(`minimumReleaseAgeExclude`), then run `pnpm install`.
+To move to a newer nightly, update `ts_native` and the matching
+`minimumReleaseAgeExclude` entries in `pnpm-workspace.yaml`, then run
+`pnpm install`.
 
 ### Tests
 

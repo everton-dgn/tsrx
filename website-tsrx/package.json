@@ -8,7 +8,7 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "ripple-preview",
-    "typecheck": "node ../scripts/native-tsc.js --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "keywords": [],
   "author": "",
@@ -37,7 +37,7 @@
     "@tsrx/typescript-plugin": "workspace:*",
     "@types/node": "catalog:default",
     "ripple": "catalog:default",
-    "typescript": "catalog:default",
+    "typescript": "catalog:native",
     "vite": "catalog:default"
   }
 }
