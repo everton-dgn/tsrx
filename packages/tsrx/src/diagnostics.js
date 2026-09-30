@@ -3,8 +3,8 @@
 // load the error tables without the rest of the compiler. An import here would
 // pull that module, and everything it imports, into each of them, and code that
 // runs on load would keep every table in a bundle that reads one. So the tables
-// are literals and calls marked `/* @__PURE__ */`, with no property reads, and
-// the lookup of upstream messages is built on first use.
+// are literals and calls to functions marked `/* @__NO_SIDE_EFFECTS__ */`, with
+// no property reads, and the lookup of upstream messages is built on first use.
 // `tests/utils/error-codes.test.js` checks both.
 
 /**
@@ -152,18 +152,21 @@ export const TYPESCRIPT_CODE_PREFIX = '11';
 export const MAPPER_CODE_PREFIX = '77';
 
 /** @param {number} number */
-const mapper_code = (number) => Number(`${MAPPER_CODE_PREFIX}${number}`);
+/* @__NO_SIDE_EFFECTS__ */
+function mapper_code(number) {
+	return Number(`${MAPPER_CODE_PREFIX}${number}`);
+}
 
 /** The errors `@tsrx/content-mapper` reports itself. */
 export const MAPPER_CODES = {
 	/** A file that doesn't compile, with an error that has no code. */
-	COMPILE_ERROR: /* @__PURE__ */ mapper_code(1000),
+	COMPILE_ERROR: mapper_code(1000),
 	/** An error without a TSRX or TypeScript code. */
-	USAGE_ERROR: /* @__PURE__ */ mapper_code(1001),
+	USAGE_ERROR: mapper_code(1001),
 	/** No TSRX compiler found for a file. */
-	NO_COMPILER: /* @__PURE__ */ mapper_code(1002),
+	NO_COMPILER: mapper_code(1002),
 	/** The project's TSRX configuration is invalid. */
-	INVALID_CONFIG: /* @__PURE__ */ mapper_code(1003),
+	INVALID_CONFIG: mapper_code(1003),
 };
 
 /**
@@ -184,6 +187,7 @@ export const MAPPER_CODES = {
  * @param {(...values: string[]) => string} message
  * @returns {DiagnosticWithValues}
  */
+/* @__NO_SIDE_EFFECTS__ */
 function with_values(code, message) {
 	return Object.assign(
 		(/** @type {string[]} */ ...values) => ({ code, message: message(...values) }),
@@ -214,6 +218,7 @@ function tsrx_code(key) {
  * @param {string} message
  * @returns {Diagnostic}
  */
+/* @__NO_SIDE_EFFECTS__ */
 function tsrx(key, message) {
 	return { code: tsrx_code(key), message };
 }
@@ -225,6 +230,7 @@ function tsrx(key, message) {
  * @param {(...values: string[]) => string} message
  * @returns {DiagnosticWithValues}
  */
+/* @__NO_SIDE_EFFECTS__ */
 function tsrx_with_values(key, message) {
 	return with_values(tsrx_code(key), message);
 }
@@ -236,251 +242,242 @@ function tsrx_with_values(key, message) {
  */
 export const TSRX_ERRORS = {
 	// TSRX1xxx
-	UNCLOSED_TAG: /* @__PURE__ */ tsrx_with_values(
+	UNCLOSED_TAG: tsrx_with_values(
 		'UNCLOSED_TAG',
 		(tag) => `Unclosed tag '<${tag}>'. Expected '</${tag}>' before end of template.`,
 	),
-	MISMATCHED_CLOSING_TAG: /* @__PURE__ */ tsrx_with_values(
+	MISMATCHED_CLOSING_TAG: tsrx_with_values(
 		'MISMATCHED_CLOSING_TAG',
 		(opening, closing) =>
 			`Expected closing tag to match opening tag. Expected '</${opening}>' but found '</${closing}>'`,
 	),
-	UNEXPECTED_CLOSING_TAG: /* @__PURE__ */ tsrx('UNEXPECTED_CLOSING_TAG', 'Unexpected closing tag'),
+	UNEXPECTED_CLOSING_TAG: tsrx('UNEXPECTED_CLOSING_TAG', 'Unexpected closing tag'),
 	/** `written` is the `</script` as written, in any case. */
-	SCRIPT_END_TAG_IN_BODY: /* @__PURE__ */ tsrx_with_values(
+	SCRIPT_END_TAG_IN_BODY: tsrx_with_values(
 		'SCRIPT_END_TAG_IN_BODY',
 		(written) =>
 			`'${written}' can end a script in HTML, so a '<script>' body can't contain it. Write '<\\/${written.slice(2)}' instead.`,
 	),
-	NAMESPACED_ELEMENT: /* @__PURE__ */ tsrx_with_values(
+	NAMESPACED_ELEMENT: tsrx_with_values(
 		'NAMESPACED_ELEMENT',
 		(tag) => `Namespaced elements are not supported in TSRX templates: <${tag}>.`,
 	),
-	ATTRIBUTE_VALUE_SPREAD: /* @__PURE__ */ tsrx(
+	ATTRIBUTE_VALUE_SPREAD: tsrx(
 		'ATTRIBUTE_VALUE_SPREAD',
 		'Attribute values cannot be spread. Use a spread attribute (`{...props}`) instead.',
 	),
-	TEMPLATE_EXPRESSION_TRAILING_SEMICOLON: /* @__PURE__ */ tsrx(
+	TEMPLATE_EXPRESSION_TRAILING_SEMICOLON: tsrx(
 		'TEMPLATE_EXPRESSION_TRAILING_SEMICOLON',
 		'TSRX expression containers do not use semicolons. Remove this semicolon.',
 	),
-	DIRECTIVE_BODY_EXPECTED: /* @__PURE__ */ tsrx(
+	DIRECTIVE_BODY_EXPECTED: tsrx(
 		'DIRECTIVE_BODY_EXPECTED',
 		'Expected `{` after JSX control-flow directive.',
 	),
 	/** `branch` is the branch written without its `@`, and `directive` the directive it belongs to. */
-	DIRECTIVE_BRANCH_EXPECTED: /* @__PURE__ */ tsrx_with_values(
+	DIRECTIVE_BRANCH_EXPECTED: tsrx_with_values(
 		'DIRECTIVE_BRANCH_EXPECTED',
 		(branch, directive) => `Expected \`@${branch}\` after \`@${directive}\` block.`,
 	),
-	TRY_HANDLER_MISSING: /* @__PURE__ */ tsrx(
+	TRY_HANDLER_MISSING: tsrx(
 		'TRY_HANDLER_MISSING',
 		'Missing `@catch` or `@pending` after `@try` block.',
 	),
-	FOR_INDEX_NAME_EXPECTED: /* @__PURE__ */ tsrx(
-		'FOR_CLAUSE',
-		'Expected identifier after "index" keyword',
-	),
-	FOR_INDEX_AFTER_KEY: /* @__PURE__ */ tsrx(
-		'FOR_CLAUSE',
-		'"index" must come before "key" in for-of loop',
-	),
+	FOR_INDEX_NAME_EXPECTED: tsrx('FOR_CLAUSE', 'Expected identifier after "index" keyword'),
+	FOR_INDEX_AFTER_KEY: tsrx('FOR_CLAUSE', '"index" must come before "key" in for-of loop'),
 
 	// TSRX2xxx
-	TEMPLATE_RETURN_STATEMENT: /* @__PURE__ */ tsrx(
+	TEMPLATE_RETURN_STATEMENT: tsrx(
 		'TEMPLATE_RETURN_STATEMENT',
 		'Return statements are not allowed inside TSRX templates. Move the return before the TSRX return value, or use conditional rendering instead.',
 	),
-	IF_RETURN_STATEMENT: /* @__PURE__ */ tsrx(
+	IF_RETURN_STATEMENT: tsrx(
 		'IF_RETURN_STATEMENT',
 		'Return statements are not allowed inside TSRX template @if blocks. Move the return before the template output or render conditionally instead.',
 	),
-	IF_BREAK_STATEMENT: /* @__PURE__ */ tsrx(
+	IF_BREAK_STATEMENT: tsrx(
 		'IF_BREAK_STATEMENT',
 		'Break statements are not allowed inside TSRX template @if blocks.',
 	),
-	IF_CONTINUE_STATEMENT: /* @__PURE__ */ tsrx(
+	IF_CONTINUE_STATEMENT: tsrx(
 		'IF_CONTINUE_STATEMENT',
 		'Continue statements are not allowed inside TSRX template @if blocks. Filter before rendering or use conditional output instead.',
 	),
-	FOR_RETURN_STATEMENT: /* @__PURE__ */ tsrx(
+	FOR_RETURN_STATEMENT: tsrx(
 		'FOR_RETURN_STATEMENT',
 		'Return statements are not allowed inside TSRX template for...of loops. Filter the iterable before rendering or use an @empty fallback for empty lists.',
 	),
-	FOR_BREAK_STATEMENT: /* @__PURE__ */ tsrx(
+	FOR_BREAK_STATEMENT: tsrx(
 		'FOR_BREAK_STATEMENT',
 		'Break statements are not allowed inside TSRX template for...of loops.',
 	),
-	FOR_CONTINUE_STATEMENT: /* @__PURE__ */ tsrx(
+	FOR_CONTINUE_STATEMENT: tsrx(
 		'FOR_CONTINUE_STATEMENT',
 		'Continue statements are not allowed inside TSRX template for...of loops. Filter the iterable before rendering.',
 	),
-	SWITCH_CASE_BREAK_STATEMENT: /* @__PURE__ */ tsrx(
+	SWITCH_CASE_BREAK_STATEMENT: tsrx(
 		'SWITCH_CASE_BREAK_STATEMENT',
 		'`break` is invalid inside `@switch` cases.',
 	),
-	SWITCH_CASE_RETURN_STATEMENT: /* @__PURE__ */ tsrx(
+	SWITCH_CASE_RETURN_STATEMENT: tsrx(
 		'SWITCH_CASE_RETURN_STATEMENT',
 		'`return` is invalid inside `@switch` cases.',
 	),
-	FORGOTTEN_STATEMENT_CONTAINER: /* @__PURE__ */ tsrx(
+	FORGOTTEN_STATEMENT_CONTAINER: tsrx(
 		'FORGOTTEN_STATEMENT_CONTAINER',
 		"This TSRX template output is unused. Return it, assign it to a value that is rendered, or make it part of the rendered output of a function '@{...}' body.",
 	),
-	CODE_BLOCK_SINGLE_OUTPUT: /* @__PURE__ */ tsrx(
+	CODE_BLOCK_SINGLE_OUTPUT: tsrx(
 		'CODE_BLOCK_SINGLE_OUTPUT',
 		"A code block renders a single node; wrap multiple nodes or text in a fragment '<>…</>'.",
 	),
-	CODE_BLOCK_STATEMENT_AFTER_OUTPUT: /* @__PURE__ */ tsrx(
+	CODE_BLOCK_STATEMENT_AFTER_OUTPUT: tsrx(
 		'CODE_BLOCK_STATEMENT_AFTER_OUTPUT',
 		"Code must be at the top of '@{ }'; statements cannot follow the rendered output.",
 	),
-	JSX_SPREAD_CHILD: /* @__PURE__ */ tsrx(
+	JSX_SPREAD_CHILD: tsrx(
 		'JSX_SPREAD_CHILD',
 		'JSX spread children (`{...items}`) are not supported. Render the array as an expression child instead: `{items}`.',
 	),
-	DYNAMIC_TAG_EXPRESSION: /* @__PURE__ */ tsrx(
+	DYNAMIC_TAG_EXPRESSION: tsrx(
 		'DYNAMIC_TAG_EXPRESSION',
 		'A dynamic tag expression must be an identifier, a member access such as `props.as` or `registry[name]`, or a string literal. Compute anything else before the element: `const Tag = c ? Child : Fallback;`, then `<{Tag} />`.',
 	),
-	FOR_OF_ONLY: /* @__PURE__ */ tsrx(
+	FOR_OF_ONLY: tsrx(
 		'FOR_OF_ONLY',
 		'TSRX `@for` currently supports `for...of` loops in template output.',
 	),
-	FOR_STATEMENT: /* @__PURE__ */ tsrx(
+	FOR_STATEMENT: tsrx(
 		'FOR_OF_ONLY',
 		'For loops are not supported in TSRX templates. Use for...of instead.',
 	),
-	FOR_IN_STATEMENT: /* @__PURE__ */ tsrx(
+	FOR_IN_STATEMENT: tsrx(
 		'FOR_OF_ONLY',
 		'For...in loops are not supported in TSRX templates. Use for...of instead.',
 	),
-	WHILE_STATEMENT: /* @__PURE__ */ tsrx(
+	WHILE_STATEMENT: tsrx(
 		'FOR_OF_ONLY',
 		'While loops are not supported in TSRX templates. Move the while loop into a function.',
 	),
-	DO_WHILE_STATEMENT: /* @__PURE__ */ tsrx(
+	DO_WHILE_STATEMENT: tsrx(
 		'FOR_OF_ONLY',
 		'Do...while loops are not supported in TSRX templates. Move the do...while loop into a function.',
 	),
-	MULTIPLE_REFS: /* @__PURE__ */ tsrx(
+	MULTIPLE_REFS: tsrx(
 		'MULTIPLE_REFS',
 		'Element has multiple `ref={...}` attributes; an element may have at most one. Use a single array-valued ref such as `ref={[a, b]}` where the target framework supports multiple refs.',
 	),
-	INVALID_HTML_NESTING: /* @__PURE__ */ tsrx_with_values(
+	INVALID_HTML_NESTING: tsrx_with_values(
 		'INVALID_HTML_NESTING',
 		(tag, parent) => `Invalid HTML nesting: <${tag}> cannot be a descendant of <${parent}>.`,
 	),
 	/** `target` is the target's name. */
-	TEMPLATE_TRY_FINALLY: /* @__PURE__ */ tsrx_with_values(
+	TEMPLATE_TRY_FINALLY: tsrx_with_values(
 		'TEMPLATE_TRY_FINALLY',
 		(target) =>
 			`${target} TSRX does not support JavaScript \`try/finally\` in TSRX templates. \`finally\` is not part of TSRX control flow; move the try/finally into a function if you need cleanup logic.`,
 	),
-	TEMPLATE_TRY_HANDLER: /* @__PURE__ */ tsrx(
+	TEMPLATE_TRY_HANDLER: tsrx(
 		'TEMPLATE_TRY_HANDLER',
 		'TSRX try statements must have a `pending` or `catch` block.',
 	),
 	/** `target` is the target's name. */
-	TARGET_AWAIT_UNSUPPORTED: /* @__PURE__ */ tsrx_with_values(
+	TARGET_AWAIT_UNSUPPORTED: tsrx_with_values(
 		'TARGET_AWAIT_UNSUPPORTED',
 		(target) =>
 			`${target} TSRX does not support \`await\` here: this part of the template renders through a callback the target calls, so its result cannot be awaited. Await the value in the component body, or move it into an async child component.`,
 	),
 	/** `target` is the target's name. */
-	TARGET_YIELD_UNSUPPORTED: /* @__PURE__ */ tsrx_with_values(
+	TARGET_YIELD_UNSUPPORTED: tsrx_with_values(
 		'TARGET_YIELD_UNSUPPORTED',
 		(target) =>
 			`${target} TSRX does not support \`yield\` here: this part of the template runs in a callback, which cannot yield from the enclosing generator. Yield the value in the function body first.`,
 	),
 	/** `target` is the target's name. */
-	TARGET_SUPER_UNSUPPORTED: /* @__PURE__ */ tsrx_with_values(
+	TARGET_SUPER_UNSUPPORTED: tsrx_with_values(
 		'TARGET_SUPER_UNSUPPORTED',
 		(target) =>
 			`${target} TSRX does not support \`super\` here: this part of the template also yields, so it is lowered into a generator function, where \`super\` is unavailable. Read the value into a variable in the method body first.`,
 	),
 	/** `target` is the target's name. */
-	TARGET_FOR_AWAIT_UNSUPPORTED: /* @__PURE__ */ tsrx_with_values(
+	TARGET_FOR_AWAIT_UNSUPPORTED: tsrx_with_values(
 		'TARGET_FOR_AWAIT_UNSUPPORTED',
 		(target) => `${target} TSRX does not support \`for await...of\` in TSRX templates.`,
 	),
-	TOP_LEVEL_AWAIT_USE_SERVER: /* @__PURE__ */ tsrx(
+	TOP_LEVEL_AWAIT_USE_SERVER: tsrx(
 		'TOP_LEVEL_AWAIT_USE_SERVER',
 		'Top-level `await` in TSRX functions requires a module-level `"use server"` directive.',
 	),
 
 	// TSRX3xxx
-	STYLE_APPLY_VALUE: /* @__PURE__ */ tsrx(
+	STYLE_APPLY_VALUE: tsrx(
 		'STYLE_APPLY_VALUE',
 		"The 'apply' attribute of a <style> block requires an expression value: apply={theme} or apply={[a, b]}.",
 	),
-	STYLE_APPLY_TARGET: /* @__PURE__ */ tsrx_with_values(
+	STYLE_APPLY_TARGET: tsrx_with_values(
 		'STYLE_APPLY_TARGET',
 		(name) =>
 			`'${name}' is not a style block. An 'apply' target must be a variable, import, or member holding an assigned <style> block.`,
 	),
-	STYLE_APPLY_BEFORE_DECLARATION: /* @__PURE__ */ tsrx_with_values(
+	STYLE_APPLY_BEFORE_DECLARATION: tsrx_with_values(
 		'STYLE_APPLY_BEFORE_DECLARATION',
 		(name) =>
 			`'${name}' is applied before its declaration. Declare the style block before the block that applies it.`,
 	),
-	STYLE_APPLY_DUPLICATE: /* @__PURE__ */ tsrx(
+	STYLE_APPLY_DUPLICATE: tsrx(
 		'STYLE_APPLY_DUPLICATE',
 		"A <style> block accepts a single 'apply' attribute; pass several themes as an array: apply={[a, b]}.",
 	),
-	STYLE_APPLY_UNSUPPORTED_HOST: /* @__PURE__ */ tsrx(
+	STYLE_APPLY_UNSUPPORTED_HOST: tsrx(
 		'STYLE_APPLY_UNSUPPORTED_HOST',
 		"The 'apply' attribute is only supported on scoped <style> blocks, not on <head> styles or resource styles.",
 	),
-	STYLE_RESERVED_CLASS_KEY: /* @__PURE__ */ tsrx(
+	STYLE_RESERVED_CLASS_KEY: tsrx(
 		'STYLE_RESERVED_CLASS_KEY',
 		"'$class' is reserved on assigned <style> blocks for the block's scope hash; rename the '.$class' selector.",
 	),
-	STYLE_STANDALONE_AT_MODULE_SCOPE: /* @__PURE__ */ tsrx(
+	STYLE_STANDALONE_AT_MODULE_SCOPE: tsrx(
 		'STYLE_STANDALONE_AT_MODULE_SCOPE',
 		'A standalone <style> block is only allowed inside a template scope. At module scope assign it: const theme = <style>…</style>.',
 	),
-	STYLE_STANDALONE_OUTSIDE_TEMPLATE: /* @__PURE__ */ tsrx(
+	STYLE_STANDALONE_OUTSIDE_TEMPLATE: tsrx(
 		'STYLE_STANDALONE_OUTSIDE_TEMPLATE',
 		'A standalone <style> block with CSS text is TSRX template syntax and needs an enclosing @{ … } body or an @if/@for/@switch/@try body. In plain TSX give <style> an expression child instead: <style>{css}</style>. To declare a reusable block here, assign it: const theme = <style>…</style>.',
 	),
-	STYLE_STANDALONE_NEEDS_FRAGMENT: /* @__PURE__ */ tsrx(
+	STYLE_STANDALONE_NEEDS_FRAGMENT: tsrx(
 		'STYLE_STANDALONE_NEEDS_FRAGMENT',
 		'A standalone <style> block must be a child of an element or a fragment. Wrap it with the output it styles in a fragment: <><style>…</style><div>…</div></>.',
 	),
-	STYLE_UNKNOWN_ATTRIBUTE: /* @__PURE__ */ tsrx_with_values(
+	STYLE_UNKNOWN_ATTRIBUTE: tsrx_with_values(
 		'STYLE_UNKNOWN_ATTRIBUTE',
 		(name) => `Unknown <style> attribute '${name}'. Scoped style blocks accept 'ref' and 'apply'.`,
 	),
-	CSS_GLOBAL_IN_PSEUDOCLASS: /* @__PURE__ */ tsrx(
+	CSS_GLOBAL_IN_PSEUDOCLASS: tsrx(
 		'CSS_GLOBAL_PLACEMENT',
 		'A :global selector cannot be inside a pseudoclass.',
 	),
-	CSS_GLOBAL_IN_MIDDLE: /* @__PURE__ */ tsrx(
+	CSS_GLOBAL_IN_MIDDLE: tsrx(
 		'CSS_GLOBAL_PLACEMENT',
 		':global(...) can be at the start or end of a selector sequence, but not in the middle.',
 	),
-	CSS_IMPORT: /* @__PURE__ */ tsrx(
+	CSS_IMPORT: tsrx(
 		'CSS_IMPORT',
 		"@import is not supported in <style> blocks: the imported rules would not be scoped. Share scoped styles with an assigned block (const theme = <style>…</style>) and apply={theme}. For global CSS, use :global in the block, or import the stylesheet in JavaScript: import './global.css'.",
 	),
 
 	// TSRX4xxx
-	PLATFORM_REQUIRED: /* @__PURE__ */ tsrx(
+	PLATFORM_REQUIRED: tsrx(
 		'PLATFORM_REQUIRED',
 		'Platform flag usage requires a configured TSRX platform. Set `tsrx.platform` in tsconfig.json and pass the same `platform` to the build integration ("web", "ios", or "android").',
 	),
-	RESERVED_IDENTIFIER_PREFIX: /* @__PURE__ */ tsrx_with_values(
+	RESERVED_IDENTIFIER_PREFIX: tsrx_with_values(
 		'RESERVED_IDENTIFIER_PREFIX',
 		(name, prefix) =>
 			`Cannot declare a variable named "${name}" as identifiers starting with "${prefix}" are reserved`,
 	),
 	// acorn-typescript's wording, for `with { type: 'json', type: 'json' }`: an
 	// ECMAScript early error that TypeScript doesn't report.
-	DUPLICATED_ATTRIBUTE_KEY: /* @__PURE__ */ tsrx(
-		'JAVASCRIPT_SYNTAX',
-		'Duplicated key in attributes',
-	),
+	DUPLICATED_ATTRIBUTE_KEY: tsrx('JAVASCRIPT_SYNTAX', 'Duplicated key in attributes'),
 };
 
 /**
@@ -493,9 +490,9 @@ export const TSRX_ERRORS = {
 export const TS_ERRORS = {
 	// Tokens and names
 	/** `token` is the token expected, such as `}`. */
-	TOKEN_EXPECTED: /* @__PURE__ */ with_values('TS1005', (token) => `'${token}' expected.`),
+	TOKEN_EXPECTED: with_values('TS1005', (token) => `'${token}' expected.`),
 	IDENTIFIER_EXPECTED: { code: 'TS1003', message: 'Identifier expected.' },
-	RESERVED_WORD_AS_IDENTIFIER: /* @__PURE__ */ with_values(
+	RESERVED_WORD_AS_IDENTIFIER: with_values(
 		'TS1359',
 		(word) => `Identifier expected. '${word}' is a reserved word that cannot be used here.`,
 	),
@@ -518,35 +515,35 @@ export const TS_ERRORS = {
 
 	// The modifiers of a declaration, as TypeScript's checker words them
 	// (`checkGrammarModifiers`)
-	MODIFIER_ALREADY_SEEN: /* @__PURE__ */ with_values(
+	MODIFIER_ALREADY_SEEN: with_values(
 		'TS1030',
 		(modifier) => `'${modifier}' modifier already seen.`,
 	),
-	MODIFIER_MUST_PRECEDE: /* @__PURE__ */ with_values(
+	MODIFIER_MUST_PRECEDE: with_values(
 		'TS1029',
 		(modifier, other) => `'${modifier}' modifier must precede '${other}' modifier.`,
 	),
-	MODIFIER_CANNOT_BE_USED_WITH: /* @__PURE__ */ with_values(
+	MODIFIER_CANNOT_BE_USED_WITH: with_values(
 		'TS1243',
 		(modifier, other) => `'${modifier}' modifier cannot be used with '${other}' modifier.`,
 	),
-	MODIFIER_IN_AMBIENT_CONTEXT: /* @__PURE__ */ with_values(
+	MODIFIER_IN_AMBIENT_CONTEXT: with_values(
 		'TS1040',
 		(modifier) => `'${modifier}' modifier cannot be used in an ambient context.`,
 	),
-	MODIFIER_CANNOT_BE_USED_HERE: /* @__PURE__ */ with_values(
+	MODIFIER_CANNOT_BE_USED_HERE: with_values(
 		'TS1042',
 		(modifier) => `'${modifier}' modifier cannot be used here.`,
 	),
-	MODIFIER_ON_MODULE_ELEMENT: /* @__PURE__ */ with_values(
+	MODIFIER_ON_MODULE_ELEMENT: with_values(
 		'TS1044',
 		(modifier) => `'${modifier}' modifier cannot appear on a module or namespace element.`,
 	),
-	MODIFIER_ON_USING: /* @__PURE__ */ with_values(
+	MODIFIER_ON_USING: with_values(
 		'TS1491',
 		(modifier) => `'${modifier}' modifier cannot appear on a 'using' declaration.`,
 	),
-	MODIFIER_ON_AWAIT_USING: /* @__PURE__ */ with_values(
+	MODIFIER_ON_AWAIT_USING: with_values(
 		'TS1495',
 		(modifier) => `'${modifier}' modifier cannot appear on an 'await using' declaration.`,
 	),
@@ -571,7 +568,7 @@ export const TS_ERRORS = {
 		code: 'TS1038',
 		message: "A 'declare' modifier cannot be used in an already ambient context.",
 	},
-	MODIFIER_ON_IMPORT: /* @__PURE__ */ with_values(
+	MODIFIER_ON_IMPORT: with_values(
 		'TS1079',
 		(modifier) => `A '${modifier}' modifier cannot be used with an import declaration.`,
 	),
@@ -642,7 +639,7 @@ export const TS_ERRORS = {
 		message: 'Variable declaration list cannot be empty.',
 	},
 	/** `kind` is `const`, `using`, or `await using`. */
-	DECLARATION_NOT_INITIALIZED: /* @__PURE__ */ with_values(
+	DECLARATION_NOT_INITIALIZED: with_values(
 		'TS1155',
 		(kind) => `'${kind}' declarations must be initialized.`,
 	),
@@ -656,21 +653,21 @@ export const TS_ERRORS = {
 	},
 	// A `let`, `const` or `using` declaration's name declared again in the same
 	// scope (see `declareName` in `plugin.js`)
-	BLOCK_SCOPED_VARIABLE_REDECLARED: /* @__PURE__ */ with_values(
+	BLOCK_SCOPED_VARIABLE_REDECLARED: with_values(
 		'TS2451',
 		(name) => `Cannot redeclare block-scoped variable '${name}'.`,
 	),
 	// A `var` in a block below one that declares its name with `let`, `const`, or
 	// `using` (see `declareName` in `plugin.js`). TypeScript gives the name for
 	// both values.
-	OUTER_SCOPED_VARIABLE_INITIALIZED: /* @__PURE__ */ with_values(
+	OUTER_SCOPED_VARIABLE_INITIALIZED: with_values(
 		'TS2481',
 		(name, declaration) =>
 			`Cannot initialize outer scoped variable '${name}' in the same scope as block scoped declaration '${declaration}'.`,
 	),
 	// A `let`, `const`, or `using` declaration of a `catch` clause's parameter in
 	// its block
-	CATCH_PARAMETER_REDECLARED: /* @__PURE__ */ with_values(
+	CATCH_PARAMETER_REDECLARED: with_values(
 		'TS2492',
 		(name) => `Cannot redeclare identifier '${name}' in catch clause.`,
 	),
@@ -680,7 +677,7 @@ export const TS_ERRORS = {
 		message: 'Enum declarations can only merge with namespace or other enum declarations.',
 	},
 	// TSRX's wording of a name redeclared in a module's or function's scope
-	DECLARED_IN_SCOPE: /* @__PURE__ */ with_values(
+	DECLARED_IN_SCOPE: with_values(
 		'TS2300',
 		(name) => `'${name}' has already been declared in the current scope`,
 	),
@@ -723,7 +720,7 @@ export const TS_ERRORS = {
 		message: 'Comma is not permitted after the rest element',
 	},
 	ARGUMENT_NAME_CLASH: { code: 'TS2300', message: 'Argument name clash' },
-	KEYWORD_ESCAPE_SEQUENCE: /* @__PURE__ */ with_values(
+	KEYWORD_ESCAPE_SEQUENCE: with_values(
 		'TS1260',
 		(keyword) => `Escape sequence in keyword ${keyword}`,
 	),
@@ -785,7 +782,7 @@ export const TS_ERRORS = {
 	},
 	UNEXPECTED_TYPE_ANNOTATION: { code: 'TS1005', message: 'Did not expect a type annotation here.' },
 	/** `type` is the type of the node read as the parameter. */
-	SIGNATURE_PARAMETER_NAME: /* @__PURE__ */ with_values(
+	SIGNATURE_PARAMETER_NAME: with_values(
 		'TS2371',
 		(type) =>
 			`Name in a signature must be an Identifier, ObjectPattern or ArrayPattern, instead got ${type}.`,

@@ -46,7 +46,8 @@ function imports_of(url) {
 /**
  * What in the module at `url` runs when it loads, as written: a top-level
  * statement that declares nothing, or, outside a function body, a property read,
- * a `new`, a tagged template, or a call that isn't marked `@__PURE__`.
+ * a `new`, a tagged template, or a call to anything but a function marked
+ * `@__NO_SIDE_EFFECTS__`.
  * A bundler has to keep such code, and everything it reads.
  * @param {URL} url
  * @returns {string[]}
@@ -63,12 +64,21 @@ function load_time_code_of(url) {
 		},
 	});
 	/** @param {any} node */
-	const pure = (node) =>
+	const marked = (node) =>
 		comments.some(
 			(comment) =>
-				/^\s*[@#]__PURE__\s*$/.test(comment.value) &&
+				/^\s*[@#]__NO_SIDE_EFFECTS__\s*$/.test(comment.value) &&
+				comment.end <= node.start &&
 				source.slice(comment.end, node.start).trim() === '',
 		);
+	/** The functions marked `@__NO_SIDE_EFFECTS__`, which a bundler may drop a call to. */
+	const pure_functions = new Set(
+		program.body
+			.filter((statement) => statement.type === 'FunctionDeclaration' && marked(statement))
+			.map((statement) => /** @type {any} */ (statement).id.name),
+	);
+	/** @param {any} node */
+	const pure = (node) => node.callee.type === 'Identifier' && pure_functions.has(node.callee.name);
 	/** @type {string[]} */
 	const found = [];
 	/** @param {any} node */
