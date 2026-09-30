@@ -1,0 +1,11 @@
+{
+  "name": "tsrx-editor-test-harness",
+  "displayName": "TSRX editor test harness",
+  "publisher": "tsrx-local",
+  "version": "0.0.0",
+  "private": true,
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "main": "./index.cjs"
+}

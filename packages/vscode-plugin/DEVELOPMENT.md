@@ -18,6 +18,30 @@ locally with:
 pnpm --filter @tsrx/vscode-plugin install-package
 ```
 
+## Editor tests (manual)
+
+`editor-tests/` checks the built VSIX in real VS Code instances. Each scenario in
+`editor-tests/scenarios.js` starts a fresh, isolated instance (its own user data
+and extensions directories, so your VS Code and its settings are untouched),
+installs the extensions the scenario lists, opens a copy of
+`editor-tests/fixtures/react`, and checks which TypeScript serves its `.tsrx`
+file: a hover, a definition, and a type error typed into the unsaved buffer.
+Scenarios cover the TypeScript 7 extension with the project's 7.1 nightly, with
+the TypeScript 7 Nightly extension, with its bundled compiler, switched off, and
+VS Code's own TypeScript without it.
+
+```sh
+pnpm --filter @tsrx/vscode-plugin build-and-package
+pnpm --filter @tsrx/vscode-plugin test:editor
+pnpm --filter @tsrx/vscode-plugin test:editor -- --scenario ts7-project-nightly --verbose
+```
+
+`--list` prints the scenarios, `--build` builds the VSIX first, `--keep` keeps the
+temporary directory with each instance's logs. The runner expects VS Code at
+`/Applications/Visual Studio Code.app`; set `TSRX_VSCODE_APP` (the executable) and
+`TSRX_VSCODE_CLI` (its `code` command) elsewhere. Installing the TypeScript 7
+extensions needs network access. The tests are not part of `pnpm test` or CI.
+
 ## Publishing workflows
 
 `.github/workflows/vsix.yml` publishes after a push to `main` changes files in

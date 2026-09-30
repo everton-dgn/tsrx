@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": []
+  },
+  "tsrx": { "compiler": "@tsrx/react" },
+  "contentMappers": [{ "package": "@tsrx/content-mapper", "extensions": [".tsrx"] }],
+  "include": ["src"]
+}

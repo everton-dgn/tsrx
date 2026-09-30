@@ -42,7 +42,8 @@
     "install-package": "code --install-extension vscode-plugin.vsix",
     "build-and-package": "pnpm build && pnpm package",
     "build-package-and-install": "pnpm build && pnpm package && pnpm install-package",
-    "build-package-install-and-run": "pnpm build && pnpm package && pnpm install-package && code"
+    "build-package-install-and-run": "pnpm build && pnpm package && pnpm install-package && code",
+    "test:editor": "node editor-tests/run.js"
   },
   "dependencies": {
     "@tsrx/language-server": "workspace:*",
