@@ -121,8 +121,7 @@ of the following hold; each is tracked in `COMPATIBILITY.md`:
    microsoft/TypeScript#63879 (rename on `Atom` spans) are fixed, or TSRX accepts
    them as permanent.
 3. ~~`--watch` recompiles (microsoft/TypeScript#64351).~~ Done from
-   `7.1.0-dev.20260923.1`, the minimum; `--build --watch` still misses `.tsrx`
-   edits (`COMPATIBILITY.md` row 51).
+   `7.1.0-dev.20260923.1`, the minimum.
 4. Push diagnostics (microsoft/TypeScript#63921) or every supported editor
    integration is confirmed to pull diagnostics.
 
@@ -247,8 +246,6 @@ Copied from the README so this note stands alone; `COMPATIBILITY.md` has the
 classification and evidence for each.
 
 - `--runExternalCode` is required and never enabled by the mapper.
-- `--build --watch` does not recompile after a `.tsrx` edit (plain `--watch`
-  does).
 - No auto-import when a new import statement is needed
   (microsoft/TypeScript#64119); no rename on `Atom` spans
   (microsoft/TypeScript#63879).

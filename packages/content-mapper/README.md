@@ -217,8 +217,6 @@ extension's README for the per-editor setup.
 
 ### Known limitations (TypeScript 7.1.0-dev.20260930.4)
 
-- `--build --watch` recompiles after a `.ts` edit but not after a `.tsrx` edit;
-  plain `--watch` recompiles after both.
 - `--runExternalCode` is required and is never enabled by the mapper; `tsrx-tsc`
   passes it.
 - Editors: no auto-import when a new import statement is needed

@@ -99,9 +99,9 @@ and the sources at commit 2b43b24a and later.
 Observed with TypeScript `7.1.0-dev.20260930.4` (native; the watch rows also on
 `7.1.0-dev.20260923.1`) and TypeScript 5.9.3 (classic), macOS x64.
 
-| #   | Surface                         | Classic              | Native                                                                                                                                                        | Class                               | Evidence                          |
-| --- | ------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------------------------------- |
-| 51  | `--build --watch` after an edit | Recompiles on change | Recompiles after a `.ts` edit, but not after a `.tsrx` edit (plain `--watch` recompiles after both; a plain `.ts` project recompiles under `--build --watch`) | upstream limitation (not filed yet) | probe; row 14 for plain `--watch` |
+| #   | Surface                         | Classic                                                                                                                                                           | Native                                                                                                                                                                                                                                                                                  | Class                                                         | Evidence                                                                                                              |
+| --- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| 51  | `--build --watch` after an edit | Recompiles after an edit to a file the tsconfig lists (`files`, `include`); a file that is only imported is not watched (TypeScript 6.0.3, with and without emit) | Same: recompiles after a `.tsrx` edit when an `include` glob matches `.tsrx` files (declaring the mapper makes globs match them), not when the `.tsrx` file is only imported, like row 14's fixture (`include: ["main.ts"]`); with emit TypeScript 7 also recompiles for imported files | no difference (build mode watches the tsconfig's input files) | standalone probe with an identity `.foo` mapper and plain `.ts` controls on TypeScript 7.1.0-dev.20260930.4 and 6.0.3 |
 
 ## Not yet exercised
 
@@ -121,6 +121,5 @@ Observed with TypeScript `7.1.0-dev.20260930.4` (native; the watch rows also on
 - microsoft/TypeScript#63875 item 1B hover-text rewriting (row 29)
 - microsoft/TypeScript#63921 push diagnostics for clients without pull support
   (row 19)
-- `--build --watch` does not recompile after a `.tsrx` edit (row 51; not filed
-  yet). microsoft/TypeScript#64351 (`--watch` never recompiled on macOS) is fixed
-  from `7.1.0-dev.20260923.1`, the minimum (row 14).
+- microsoft/TypeScript#64351 (`--watch` never recompiled on macOS) is fixed from
+  `7.1.0-dev.20260923.1`, the minimum (row 14).
