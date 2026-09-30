@@ -25,14 +25,15 @@ export function ScriptBodyApp() @{
 	</div>
 }
 
-// `{typeof code}` is the text of the body, as it would be in an `.html` file,
-// not an expression container. (A target that runs a script on a client render
-// runs it as a block, which reads no undeclared name.)
+// `{typeof globalThis}` is the text of the body, as it would be in an `.html`
+// file, not an expression container. (A target that runs a script on a client
+// render runs it as a block, and type checking reads it as one too, so it names
+// only a declared global.)
 export function ScriptBracesApp() {
 	return (
 		<div class="script-braces">
 			{/* prettier-ignore */}
-			<script>{typeof code}</script>
+			<script>{typeof globalThis}</script>
 		</div>
 	);
 }
@@ -61,5 +62,5 @@ export const script_body_cases: Array<[string, string, string]> = [
 				{ "imports": { "x": "./x.js" } }
 			`,
 	],
-	['braces, as text', '.script-braces', '{typeof code}'],
+	['braces, as text', '.script-braces', '{typeof globalThis}'],
 ];
