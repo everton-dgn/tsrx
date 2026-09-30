@@ -65,7 +65,7 @@ describe('to_diagnostic', () => {
 		error.pos = 10;
 		error.end = 14;
 		error.code = unclosed.code;
-		// TypeScript shows it as `tsrx1001`, so the message doesn't repeat the code.
+		// TypeScript shows it as `TSRX1001`, so the message doesn't repeat the code.
 		expect(to_diagnostic(error, 100, MAPPER_CODES.USAGE_ERROR)).toEqual({
 			start: 10,
 			length: 4,
@@ -112,7 +112,7 @@ describe('create_tsrx_content_mapper', () => {
 		const mapper = create_tsrx_content_mapper();
 		expect(mapper.initialize({ positionEncodings: ['utf-8', 'utf-16'] })).toEqual({
 			positionEncoding: 'utf-16',
-			diagnosticSource: 'tsrx',
+			diagnosticSource: 'TSRX',
 		});
 		expect(() => mapper.initialize({ positionEncodings: ['utf-8'] })).toThrow(/UTF-16/);
 	});

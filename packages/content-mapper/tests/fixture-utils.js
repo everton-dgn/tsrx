@@ -40,7 +40,7 @@ export function read_expected_diagnostics() {
 
 /**
  * Parse `tsc --pretty false` output into comparable records. Codes are
- * `TS2322` for TypeScript's own diagnostics and `tsrx2002` (diagnostic source
+ * `TS2322` for TypeScript's own diagnostics and `TSRX2002` (diagnostic source
  * plus numeric code) for mapper-authored ones. Continuation lines (indented
  * message detail) are folded into the preceding diagnostic.
  * @param {string} output

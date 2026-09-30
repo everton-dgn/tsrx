@@ -5,33 +5,36 @@ import { describe, expect, it } from 'vitest';
 import { TS_ERRORS, TSRX_ERRORS } from '@tsrx/core/diagnostics';
 import {
 	CompileErrorDedupe,
-	MAPPER_DIAGNOSTIC_SOURCE,
-	SERVER_COMPILE_ERROR_SOURCE,
+	TSRX_DIAGNOSTIC_SOURCE,
 	has_mapper_diagnostics,
 	has_server_compile_errors,
 	reported_by_typescript,
 } from '../src/diagnostics.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const compile_error = { source: 'TSRX', message: 'Unexpected token' };
+const compile_error = { source: 'TSRX', code: 'tsrx-compile-error', message: 'Unexpected token' };
 const css = { source: 'css', message: 'unknown property' };
-const mapper = { source: 'tsrx', message: 'Unexpected token' };
+const mapper = { source: 'TSRX', code: 111012, message: 'Unexpected token [TS1012]' };
 const ts = { source: 'ts', message: 'Type error' };
 
 describe('TSRX compile errors are shown once', () => {
-	it('uses the diagnostic sources the mapper and the language server actually emit', () => {
+	it("tells the mapper's errors from the server's by their codes, under the source both emit", () => {
 		const protocol = readFileSync(
 			resolve(__dirname, '../../content-mapper/src/protocol.js'),
 			'utf8',
 		);
-		expect(protocol).toContain(`DIAGNOSTIC_SOURCE = '${MAPPER_DIAGNOSTIC_SOURCE}'`);
+		expect(protocol).toContain(`DIAGNOSTIC_SOURCE = '${TSRX_DIAGNOSTIC_SOURCE}'`);
 		const plugin = readFileSync(
 			resolve(__dirname, '../../language-server/src/compileErrorDiagnosticPlugin.js'),
 			'utf8',
 		);
-		expect(plugin).toContain(`source: '${SERVER_COMPILE_ERROR_SOURCE}'`);
+		expect(plugin).toContain(`source: '${TSRX_DIAGNOSTIC_SOURCE}'`);
 		expect(has_mapper_diagnostics([ts, compile_error])).toBe(false);
+		// The server's copy of a mistake with a TypeScript code keeps it as a string.
+		expect(has_mapper_diagnostics([{ ...compile_error, code: 'TS1186' }])).toBe(false);
 		expect(has_mapper_diagnostics([ts, mapper])).toBe(true);
+		// VS Code can hold a code with a documentation link as `{ value, target }`.
+		expect(has_mapper_diagnostics([{ ...mapper, code: { value: mapper.code } }])).toBe(true);
 		expect(has_server_compile_errors([ts, compile_error])).toBe(true);
 		expect(has_server_compile_errors([ts, mapper])).toBe(false);
 	});
@@ -105,7 +108,9 @@ describe('a mistake tsserver also reports is shown once (TypeScript 5.9 or 6)', 
 			message: TSRX_ERRORS.UNEXPECTED_CLOSING_TAG.message,
 		};
 		expect(reported_by_typescript(tsrx_only, [{ ...typescript, code: 1003 }])).toBe(false);
-		expect(reported_by_typescript(collected, [{ ...typescript, source: 'tsrx' }])).toBe(false);
+		expect(
+			reported_by_typescript(collected, [{ ...typescript, source: TSRX_DIAGNOSTIC_SOURCE }]),
+		).toBe(false);
 		expect(reported_by_typescript(compile_error, [typescript])).toBe(false);
 	});
 

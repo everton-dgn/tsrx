@@ -394,7 +394,7 @@ const TYPESCRIPT_CODE = /^TS(\d+)$/;
 
 /**
  * Translate a compiler `CompileError` into a mapper diagnostic in original
- * offsets. TypeScript shows the mapper's diagnostics as `tsrx<number>`, so a
+ * offsets. TypeScript shows the mapper's diagnostics as `TSRX<number>`, so a
  * TSRX code goes as its number (`TSRX2002` → `2002`) and a TypeScript code as
  * `TYPESCRIPT_CODE_PREFIX` then its number (`TS1005` → `111005`), which keeps
  * the code in the message too. An error without either uses `fallback_code`

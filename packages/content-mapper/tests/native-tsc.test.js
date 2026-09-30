@@ -74,7 +74,7 @@ describe('native tsc --runExternalCode', () => {
 			'false',
 		]);
 		const diagnostics = parse_tsc_output(result.output);
-		const tsrx_errors = diagnostics.filter((d) => d.code.startsWith('tsrx'));
+		const tsrx_errors = diagnostics.filter((d) => d.code.startsWith('TSRX'));
 		expect(tsrx_errors).toHaveLength(1);
 		expect(tsrx_errors[0].file).toBe('Panel.tsrx');
 		expect(tsrx_errors[0].line).toBe(line);
@@ -82,7 +82,7 @@ describe('native tsc --runExternalCode', () => {
 		expect(tsrx_errors[0].column).toBeLessThanOrEqual(column + 3);
 		// The export stub keeps main.ts resolving `./Panel.tsrx` and, since its
 		// exports are typed `any`, main.ts reports nothing else.
-		expect(diagnostics.filter((d) => !d.code.startsWith('tsrx'))).toEqual([]);
+		expect(diagnostics.filter((d) => !d.code.startsWith('TSRX'))).toEqual([]);
 		expect(result.status).not.toBe(0);
 	});
 

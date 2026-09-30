@@ -86,7 +86,7 @@ describe('native tsc --watch', () => {
 		const { code } = TS_ERRORS.UNEXPECTED_TOKEN;
 		expect(log.output).toMatch(
 			new RegExp(
-				`Panel\\.tsrx\\(\\d+,\\d+\\): error tsrx${typescript_mapper_code(code)}: Unexpected token`,
+				`Panel\\.tsrx\\(\\d+,\\d+\\): error TSRX${typescript_mapper_code(code)}: Unexpected token`,
 			),
 		);
 		expect(log.output).not.toContain('TS2322');

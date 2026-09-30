@@ -4,10 +4,12 @@
  *
  * - `@tsrx/content-mapper`, when TypeScript 7 serves the workspace: TypeScript
  *   reports them with the mapper's diagnostic source (`protocol.js` in that
- *   package).
+ *   package) and a number as their code.
  * - The TSRX language server's compile-error plugin, which VS Code's tsserver
  *   cannot replace when TypeScript 5.9 or 6 serves the workspace through
- *   `@tsrx/typescript-plugin`.
+ *   `@tsrx/typescript-plugin`. Its codes are strings.
+ *
+ * Both have the source `TSRX`, so the type of the code tells them apart.
  *
  * The server always reports them and the extension drops its copy once the
  * mapper has been seen reporting in this session: from then on TypeScript 7
@@ -34,10 +36,11 @@
  * @property {{ start: { line: number, character: number } }} [range]
  */
 
-/** `DIAGNOSTIC_SOURCE` of `@tsrx/content-mapper/src/protocol.js`. */
-export const MAPPER_DIAGNOSTIC_SOURCE = 'tsrx';
-/** `source` of `@tsrx/language-server`'s compile-error diagnostics. */
-export const SERVER_COMPILE_ERROR_SOURCE = 'TSRX';
+/**
+ * `DIAGNOSTIC_SOURCE` of `@tsrx/content-mapper/src/protocol.js`, and the
+ * `source` of `@tsrx/language-server`'s compile-error diagnostics.
+ */
+export const TSRX_DIAGNOSTIC_SOURCE = 'TSRX';
 /** `source` of the diagnostics VS Code's own TypeScript reports. */
 export const TYPESCRIPT_DIAGNOSTIC_SOURCE = 'ts';
 
@@ -46,7 +49,11 @@ export const TYPESCRIPT_DIAGNOSTIC_SOURCE = 'ts';
  * @returns {boolean}
  */
 export function has_mapper_diagnostics(diagnostics) {
-	return diagnostics.some((diagnostic) => diagnostic.source === MAPPER_DIAGNOSTIC_SOURCE);
+	return diagnostics.some(
+		(diagnostic) =>
+			diagnostic.source === TSRX_DIAGNOSTIC_SOURCE &&
+			typeof code_value(diagnostic.code) === 'number',
+	);
 }
 
 /**
@@ -62,7 +69,9 @@ export function has_server_compile_errors(diagnostics) {
  * @returns {boolean}
  */
 function is_server_compile_error(diagnostic) {
-	return diagnostic.source === SERVER_COMPILE_ERROR_SOURCE;
+	return (
+		diagnostic.source === TSRX_DIAGNOSTIC_SOURCE && typeof code_value(diagnostic.code) !== 'number'
+	);
 }
 
 /**

@@ -307,7 +307,7 @@ describe('native language server on a configured project', () => {
 		client.change('Button.tsrx', broken);
 		const diagnostics = await client.diagnostics('Button.tsrx');
 		expect(diagnostics.map((d) => [d.source, d.code, range_text(broken, d.range)])).toEqual([
-			['tsrx', typescript_mapper_code(TS_ERRORS.UNEXPECTED_TOKEN.code), '+'],
+			['TSRX', typescript_mapper_code(TS_ERRORS.UNEXPECTED_TOKEN.code), '+'],
 		]);
 		expect(diagnostics[0].message).toBe(
 			`${TS_ERRORS.UNEXPECTED_TOKEN.message} (9:23) [${TS_ERRORS.UNEXPECTED_TOKEN.code}]`,
@@ -339,7 +339,7 @@ describe('native language server on a configured project', () => {
 				d.code,
 				range_text(semicolon, d.range),
 			]),
-		).toEqual([['tsrx', Number(code.slice('TSRX'.length)), ';']]);
+		).toEqual([['TSRX', Number(code.slice('TSRX'.length)), ';']]);
 
 		client.change('Button.tsrx', files['Button.tsrx']);
 		expect(await client.diagnostics('Button.tsrx')).toEqual([]);

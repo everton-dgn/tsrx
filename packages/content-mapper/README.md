@@ -107,14 +107,14 @@ One precedence rule, highest first:
   declarations of a `<script type="module">` body are hoisted to module level in
   front of the block, where TypeScript resolves them like any other import.
 - TSRX compile errors as mapper diagnostics in the original file, printed as
-  `error tsrx<number>`. A TSRX error is its code's number (`TSRX2002` →
-  `tsrx2002`). An error with a TypeScript code is left to TypeScript, which
-  reports the mistake from the generated code, unless the file doesn't compile:
-  then it's `11` and its number (`TS1005` → `tsrx111005`), with the code in
-  brackets in the message. The mapper's own errors are `771000` (a file that
-  doesn't compile, with an error without a code), `771001` (an error without a
-  TSRX or TypeScript code), `771002` (no compiler found) and `771003` (invalid
-  configuration). The codes and prefixes are in `@tsrx/core/diagnostics`.
+  `error TSRX<number>`, in capitals like TypeScript's `TS2322`, so a TSRX error
+  shows with its own code (`TSRX2002`). An error with a TypeScript code is left to
+  TypeScript, which reports the mistake from the generated code, unless the file
+  doesn't compile: then it's `11` and its number (`TS1005` → `TSRX111005`), with
+  the code in brackets in the message. The mapper's own errors are `771000` (a
+  file that doesn't compile, with an error without a code), `771001` (an error
+  without a TSRX or TypeScript code), `771002` (no compiler found) and `771003`
+  (invalid configuration). The codes and prefixes are in `@tsrx/core/diagnostics`.
 - While a file cannot be compiled, a stub that re-declares its exports as `any`
   (values and types), so importers keep resolving and the author sees exactly one
   error at the failing construct. `<style>` bodies are never TypeScript's concern
