@@ -8,8 +8,11 @@ From the repository root:
 pnpm --filter @tsrx/vscode-plugin build-and-package
 ```
 
-This creates `packages/vscode-plugin/vscode-plugin.vsix`. Install that exact
-artifact locally with:
+This creates `packages/vscode-plugin/vscode-plugin.vsix`. Its `build` step first
+builds the workspace packages the extension ships (`@tsrx/typescript-plugin`,
+`@tsrx/language-server` and their workspace dependencies with a `build` script),
+so the VSIX always contains their current sources. Install that exact artifact
+locally with:
 
 ```sh
 pnpm --filter @tsrx/vscode-plugin install-package

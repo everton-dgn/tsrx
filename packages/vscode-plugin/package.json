@@ -33,7 +33,7 @@
     "directory": "packages/vscode-plugin"
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "pnpm --filter \"@tsrx/vscode-plugin^...\" build && tsdown",
     "repack-vsix": "node scripts/repack-vsix.js",
     "delete-unpacked": "node ../../scripts/remove.js packages/vscode-plugin/vscode-plugin",
     "pkg-name-release": "node ../../scripts/transform-package.js packages/vscode-plugin/package.json name tsrx-vscode-plugin",
