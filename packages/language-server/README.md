@@ -33,9 +33,10 @@ npx @tsrx/language-server --stdio
 Configure your editor's LSP client for `*.tsrx` files with the language ID `tsrx`.
 
 The `classic` backend hosts TypeScript's JavaScript API,
-`typescript@^5.9.3 || ^6.0.0` (the peer dependency); it refuses to initialize with
-an explanation when the project's only `typescript` is the native TypeScript 7
-package (a launcher without a JavaScript API). The `native` backend loads no
+`typescript@^5.9.3 || ^6.0.0` (the peer dependency range also admits TypeScript 7
+from `7.1.0-dev.20260923.1`, for the `native` backend); it refuses to initialize
+with an explanation when the project's only `typescript` is the native TypeScript
+7 package (a launcher without a JavaScript API). The `native` backend loads no
 TypeScript at all: it reads `tsconfig.json` and resolves compilers through
 `@tsrx/typescript-plugin`'s own reader and runs on Volar's plain project host, so
 TypeScript 7 can be the only TypeScript in the project.

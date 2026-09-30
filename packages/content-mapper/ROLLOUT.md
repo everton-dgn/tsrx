@@ -45,10 +45,12 @@ TypeScript 7 plain `tsc --runExternalCode` can be used directly instead.
 - **Editor guides** for Zed, Neovim (`setup(plugin, { typescript_backend })`),
   IntelliJ and Sublime Text describe the native setup per editor.
 - **TypeScript 6** on the classic path: the `typescript` peer range of
-  `@tsrx/typescript-plugin` and `@tsrx/language-server` is `^5.9.3 || ^6.0.0` (the
-  whole suite passes on 6.0.3). The `typescript@7` package has no JavaScript API:
-  the classic language server stops with an explanation when it resolves one, and
-  `tsrx-tsc` runs the native path instead (next bullet).
+  `@tsrx/typescript-plugin` and `@tsrx/language-server` is
+  `^5.9.3 || ^6.0.0 || ^7.1.0-dev.20260923.1` (the whole suite passes on 6.0.3;
+  the TypeScript 7 part is for `tsrx-tsc` and the native backend). The
+  `typescript@7` package has no JavaScript API: the classic language server stops
+  with an explanation when it resolves one, and `tsrx-tsc` runs the native path
+  instead (next bullet).
 - **`tsrx-tsc` on TypeScript 7.** When the installed `typescript` is a 7.1 nightly
   with the content-mapper protocol, `tsrx-tsc` finds the native binary through the
   launcher's platform package and runs it with `--runExternalCode` for the

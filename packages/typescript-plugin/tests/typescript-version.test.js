@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 import {
@@ -25,8 +26,25 @@ describe('TypeScript version support', () => {
 		expect(typescript_major('6.0.3')).toBe(6);
 	});
 
-	it('declares the range the package manifests use', () => {
+	it('declares the ranges the workspace uses', () => {
 		expect(SUPPORTED_TYPESCRIPT_RANGE).toBe('^5.9.3 || ^6.0.0');
+		const workspace = fs.readFileSync(
+			new URL('../../../pnpm-workspace.yaml', import.meta.url),
+			'utf8',
+		);
+		const anchor = (/** @type {string} */ name) =>
+			new RegExp(`^${name}: &${name} (.+)$`, 'm').exec(workspace)?.[1];
+		// The peer range: the JavaScript API range plus the native builds.
+		expect(anchor('ts_supported')).toBe(
+			`${SUPPORTED_TYPESCRIPT_RANGE} || ^${MINIMUM_NATIVE_TYPESCRIPT_VERSION}`,
+		);
+		// The nightly the repository runs, released after the release-age policy.
+		const native = anchor('ts_native') ?? '';
+		expect(has_content_mapper_protocol(native)).toBe(true);
+		expect(workspace).toContain(`  - typescript@${native}\n`);
+		expect(workspace).toContain(
+			`@typescript/typescript-${process.platform}-${process.arch}@${native}'`,
+		);
 		expect(MINIMUM_NATIVE_TYPESCRIPT_VERSION).toMatch(/^7\.\d+\.\d+(-dev\.\d{8}\.\d+)?$/);
 		expect(TYPESCRIPT_7_TRACKING_ISSUE_URL).toMatch(
 			/^https:\/\/github\.com\/tsrx-org\/tsrx\/issues\/\d+$/,
