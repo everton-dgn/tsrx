@@ -755,6 +755,29 @@ function App({ tag }: { tag: string }) @{
 			expect(css_mapping).toBeDefined();
 			expect(css_mapping?.data.customData.embeddedId).toMatch(/^style-/);
 		});
+		it('exposes a <script> body of code as a region, and not a data block (#846)', () => {
+			const source = `export function App(props: { type: string }) @{
+	<>
+		<script>const plain = 1;</script>
+		<script type="module">const module_script = 1;</script>
+		<script type=" TEXT/JavaScript ">const mime = 1;</script>
+		<script type="text/typescript">const typed: number = 1;</script>
+		<script type={props.type}>const dynamic = 1;</script>
+		<script type="application/json">{ "json": 1 }</script>
+		<script type="importmap">{ "imports": { "x": "./x.js" } }</script>
+		<script type="text/template"><p>template</p></script>
+	</>
+}`;
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors).toEqual([]);
+			expect(result.scriptMappings.map((mapping) => mapping.data.customData.content)).toEqual([
+				'const plain = 1;',
+				'const module_script = 1;',
+				'const mime = 1;',
+				'const typed: number = 1;',
+				'const dynamic = 1;',
+			]);
+		});
 		it('exposes style blocks, scripts and scoped classes inside attribute values', () => {
 			// The compiler scopes elements in an attribute value too
 			// (`icon={<span class="a" />}` prints `class="a tsrx-…"`).

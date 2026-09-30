@@ -59,6 +59,67 @@ function get_style_region_id(hash, fallback) {
 }
 
 /**
+ * The `type` of a `<script>` whose body is code: one that runs as
+ * JavaScript, as HTML decides it
+ * (https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element),
+ * so empty, `module` or a JavaScript MIME type, and the TypeScript and JSX
+ * types that in-browser compilers run. Any other type (`application/json`,
+ * `importmap`, `text/template`) makes the body a data block, not code.
+ */
+const CODE_SCRIPT_TYPES = new Set([
+	'',
+	'module',
+	'application/ecmascript',
+	'application/javascript',
+	'application/x-ecmascript',
+	'application/x-javascript',
+	'text/ecmascript',
+	'text/javascript',
+	'text/javascript1.0',
+	'text/javascript1.1',
+	'text/javascript1.2',
+	'text/javascript1.3',
+	'text/javascript1.4',
+	'text/javascript1.5',
+	'text/jscript',
+	'text/livescript',
+	'text/x-ecmascript',
+	'text/x-javascript',
+	'text/typescript',
+	'application/typescript',
+	'application/x-typescript',
+	'text/babel',
+	'text/jsx',
+]);
+
+/**
+ * Whether a `<script>` element's body is code: it has no `type`, or one of
+ * {@link CODE_SCRIPT_TYPES} once its ASCII whitespace is trimmed and its ASCII
+ * case ignored, as HTML does, or one that is only known at run time
+ * (`type={t}`).
+ * @param {AST.Node} element
+ * @returns {boolean}
+ */
+function is_code_script(element) {
+	const attributes = /** @type {ESTreeJSX.JSXOpeningElement} */ (
+		/** @type {ESTreeJSX.JSXElement} */ (element).openingElement
+	).attributes;
+	const type = attributes.find(
+		(attribute) =>
+			attribute.type === 'JSXAttribute' &&
+			attribute.name.type === 'JSXIdentifier' &&
+			attribute.name.name === 'type',
+	);
+	if (!type || type.type !== 'JSXAttribute' || type.value == null) return true;
+	if (type.value.type !== 'Literal' || typeof type.value.value !== 'string') return true;
+	return CODE_SCRIPT_TYPES.has(
+		type.value.value
+			.replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '')
+			.replace(/[A-Z]/g, (letter) => letter.toLowerCase()),
+	);
+}
+
+/**
  * Extract CSS source regions from style elements in the AST, and record the
  * author's calls and parenthesized expressions, each keyed by its type and span
  * and mapped to the same key for its callee or wrapped expression.
@@ -82,18 +143,19 @@ function visit_source_ast(
 	walk(ast, null, {
 		JSXElement(node, context) {
 			// Raw-text `<script>` elements carry their body verbatim on `node.content`
-			// (see the parser's `#parseScriptElement`). Expose that body as an embedded
-			// TypeScript region so the editor can offer intellisense inside it,
+			// (see the parser's `#parseScriptElement`). Expose a body of code as an
+			// embedded TypeScript region so the editor can offer intellisense inside it,
 			// mirroring how `<style>` bodies become embedded CSS regions below. The
-			// editor treats every script body as TypeScript (a superset of JS, matching
-			// the TextMate/tree-sitter/prettier treatment); the `type` attribute only
-			// matters to the runtime transforms, which read it off the AST.
+			// editor checks it as TypeScript (a superset of JS, matching the
+			// TextMate/tree-sitter/prettier treatment). A data block (`application/json`,
+			// `importmap`) isn't code, so it gets no region (#846).
 			const element_name = node.openingElement?.name;
 			const content = node.content;
 			if (
 				element_name?.type === 'JSXIdentifier' &&
 				element_name.name === 'script' &&
-				typeof content === 'string'
+				typeof content === 'string' &&
+				is_code_script(node)
 			) {
 				const start = /** @type {AST.NodeWithLocation} */ (node.openingElement).end;
 				script_regions.push({
