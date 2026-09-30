@@ -1,3 +1,8 @@
+// This file must not import anything. `@tsrx/core/diagnostics` exports it on
+// its own so that tools can bundle or load the error tables without the rest
+// of the compiler, and an import here would pull that module, and everything
+// it imports, into each of them. `tests/utils/error-codes.test.js` checks it.
+
 /**
  * TSRX's own error codes, one per mistake only TSRX reports. The TSRX
  * specification lists each with its message and an example (its appendix,
@@ -714,6 +719,10 @@ export const TS_ERRORS = {
 	},
 	MISSING_CATCH_OR_FINALLY: { code: 'TS1472', message: 'Missing catch or finally clause' },
 	MULTIPLE_DEFAULT_CLAUSES: { code: 'TS1113', message: 'Multiple default clauses' },
+	USE_STRICT_NON_SIMPLE_PARAMETERS: {
+		code: 'TS1347',
+		message: "Illegal 'use strict' directive in function with non-simple parameter list",
+	},
 
 	// acorn-typescript's wording, for the code TSRX reads in acorn-typescript's
 	// place
@@ -1024,7 +1033,7 @@ const UPSTREAM_LOOKUP_ROWS = [
 	// acorn: parseTemplate
 	[/^Unterminated template literal$/, 'TS1160'],
 	// acorn: parseFunctionBody
-	[/^Illegal 'use strict' directive in function with non-simple parameter list$/, 'TS1347'],
+	TS_ERRORS.USE_STRICT_NON_SIMPLE_PARAMETERS,
 	// acorn: checkUnreserved
 	[/^Cannot use 'yield' as identifier inside a generator$/, 'TS1212'],
 	// acorn: checkUnreserved

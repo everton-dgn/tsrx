@@ -1,10 +1,47 @@
 /** @import { CompileError } from '../../types/index' */
 
 import { readFileSync } from 'node:fs';
+import { parse } from 'acorn';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { get_upstream_error, TS_ERRORS, TSRX_ERRORS } from '../../src/diagnostics.js';
 import { analyzeTsrx, DIAGNOSTIC_CODES, parseModule } from '../../src/index.js';
+
+/**
+ * The imports in the module at `url`, as written: `import` and `export … from`
+ * declarations, and `import()` and `require()` calls.
+ * @param {URL} url
+ * @returns {string[]}
+ */
+function imports_of(url) {
+	const source = readFileSync(url, 'utf8');
+	/** @type {string[]} */
+	const found = [];
+	/** @param {any} node */
+	const visit = (node) => {
+		if (Array.isArray(node)) {
+			node.forEach(visit);
+			return;
+		}
+		if (!node || typeof node.type !== 'string') return;
+		if (
+			node.type === 'ImportDeclaration' ||
+			node.type === 'ImportExpression' ||
+			((node.type === 'ExportNamedDeclaration' || node.type === 'ExportAllDeclaration') &&
+				node.source) ||
+			(node.type === 'CallExpression' &&
+				node.callee.type === 'Identifier' &&
+				node.callee.name === 'require')
+		) {
+			found.push(source.slice(node.start, node.end));
+		}
+		for (const value of Object.values(node)) {
+			if (value && typeof value === 'object') visit(value);
+		}
+	};
+	visit(parse(source, { ecmaVersion: 'latest', sourceType: 'module' }));
+	return found;
+}
 
 /**
  * The codes of the errors that parsing `source`, strictly and when collecting,
@@ -347,6 +384,9 @@ let E;`,
 	}
 }`,
 			],
+			// acorn raises it for a `{ … }` body, and TSRX for a `@{ … }` one.
+			['TS1347', "function f(a = 1) { 'use strict'; }"],
+			['TS1347', "function f(a = 1) @{ 'use strict'; <div /> }"],
 		];
 		for (const [code, source] of cases) {
 			expect(reported_codes(source), source).toContain(code);
@@ -375,6 +415,7 @@ let E;`,
 			TS_ERRORS.FOR_OF_INITIALIZER,
 			TS_ERRORS.MISSING_CATCH_OR_FINALLY,
 			TS_ERRORS.MULTIPLE_DEFAULT_CLAUSES,
+			TS_ERRORS.USE_STRICT_NON_SIMPLE_PARAMETERS,
 			// acorn-typescript's, for the code TSRX reads in its place
 			TS_ERRORS.UNTERMINATED_JSX_CONTENTS,
 			TS_ERRORS.JSX_UNESCAPED_GREATER_THAN,
@@ -444,5 +485,21 @@ let E;`,
 		for (const code of [...Object.values(DIAGNOSTIC_CODES), ...typescript_codes]) {
 			expect(specification, code).toMatch(new RegExp(`['"]${code}  `));
 		}
+	});
+
+	it('are exported without the compiler as @tsrx/core/diagnostics', async () => {
+		const tables = await import('@tsrx/core/diagnostics');
+		const core = await import('../../src/index.js');
+		expect(tables.DIAGNOSTIC_CODES).toBe(core.DIAGNOSTIC_CODES);
+		expect(tables.TS_ERRORS).toBe(core.TS_ERRORS);
+		expect(tables.TSRX_ERRORS).toBe(core.TSRX_ERRORS);
+	});
+
+	it('are in a module that imports nothing, so bundling them takes nothing else', () => {
+		expect(imports_of(new URL('../../src/diagnostics.js', import.meta.url))).toEqual([]);
+		// The check finds the imports of a module that has them.
+		expect(imports_of(new URL('../../src/index.js', import.meta.url))).toContain(
+			"export { DIAGNOSTIC_CODES, TS_ERRORS, TSRX_ERRORS } from './diagnostics.js';",
+		);
 	});
 });
