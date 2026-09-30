@@ -9,6 +9,8 @@
  * it from their own entry file.
  */
 
+import { Console } from 'node:console';
+
 /**
  * @typedef {{ jsonrpc: '2.0', id?: number | string | null, method: string, params?: unknown }} RequestMessage
  */
@@ -119,8 +121,15 @@ export function run_mapper_server(mapper, streams = {}) {
 
 /**
  * Route every console method to stderr so stray logging (from a target
- * compiler, for example) can never corrupt the protocol stream on stdout.
+ * compiler, for example) can never corrupt the protocol stream on stdout: not
+ * only `log` but `dir`, `table`, `trace`, `group` and the rest write there, so
+ * each takes the method of a console whose stdout is stderr.
  */
 export function redirect_console_to_stderr() {
-	console.log = console.info = console.warn = console.debug = (...args) => console.error(...args);
+	const to_stderr = new Console({ stdout: process.stderr, stderr: process.stderr });
+	for (const [name, method] of Object.entries(to_stderr)) {
+		if (typeof method === 'function') {
+			/** @type {Record<string, unknown>} */ (/** @type {unknown} */ (console))[name] = method;
+		}
+	}
 }
