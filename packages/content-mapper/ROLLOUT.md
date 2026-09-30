@@ -97,8 +97,8 @@ TypeScript 7 plain `tsc --runExternalCode` can be used directly instead.
   `dist/content-mapper.js` from an unpacked copy outside the checkout. Linux and
   Windows are not exercised.
 - The gaps and their upstream issues are tracked in
-  [tsrx-org/tsrx#136](https://github.com/tsrx-org/tsrx/issues/136), which the VS
-  Code messages, the CLI and the docs point users to.
+  [tsrx-org/tsrx#135](https://github.com/tsrx-org/tsrx/pull/135), which the
+  `tsrx-tsc` and language-server messages and the docs point users to.
 
 Performance on the same projects and hardware
 ([`BENCHMARKS.md`](./BENCHMARKS.md)): cold checks 2.1–3.6× faster,

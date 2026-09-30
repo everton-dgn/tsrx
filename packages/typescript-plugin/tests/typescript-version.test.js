@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	MINIMUM_NATIVE_TYPESCRIPT_VERSION,
 	SUPPORTED_TYPESCRIPT_RANGE,
-	TYPESCRIPT_7_TRACKING_ISSUE_URL,
+	TYPESCRIPT_7_TRACKING_URL,
 	compare_typescript_versions,
 	has_content_mapper_protocol,
 	is_native_typescript_package,
@@ -46,9 +46,7 @@ describe('TypeScript version support', () => {
 			`@typescript/typescript-${process.platform}-${process.arch}@${native}'`,
 		);
 		expect(MINIMUM_NATIVE_TYPESCRIPT_VERSION).toMatch(/^7\.\d+\.\d+(-dev\.\d{8}\.\d+)?$/);
-		expect(TYPESCRIPT_7_TRACKING_ISSUE_URL).toMatch(
-			/^https:\/\/github\.com\/tsrx-org\/tsrx\/issues\/\d+$/,
-		);
+		expect(TYPESCRIPT_7_TRACKING_URL).toMatch(/^https:\/\/github\.com\/tsrx-org\/tsrx\/pull\/\d+$/);
 	});
 
 	it('recognises the native TypeScript package, stable or nightly, by major version', () => {
@@ -106,7 +104,7 @@ describe('TypeScript version support', () => {
 		expect(tsc).toContain('tsc --runExternalCode');
 		expect(tsc).toContain(MINIMUM_NATIVE_TYPESCRIPT_VERSION);
 		expect(tsc).toContain('typescript@next');
-		expect(tsc).toContain(TYPESCRIPT_7_TRACKING_ISSUE_URL);
+		expect(tsc).toContain(TYPESCRIPT_7_TRACKING_URL);
 		expect(unsupported_typescript_message('7.1.0-dev.20260821.1', 'tsrx-tsc')).toContain(
 			'tsrx-tsc resolved typescript@7.1.0-dev.20260821.1',
 		);
@@ -117,7 +115,7 @@ describe('TypeScript version support', () => {
 			"The TSRX language server's classic backend resolved typescript@7.1.0-dev.20260918.1",
 		);
 		expect(server).toContain('--typescript-backend=native');
-		expect(server).toContain(TYPESCRIPT_7_TRACKING_ISSUE_URL);
+		expect(server).toContain(TYPESCRIPT_7_TRACKING_URL);
 	});
 
 	it('stays silent without a version to judge', () => {
