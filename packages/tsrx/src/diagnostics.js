@@ -194,26 +194,39 @@ function with_values(code, message) {
 }
 
 /**
- * A TSRX error with the code of `key` in {@link DIAGNOSTIC_CODES}. The code is
- * read here, not where the entry is written: a property read when the module
- * loads would keep every table in a bundle.
+ * The code of `key` in {@link DIAGNOSTIC_CODES}. It is read here, not where an
+ * entry is written: a property read when the module loads would keep every
+ * table in a bundle. The typecheck rejects a key that isn't there; so does
+ * this, when the module loads.
+ * @param {keyof typeof DIAGNOSTIC_CODES} key
+ * @returns {string}
+ */
+function tsrx_code(key) {
+	if (!Object.hasOwn(DIAGNOSTIC_CODES, key)) {
+		throw new Error(`DIAGNOSTIC_CODES has no ${key}`);
+	}
+	return DIAGNOSTIC_CODES[key];
+}
+
+/**
+ * A TSRX error with the code of `key` in {@link DIAGNOSTIC_CODES}.
  * @param {keyof typeof DIAGNOSTIC_CODES} key
  * @param {string} message
  * @returns {Diagnostic}
  */
 function tsrx(key, message) {
-	return { code: DIAGNOSTIC_CODES[key], message };
+	return { code: tsrx_code(key), message };
 }
 
 /**
  * {@link with_values} for a TSRX error, with the code of `key` in
- * {@link DIAGNOSTIC_CODES}, read here as in {@link tsrx}.
+ * {@link DIAGNOSTIC_CODES}.
  * @param {keyof typeof DIAGNOSTIC_CODES} key
  * @param {(...values: string[]) => string} message
  * @returns {DiagnosticWithValues}
  */
 function tsrx_with_values(key, message) {
-	return with_values(DIAGNOSTIC_CODES[key], message);
+	return with_values(tsrx_code(key), message);
 }
 
 /**
