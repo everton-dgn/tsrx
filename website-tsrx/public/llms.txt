@@ -1604,7 +1604,7 @@ Two paths type-check `.tsrx` files; both use the same target-specific transform.
   server loads it from there so `.ts` importers resolve `.tsrx` modules. VS Code
   ships the plugin and needs no entry. Requires `typescript@^5.9.3 || ^6.0.0`.
 - **TypeScript 7 (native, not complete yet):** install `@tsrx/content-mapper` and
-  a TypeScript 7.1 nightly (`typescript@next`, `7.1.0-dev.20260822.1` or newer;
+  a TypeScript 7.1 nightly (`typescript@next`, `7.1.0-dev.20260923.1` or newer;
   the stable 7.0 releases have no content-mapper protocol), declare the mapper in
   `tsconfig.json`, and run `tsc --runExternalCode --noEmit`, or keep running
   `tsrx-tsc --noEmit`: with such a nightly installed it runs the native compiler

@@ -63,8 +63,10 @@ describe('TypeScript version support', () => {
 	it('knows which native builds speak the content-mapper protocol', () => {
 		expect(has_content_mapper_protocol('7.0.2')).toBe(false);
 		expect(has_content_mapper_protocol('7.1.0-dev.20260821.1')).toBe(false);
+		// Speaks the protocol, but its `tsc --watch` never recompiles (microsoft/TypeScript#64351).
+		expect(has_content_mapper_protocol('7.1.0-dev.20260922.1')).toBe(false);
 		expect(has_content_mapper_protocol(MINIMUM_NATIVE_TYPESCRIPT_VERSION)).toBe(true);
-		expect(has_content_mapper_protocol('7.1.0-dev.20260918.1')).toBe(true);
+		expect(has_content_mapper_protocol('7.1.0-dev.20260930.4')).toBe(true);
 		expect(has_content_mapper_protocol('7.1.0')).toBe(true);
 		expect(has_content_mapper_protocol('8.0.0')).toBe(true);
 	});
@@ -73,7 +75,7 @@ describe('TypeScript version support', () => {
 		expect(unsupported_typescript_message(MINIMUM_NATIVE_TYPESCRIPT_VERSION, 'tsrx-tsc')).toBe(
 			undefined,
 		);
-		expect(unsupported_typescript_message({ version: '7.1.0-dev.20260918.1' }, 'tsrx-tsc')).toBe(
+		expect(unsupported_typescript_message({ version: '7.1.0-dev.20260930.4' }, 'tsrx-tsc')).toBe(
 			undefined,
 		);
 	});

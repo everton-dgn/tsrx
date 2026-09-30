@@ -19,12 +19,13 @@
 export const SUPPORTED_TYPESCRIPT_RANGE = '^5.9.3 || ^6.0.0';
 
 /**
- * The oldest TypeScript 7 build whose content-mapper protocol
- * `@tsrx/content-mapper` speaks (`tsc --runExternalCode`, `tsc --lsp`). The VS
- * Code "TypeScript 7 Nightly" extension version that bundles it is
- * `0.<date>.<n>` for the same date.
+ * The oldest TypeScript 7 build `@tsrx/content-mapper` supports (`tsc
+ * --runExternalCode`, `tsc --lsp`): the first 7.1 nightly whose `tsc --watch`
+ * recompiles after an edit (microsoft/TypeScript#64351). The content-mapper
+ * protocol itself arrived in `7.1.0-dev.20260822.1`. The VS Code "TypeScript 7
+ * Nightly" extension version that bundles it is `0.<date>.<n>` for the same date.
  */
-export const MINIMUM_NATIVE_TYPESCRIPT_VERSION = '7.1.0-dev.20260822.1';
+export const MINIMUM_NATIVE_TYPESCRIPT_VERSION = '7.1.0-dev.20260923.1';
 
 /** Where the gaps in TypeScript 7 support and their upstream issues are tracked. */
 export const TYPESCRIPT_7_TRACKING_ISSUE_URL = 'https://github.com/tsrx-org/tsrx/issues/136';
@@ -117,8 +118,9 @@ export function compare_typescript_versions(a, b) {
 
 /**
  * Whether a `typescript` package version is a native TypeScript 7 build that
- * speaks the content-mapper protocol, so `tsc --runExternalCode` can type-check
- * `.tsrx` files through `@tsrx/content-mapper`.
+ * speaks the content-mapper protocol and is at least
+ * {@link MINIMUM_NATIVE_TYPESCRIPT_VERSION}, so `tsc --runExternalCode` can
+ * type-check `.tsrx` files through `@tsrx/content-mapper`.
  * @param {string} version
  * @returns {boolean}
  */
@@ -153,7 +155,7 @@ export function unsupported_typescript_message(typescript, tool) {
 			if (has_content_mapper_protocol(version)) {
 				return undefined;
 			}
-			return `tsrx-tsc ${resolved} tsrx-tsc runs TypeScript 7 through "tsc --runExternalCode" and @tsrx/content-mapper, which needs the content-mapper protocol of a 7.1 nightly (${MINIMUM_NATIVE_TYPESCRIPT_VERSION} or newer; install typescript@next), or TypeScript ${SUPPORTED_TYPESCRIPT_RANGE} through Volar. ${TYPESCRIPT_7_SUPPORT_NOTE}`;
+			return `tsrx-tsc ${resolved} tsrx-tsc runs TypeScript 7 through "tsc --runExternalCode" and @tsrx/content-mapper, which needs a 7.1 nightly with the content-mapper protocol (${MINIMUM_NATIVE_TYPESCRIPT_VERSION} or newer; install typescript@next), or TypeScript ${SUPPORTED_TYPESCRIPT_RANGE} through Volar. ${TYPESCRIPT_7_SUPPORT_NOTE}`;
 		case 'language-server':
 			return `The TSRX language server's classic backend ${resolved} The classic backend hosts TypeScript ${SUPPORTED_TYPESCRIPT_RANGE} through Volar: install one of those versions, or run the server with --typescript-backend=native beside TypeScript 7's own language server, which needs no other TypeScript. ${TYPESCRIPT_7_SUPPORT_NOTE}`;
 	}

@@ -26,7 +26,7 @@ upstream TypeScript issues behind them are tracked in
 one that is not listed there, please file a new issue.
 
 1. Install a TypeScript 7 extension build that supports content mappers and runs
-   TypeScript `7.1.0-dev.20260822.1` or newer (a 7.1 nightly; the stable 7.0 line
+   TypeScript `7.1.0-dev.20260923.1` or newer (a 7.1 nightly; the stable 7.0 line
    has no content-mapper protocol), then enable it (`js/ts.experimental.useTsgo`,
    the **TypeScript: Select TypeScript Version** picker or the **TypeScript:
    Enable TypeScript 7** command) and keep its `js/ts.contentMappers.enabled`

@@ -69,10 +69,11 @@ TypeScript 7 plain `tsc --runExternalCode` can be used directly instead.
 ## Requirements and status on 2026-09-19
 
 - The content-mapper protocol needs a TypeScript 7.1 nightly:
-  `7.1.0-dev.20260822.1` or newer (found by running the native suite across the
-  nightlies with `TSRX_NATIVE_TSC`). The stable `typescript@7.0.2` rejects
-  `--runExternalCode` (TS5023) and ignores `contentMappers`; there is no 7.1 beta
-  or release candidate yet.
+  `7.1.0-dev.20260923.1` or newer, the first whose `tsc --watch` recompiles (the
+  protocol itself arrived in `7.1.0-dev.20260822.1`; both found by running the
+  native suite across the nightlies with `TSRX_NATIVE_TSC`). The stable
+  `typescript@7.0.2` rejects `--runExternalCode` (TS5023) and ignores
+  `contentMappers`; there is no 7.1 beta or release candidate yet.
 - No marketplace release of the VS Code **TypeScript 7** extension
   (`TypeScriptTeam.native-preview`, last published `0.20260708.2`) supports
   content mappers: its client predates the feature and never asks the server to
@@ -117,7 +118,9 @@ of the following hold; each is tracked in `COMPATIBILITY.md`:
 2. microsoft/TypeScript#64119 (auto-import needing a new import statement) and
    microsoft/TypeScript#63879 (rename on `Atom` spans) are fixed, or TSRX accepts
    them as permanent.
-3. `--watch` recompiles (microsoft/TypeScript#64351).
+3. ~~`--watch` recompiles (microsoft/TypeScript#64351).~~ Done from
+   `7.1.0-dev.20260923.1`, the minimum; `--build --watch` still misses `.tsrx`
+   edits (`COMPATIBILITY.md` row 51).
 4. Push diagnostics (microsoft/TypeScript#63921) or every supported editor
    integration is confirmed to pull diagnostics.
 
@@ -128,7 +131,7 @@ long as TypeScript 5.9 and 6 are supported.
 
 ### Command-line type checking
 
-1. Install a TypeScript 7.1 nightly (`7.1.0-dev.20260822.1` or newer; the stable
+1. Install a TypeScript 7.1 nightly (`7.1.0-dev.20260923.1` or newer; the stable
    7.0 releases have no content-mapper protocol) and the mapper next to the
    project:
 
@@ -182,7 +185,7 @@ long as TypeScript 5.9 and 6 are supported.
 ### VS Code
 
 1. Install a TypeScript 7 extension build that supports content mappers and runs
-   TypeScript `7.1.0-dev.20260822.1` or newer (see "Requirements and status" above
+   TypeScript `7.1.0-dev.20260923.1` or newer (see "Requirements and status" above
    for what is available today), and enable it (`js/ts.experimental.useTsgo`, the
    **TypeScript: Select TypeScript Version** picker or the **TypeScript: Enable
    TypeScript 7** command). Keep `js/ts.contentMappers.enabled` on (default).
@@ -242,9 +245,8 @@ Copied from the README so this note stands alone; `COMPATIBILITY.md` has the
 classification and evidence for each.
 
 - `--runExternalCode` is required and never enabled by the mapper.
-- `--watch` compiles once and never recompiles on macOS
-  (microsoft/TypeScript#64351, a nightly regression since `7.1.0-dev.20260811.1`,
-  with or without a mapper).
+- `--build --watch` does not recompile after a `.tsrx` edit (plain `--watch`
+  does).
 - No auto-import when a new import statement is needed
   (microsoft/TypeScript#64119); no rename on `Atom` spans
   (microsoft/TypeScript#63879).
@@ -253,5 +255,6 @@ classification and evidence for each.
   microsoft/TypeScript#64120.
 - Diagnostics are pull-only; clients without pull support get none from TypeScript
   7 (microsoft/TypeScript#63921).
-- Only TypeScript 7.1 nightlies from `7.1.0-dev.20260822.1` on speak the protocol;
-  `typescript@7.0.x` does not.
+- Only TypeScript 7.1 nightlies from `7.1.0-dev.20260923.1` on are supported (the
+  protocol arrived in `7.1.0-dev.20260822.1`, `--watch` recompiles from
+  `7.1.0-dev.20260923.1`); `typescript@7.0.x` has no protocol.

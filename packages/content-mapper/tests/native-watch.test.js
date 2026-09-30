@@ -42,15 +42,24 @@ function wait_for(child, log, predicate, timeout = 30_000) {
 	});
 }
 
+/**
+ * The compilations watch mode finished after `offset` in its output, each
+ * ending with "Watching for file changes". One edit can start more than one.
+ * @param {string} output
+ * @param {number} offset
+ */
+function watch_passes_since(output, offset) {
+	return output.slice(offset).split('Watching for file changes').slice(0, -1);
+}
+
 describe('native tsc --watch', () => {
-	// TypeScript 7.1.0-dev.20260918.1 never recompiles after a file edit on
-	// macOS (microsoft/TypeScript#64351, a nightly regression since
-	// 7.1.0-dev.20260811.1 that reproduces without a content mapper and with
-	// every `--watchFile` strategy), so only the initial watch-mode compilation
-	// is asserted here. Extend this test once a nightly reacts to edits.
-	it('runs the mapper for the initial compilation in watch mode', async () => {
+	// From 7.1.0-dev.20260811.1 until 7.1.0-dev.20260923.1 (the minimum the
+	// mapper supports), watch mode never recompiled after an edit on macOS
+	// (microsoft/TypeScript#64351, with or without a content mapper).
+	it('runs the mapper for the initial compilation and again after each edit', async () => {
 		const files = consumer_fixture_files();
-		files['Panel.tsrx'] = files['Panel.tsrx'].replace('{label}', '{{{label}');
+		const panel = files['Panel.tsrx'];
+		files['Panel.tsrx'] = panel.replace('{label}', '{{{label}');
 		const created = create_native_workspace(files);
 		cleanups.push(created.cleanup);
 
@@ -91,7 +100,24 @@ describe('native tsc --watch', () => {
 		);
 		expect(log.output).not.toContain('TS2322');
 		expect(log.output).toMatch(/Found 1 error\. Watching for file changes/);
-		expect(fs.existsSync(path.join(created.dir, 'Panel.tsrx'))).toBe(true);
+
+		// Fixing the .tsrx file brings back main.ts's cross-file error.
+		let offset = log.output.length;
+		fs.writeFileSync(path.join(created.dir, 'Panel.tsrx'), panel);
+		await wait_for(child, log, (output) => watch_passes_since(output, offset).length > 0);
+		for (const pass of watch_passes_since(log.output, offset)) {
+			expect(pass).toMatch(/main\.ts\(7,47\): error TS2322:/);
+			expect(pass).not.toMatch(/error TSRX/);
+			expect(pass).toContain('Found 1 error.');
+		}
+
+		// Fixing the .ts importer leaves no errors.
+		offset = log.output.length;
+		const main = path.join(created.dir, 'main.ts');
+		fs.writeFileSync(main, fs.readFileSync(main, 'utf8').replace("count: 'one'", 'count: 2'));
+		await wait_for(child, log, (output) =>
+			watch_passes_since(output, offset).some((pass) => pass.includes('Found 0 errors.')),
+		);
 
 		child.kill();
 	}, 60_000);

@@ -12,11 +12,13 @@ https://github.com/tsrx-org/tsrx/issues/136.
 
 ## Requirements
 
-- **TypeScript `7.1.0-dev.20260822.1` or newer.** The content-mapper protocol is
+- **TypeScript `7.1.0-dev.20260923.1` or newer.** The content-mapper protocol is
   not in the stable 7.0 line: `typescript@7.0.2` rejects `--runExternalCode`
-  (TS5023) and ignores `contentMappers`. `7.1.0-dev.20260822.1` is the oldest
-  nightly that passes this package's test suite (`7.1.0-dev.20260821.1` fails it);
-  the repository runs `7.1.0-dev.20260930.4`. Run the suite against another build
+  (TS5023) and ignores `contentMappers`. The protocol arrived in
+  `7.1.0-dev.20260822.1` (`7.1.0-dev.20260821.1` fails this package's test suite),
+  but `tsc --watch` never recompiled on macOS until `7.1.0-dev.20260923.1`
+  (microsoft/TypeScript#64351), the oldest nightly that passes the whole suite.
+  The repository runs `7.1.0-dev.20260930.4`. Run the suite against another build
   with `TSRX_NATIVE_TSC=<path to tsc>`.
 - **`--runExternalCode`.** TypeScript only spawns the mapper when the user opts
   in; the mapper never enables it. Without the flag, a `contentMappers` entry is
@@ -213,12 +215,10 @@ The TSRX language server runs beside it with `--typescript-backend=native`; see
 [`@tsrx/language-server`](../language-server/README.md) and the VS Code
 extension's README for the per-editor setup.
 
-### Known limitations (TypeScript 7.1.0-dev.20260918.1)
+### Known limitations (TypeScript 7.1.0-dev.20260930.4)
 
-- `--watch` compiles once and never recompiles after an edit on macOS
-  (microsoft/TypeScript#64351, a nightly regression since `7.1.0-dev.20260811.1`
-  that reproduces without a content mapper and with every `--watchFile` strategy).
-  The watch test only asserts the initial pass.
+- `--build --watch` recompiles after a `.ts` edit but not after a `.tsrx` edit;
+  plain `--watch` recompiles after both.
 - `--runExternalCode` is required and is never enabled by the mapper; `tsrx-tsc`
   passes it.
 - Editors: no auto-import when a new import statement is needed

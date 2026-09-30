@@ -1094,7 +1094,7 @@ export function GettingStartedPage() @{
 								files itself through
 								<code class="inline-code">@tsrx/content-mapper</code>, with the same transform. It
 								needs a TypeScript 7.1 nightly (
-								<code class="inline-code">7.1.0-dev.20260822.1</code>
+								<code class="inline-code">7.1.0-dev.20260923.1</code>
 								or newer; the stable 7.0 releases have no content-mapper protocol) and the
 								<code class="inline-code">--runExternalCode</code>
 								flag, which lets TypeScript start the mapper. Declare the mapper in

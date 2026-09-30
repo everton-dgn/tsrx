@@ -25,7 +25,7 @@ The `typescript@7` package is a launcher for the platform binary with no
 JavaScript API, so when `tsrx-tsc` resolves one it runs that binary itself with
 `--runExternalCode`, which lets TypeScript type-check `.tsrx` files through
 [`@tsrx/content-mapper`](../content-mapper/README.md) (an optional peer dependency
-of this package). That needs a TypeScript 7.1 nightly (`7.1.0-dev.20260822.1` or
+of this package). That needs a TypeScript 7.1 nightly (`7.1.0-dev.20260923.1` or
 newer; the stable 7.0 releases have no content-mapper protocol, and `tsrx-tsc`
 stops with an explanation when it resolves one), the mapper installed next to the
 project, and a `contentMappers` entry for `.tsrx` in `tsconfig.json`. `tsrx-tsc`

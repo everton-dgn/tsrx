@@ -238,13 +238,13 @@ describe('tsrx-tsc with a TypeScript 7 package', () => {
 		expect(result.status).toBe(1);
 		expect(result.output).toContain('tsrx-tsc resolved typescript@7.0.2');
 		expect(result.output).toContain('^5.9.3 || ^6.0.0');
-		expect(result.output).toContain('7.1.0-dev.20260822.1');
+		expect(result.output).toContain('7.1.0-dev.20260923.1');
 		expect(result.output).toContain('https://github.com/tsrx-org/tsrx/issues/');
 		expect(result.output).not.toContain('ERR_PACKAGE_PATH_NOT_EXPORTED');
 	});
 
 	it('explains a missing platform package instead of crashing', () => {
-		const stub_dir = install_typescript_7_stub('7.1.0-dev.20260918.1');
+		const stub_dir = install_typescript_7_stub('7.1.0-dev.20260930.4');
 		const result = run_cli_with_typescript_7(stub_dir, ['--version']);
 		expect(result.status).toBe(1);
 		expect(result.output).toContain(
@@ -268,7 +268,7 @@ process.exit(Number(process.env.TSRX_TEST_EXIT ?? 0));
 		const mapper_entry = { package: '@tsrx/content-mapper', extensions: ['.tsrx'] };
 
 		it('runs the native binary with --runExternalCode and passes the exit code through', () => {
-			const stub_dir = install_typescript_7_stub('7.1.0-dev.20260918.1', {
+			const stub_dir = install_typescript_7_stub('7.1.0-dev.20260930.4', {
 				platform_binary: record_call,
 			});
 			write_tsconfig({ tsrx: { compiler: '@tsrx/preact' }, contentMappers: [mapper_entry] });
@@ -293,7 +293,7 @@ process.exit(Number(process.env.TSRX_TEST_EXIT ?? 0));
 		});
 
 		it('keeps --build first and finds the mapper through extends', () => {
-			const stub_dir = install_typescript_7_stub('7.1.0-dev.20260918.1', {
+			const stub_dir = install_typescript_7_stub('7.1.0-dev.20260930.4', {
 				platform_binary: record_call,
 			});
 			fs.writeFileSync(
@@ -315,7 +315,7 @@ process.exit(Number(process.env.TSRX_TEST_EXIT ?? 0));
 		});
 
 		it('checks every compiling project of a --build graph and skips solution configs', () => {
-			const stub_dir = install_typescript_7_stub('7.1.0-dev.20260918.1', {
+			const stub_dir = install_typescript_7_stub('7.1.0-dev.20260930.4', {
 				platform_binary: record_call,
 			});
 			// A solution root only points at projects; it has no mapper and needs none.
@@ -359,7 +359,7 @@ process.exit(Number(process.env.TSRX_TEST_EXIT ?? 0));
 		});
 
 		it('treats a root with files: [] and an include as a project, not a solution', () => {
-			const stub_dir = install_typescript_7_stub('7.1.0-dev.20260918.1', {
+			const stub_dir = install_typescript_7_stub('7.1.0-dev.20260930.4', {
 				platform_binary: record_call,
 			});
 			// TypeScript unions `files` and `include`: this root compiles main.ts.
@@ -381,7 +381,7 @@ process.exit(Number(process.env.TSRX_TEST_EXIT ?? 0));
 		});
 
 		it('leaves a tsconfig that does not parse to the compiler instead of refusing it', () => {
-			const stub_dir = install_typescript_7_stub('7.1.0-dev.20260918.1', {
+			const stub_dir = install_typescript_7_stub('7.1.0-dev.20260930.4', {
 				platform_binary: record_call,
 			});
 			fs.writeFileSync(path.join(workspace, 'tsconfig.json'), '{ "contentMappers": [ oops');
@@ -395,7 +395,7 @@ process.exit(Number(process.env.TSRX_TEST_EXIT ?? 0));
 		});
 
 		it('refuses a project that declares no content mapper for .tsrx files', () => {
-			const stub_dir = install_typescript_7_stub('7.1.0-dev.20260918.1', {
+			const stub_dir = install_typescript_7_stub('7.1.0-dev.20260930.4', {
 				platform_binary: record_call,
 			});
 			write_tsconfig({ tsrx: { compiler: '@tsrx/preact' } });
@@ -410,7 +410,7 @@ process.exit(Number(process.env.TSRX_TEST_EXIT ?? 0));
 		});
 
 		it('leaves --version and explicit source files to the binary', () => {
-			const stub_dir = install_typescript_7_stub('7.1.0-dev.20260918.1', {
+			const stub_dir = install_typescript_7_stub('7.1.0-dev.20260930.4', {
 				platform_binary: record_call,
 			});
 			// The tsconfig here declares no mapper; neither invocation reads it.
