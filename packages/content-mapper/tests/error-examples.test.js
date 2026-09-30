@@ -9,6 +9,8 @@ import {
 	TYPESCRIPT_CODE_PREFIX,
 	UPSTREAM_ERRORS,
 } from '@tsrx/core/diagnostics';
+import * as react from '@tsrx/react';
+import * as solid from '@tsrx/solid';
 import { transform_tsrx } from '@tsrx/typescript-plugin/src/transform.js';
 import { ERROR_EXAMPLES, KNOWN_PROBLEMS, WITHOUT_EXAMPLE } from './error-examples.js';
 import { create_native_workspace } from './fixture-utils.js';
@@ -22,6 +24,12 @@ const ENTRIES = /** @type {Map<ErrorEntry, string>} */ (
 		),
 	)
 );
+
+/** The compilers the examples name, loaded up front: loading one takes seconds under load. */
+const COMPILERS = /** @type {Record<string, any>} */ ({
+	'@tsrx/react': react,
+	'@tsrx/solid': solid,
+});
 
 /** @param {ErrorEntry} entry */
 function name_of(entry) {
@@ -64,8 +72,9 @@ describe('error examples', () => {
 		);
 	});
 
-	it.for(CASES)('$name: the compiler reports it', async ({ name, example }) => {
-		const compiler = await import(example.compiler ?? '@tsrx/react');
+	it.for(CASES)('$name: the compiler reports it', ({ name, example }) => {
+		const compiler = COMPILERS[example.compiler ?? '@tsrx/react'];
+		expect(compiler, `add ${example.compiler} to COMPILERS`).toBeDefined();
 		const result = transform_tsrx(compiler, `${name}.tsrx`, example.source);
 		const reported = result.fatalError ? [result.fatalError] : result.errors;
 		if (KNOWN_PROBLEMS.get(example.error)?.problem === 'lost') {
