@@ -17,6 +17,7 @@ import {
 } from '@tsrx/typescript-plugin/src/language.js';
 import { transform_tsrx } from '@tsrx/typescript-plugin/src/transform.js';
 import { DIAGNOSTIC_SOURCE, MAPPER_CODES, TYPESCRIPT_CODE_PREFIX } from '@tsrx/core/diagnostics';
+import { ignore_directives } from './diagnostic-directives.js';
 import { build_export_stub } from './export-stub.js';
 import { to_span_mappings } from './span-mappings.js';
 
@@ -186,17 +187,26 @@ export function create_tsrx_content_mapper(context = {}) {
 		const mappings = to_span_mappings(result.mappings, result.text, content, {
 			languageFeatures: language_features,
 		});
-		// An error with a TypeScript code is a mistake TypeScript reports itself
-		// from the generated code, with its own message and quick fixes, so only
-		// the others go to TypeScript.
-		const diagnostics = result.errors
-			.filter((error) => !TYPESCRIPT_CODE.test(error.code ?? ''))
-			.map((error) => to_diagnostic(error, content.length, MAPPER_CODES.USAGE_ERROR));
+		// Every error goes to TypeScript, even one with a TypeScript code: the
+		// generated code can lose the mistake (a repeated modifier, a rest
+		// parameter's `?`), and then TypeScript never reports it. Where TypeScript
+		// does, the directives hide its copy until the mapper's error is fixed.
+		const diagnostics = result.errors.map((error) =>
+			to_diagnostic(error, content.length, MAPPER_CODES.USAGE_ERROR),
+		);
+		const diagnosticDirectives = ignore_directives(
+			result.errors,
+			result.sourceAst,
+			result.mappings,
+			content.length,
+			result.text.length,
+		);
 		return {
 			text: result.text,
 			extension: '.tsx',
 			mappings,
 			...(diagnostics.length > 0 ? { diagnostics } : null),
+			...(diagnosticDirectives ? { diagnosticDirectives } : null),
 		};
 	}
 

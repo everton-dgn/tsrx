@@ -89,6 +89,29 @@ One precedence rule, highest first:
 
 `platform` follows the same rule with `tsrx.platform`.
 
+### What a compiler returns
+
+The mapper runs any TSRX compiler, this repository's targets, Ripple, Octane or a
+third-party one, through
+`compile_to_volar_mappings(source, filename, { loose: true, platform })`, and
+relies on what it returns:
+
+- `code`: the generated TSX. Keep it valid TSX: a directive hides only
+  TypeScript's checker errors, so a syntax error TypeScript finds in the generated
+  code shows as it is, next to the compiler's own error.
+- `mappings`: Volar mappings from the source to `code`. Map every token of a
+  statement, keywords and punctuation too, so that TypeScript's errors land on the
+  source and a directive covers the statement's whole generated code.
+- `errors`: the collected errors, each with `pos` and `end` offsets into the
+  source and a `code`, TSRX's (`TSRX2002`) or TypeScript's (`TS1186`). An error
+  without a code is sent as `771001`.
+- `sourceAst`: the source tree, with `start` and `end` on its nodes. The mapper
+  finds the statement, class or type member, or element that holds an error in it.
+  Without a tree, a directive covers only the error's own span.
+
+A mistake the compiler cannot recover from is thrown, with `pos` and `code`: the
+mapper then sends that error alone, and a stub of the file's exports.
+
 ### What TypeScript sees
 
 - The generated TSX of the type-only transform, with a span map. Spans whose text
@@ -106,15 +129,23 @@ One precedence rule, highest first:
   or with the component's, and contributes nothing to declaration output. `import`
   declarations of a `<script type="module">` body are hoisted to module level in
   front of the block, where TypeScript resolves them like any other import.
-- TSRX compile errors as mapper diagnostics in the original file, printed as
+- Every TSRX compile error as a mapper diagnostic in the original file, printed as
   `error TSRX<number>`, in capitals like TypeScript's `TS2322`, so a TSRX error
-  shows with its own code (`TSRX2002`). An error with a TypeScript code is left to
-  TypeScript, which reports the mistake from the generated code, unless the file
-  doesn't compile: then it's `11` and its number (`TS1005` → `TSRX111005`), with
-  the code in brackets in the message. The mapper's own errors are `771000` (a
-  file that doesn't compile, with an error without a code), `771001` (an error
-  without a TSRX or TypeScript code), `771002` (no compiler found) and `771003`
-  (invalid configuration). The codes and prefixes are in `@tsrx/core/diagnostics`.
+  shows with its own code (`TSRX2002`). An error with a TypeScript code is `11`
+  and its number (`TS1005` → `TSRX111005`), with the code in brackets in the
+  message. The mapper's own errors are `771000` (a file that doesn't compile, with
+  an error without a code), `771001` (an error without a TSRX or TypeScript code),
+  `771002` (no compiler found) and `771003` (invalid configuration). The source,
+  codes and prefixes are in `@tsrx/core/diagnostics`.
+- For each of those errors, an `ignore` diagnostic directive over the generated
+  code of the statement, class or type member, or element that holds it, so a
+  mistake shows once: TypeScript's own report of it there (TS1186 for a rest
+  element's default, a follow-on error of a TSRX mistake) is hidden until the
+  mapper's error is fixed. TypeScript's other errors in that code come back then
+  too. `tests/error-examples.js` has an example of every error in
+  `@tsrx/core/diagnostics`, and `tests/error-examples.test.js` checks that each
+  shows exactly once on TypeScript 7, or that its known problem (with the issue
+  that tracks it) still stands.
 - While a file cannot be compiled, a stub that re-declares its exports as `any`
   (values and types), so importers keep resolving and the author sees exactly one
   error at the failing construct. `<style>` bodies are never TypeScript's concern

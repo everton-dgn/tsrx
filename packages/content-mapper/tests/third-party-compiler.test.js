@@ -8,7 +8,8 @@ import { NativeLspClient, position_of, range_text } from './lsp-client.js';
  * A minimal third-party TSRX compiler: it treats the file as TSX and rewrites
  * `#name` identifiers to `_$__u0023_name`, the way TSRX obfuscates sigil
  * identifiers, emitting one mapping per token so the renamed spans become
- * `Alias` spans.
+ * `Alias` spans. It also reports each `#oops` as an error with a code TSRX
+ * doesn't have, and no source tree to find the statement that holds it.
  */
 const stub_compiler = `
 const data = { verification: true, completion: true, semantic: true, navigation: true, structure: true, format: false, customData: {} };
@@ -38,7 +39,8 @@ exports.compile_to_volar_mappings = function compile_to_volar_mappings(source, f
 	}
 	push(last, source.length - last, code.length, source.length - last);
 	code += source.slice(last);
-	return { code, mappings, cssMappings: [], scriptMappings: [], errors: [], sourceAst: { type: 'Program', body: [], sourceType: 'module' } };
+	const errors = [...source.matchAll(/#oops\\b/g)].map((oops) => ({ code: 'TSRX9001', message: 'Not allowed here.', pos: oops.index, end: oops.index + oops[0].length }));
+	return { code, mappings, cssMappings: [], scriptMappings: [], errors, sourceAst: { type: 'Program', body: [], sourceType: 'module' } };
 };
 `;
 
@@ -214,6 +216,40 @@ export const n: string = copy;
 			});
 			expect(alias_hover.contents.value).toContain('_$__u0023_value');
 			expect(range_text(files['Thing.tsrx'], alias_hover.range)).toBe('#value');
+		} finally {
+			await client.shutdown();
+		}
+	}, 60_000);
+
+	it('shows an error it reports once, over TypeScript’s error at the same place', async () => {
+		const config = JSON.parse(tsconfig);
+		config.tsrx = { compiler: 'tsrx-stub-compiler' };
+		config.contentMappers = [{ package: '@tsrx/content-mapper', extensions: ['.tsrx'] }];
+		config.include = ['main.ts', '*.tsrx'];
+		const files = {
+			'tsconfig.json': JSON.stringify(config, null, '\t'),
+			'Thing.tsrx': `export const missing = #nope;
+export const wrong = #oops;
+`,
+			'main.ts': 'export {};\n',
+		};
+		const dir = workspace(files);
+		const client = new NativeLspClient(dir);
+		try {
+			await client.initialize({ runExternalCode: true });
+			client.open('main.ts', files['main.ts']);
+			await client.wait_for_registration('content-mapper-did-open');
+			client.open('Thing.tsrx', files['Thing.tsrx']);
+			// TypeScript can't find `#oops` either, but the compiler's error stands for
+			// it; `#nope` has only TypeScript's.
+			expect(
+				(await client.diagnostics('Thing.tsrx'))
+					.sort((a, b) => a.range.start.line - b.range.start.line)
+					.map((d) => [d.source, d.code, range_text(files['Thing.tsrx'], d.range)]),
+			).toEqual([
+				['ts', 2304, '#nope'],
+				['TSRX', 9001, '#oops'],
+			]);
 		} finally {
 			await client.shutdown();
 		}

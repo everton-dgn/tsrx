@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { create_tsrx_content_mapper, to_diagnostic, validate_options } from '../src/mapper.js';
-import { SpanMapKind } from '../src/protocol.js';
+import { DiagnosticDirectivePolicy, SpanMapKind } from '../src/protocol.js';
 import { blank_script_bodies } from '@tsrx/typescript-plugin/src/transform.js';
 import { MAPPER_CODES, TS_ERRORS, TSRX_ERRORS } from '@tsrx/core/diagnostics';
 import { fileURLToPath } from 'node:url';
@@ -213,7 +213,7 @@ describe('create_tsrx_content_mapper', () => {
 		expect(first.text).toBe('export {};\n');
 	});
 
-	it('leaves errors with a TypeScript code to TypeScript and sends TSRX ones', () => {
+	it('sends every error, with a directive over the generated code that holds each', () => {
 		const mapper = create_tsrx_content_mapper();
 		mapper.openProject({
 			configFileName: path.join(consumer_fixture_dir, 'tsconfig.json'),
@@ -230,9 +230,10 @@ export { rest };
 			projectHandle: 'p1',
 		});
 		// The rest element's default (TS1186) stays in the generated code, where
-		// TypeScript reports it.
+		// TypeScript reports it too.
 		expect(result.text).toContain('...rest = [1]');
 		const semicolon = TSRX_ERRORS.TEMPLATE_EXPRESSION_TRAILING_SEMICOLON;
+		const rest_default = TS_ERRORS.REST_ELEMENT_INITIALIZER;
 		expect(result.diagnostics).toEqual([
 			{
 				start: content.indexOf('{label;}') + '{label'.length,
@@ -240,7 +241,25 @@ export { rest };
 				code: Number(semicolon.code.slice('TSRX'.length)),
 				messageText: semicolon.message,
 			},
+			{
+				start: content.indexOf('= [1]]'),
+				length: 1,
+				code: typescript_mapper_code(rest_default.code),
+				messageText: `${rest_default.message} [${rest_default.code}]`,
+			},
 		]);
+		// Each error's element or statement hides TypeScript's errors in its
+		// generated code, TypeScript's TS1186 at the default's `=` among them.
+		const directives = result.diagnosticDirectives?.directives ?? [];
+		const statement = 'const [...rest = [1]] = [1];';
+		expect(directives.map(([start, length]) => content.slice(start, start + length))).toEqual([
+			'<h2 className="heading">{label;}</h2>',
+			statement,
+		]);
+		const [, , generated_start, generated_end, policy] = directives[1];
+		expect(policy).toBe(DiagnosticDirectivePolicy.Ignore);
+		const default_at = result.text.indexOf('= [1]]');
+		expect(generated_start <= default_at && default_at < generated_end).toBe(true);
 	});
 
 	it('keeps the export stub across a project reopen while the file still fails', () => {

@@ -39,7 +39,11 @@ export const SpanMapFeature = /** @type {const} */ ({
 	All: (1 << 20) - 1,
 });
 
-/** Diagnostic-directive policies (unused by TSRX today; kept for completeness). */
+/**
+ * Diagnostic-directive policies: `Ignore` hides TypeScript's errors in a
+ * generated range; `Expect` also reports a diagnostic of the mapper's when
+ * there are none there.
+ */
 export const DiagnosticDirectivePolicy = /** @type {const} */ ({ Ignore: 0, Expect: 1 });
 
 /**
@@ -69,8 +73,26 @@ export const DiagnosticDirectivePolicy = /** @type {const} */ ({ Ignore: 0, Expe
  */
 
 /**
+ * @typedef {[
+ * 	originalStart: number,
+ * 	originalLength: number,
+ * 	generatedStart: number,
+ * 	generatedEnd: number,
+ * 	policy: 0 | 1,
+ * 	unusedExpectDirectiveIndex?: number,
+ * ]} DiagnosticDirective
+ */
+
+/**
+ * @typedef {object} DiagnosticDirectives
+ * @property {Array<{ code: number, messageText: string }>} unusedExpectDirectiveDiagnostics What an `Expect` directive reports when TypeScript has no error in its range.
+ * @property {DiagnosticDirective[]} directives
+ */
+
+/**
  * @typedef {MappedOutput & {
  * 	diagnostics?: MapperDiagnostic[],
+ * 	diagnosticDirectives?: DiagnosticDirectives,
  * 	supplemental?: MappedOutput[],
  * }} TransformResult
  */
