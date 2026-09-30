@@ -16,9 +16,8 @@ import {
 	source_uses_platform_flag,
 } from '@tsrx/typescript-plugin/src/language.js';
 import { transform_tsrx } from '@tsrx/typescript-plugin/src/transform.js';
-import { MAPPER_CODES, TYPESCRIPT_CODE_PREFIX } from '@tsrx/core/diagnostics';
+import { DIAGNOSTIC_SOURCE, MAPPER_CODES, TYPESCRIPT_CODE_PREFIX } from '@tsrx/core/diagnostics';
 import { build_export_stub } from './export-stub.js';
-import { DIAGNOSTIC_SOURCE } from './protocol.js';
 import { to_span_mappings } from './span-mappings.js';
 
 const require = createRequire(import.meta.url);

@@ -43,13 +43,6 @@ export const SpanMapFeature = /** @type {const} */ ({
 export const DiagnosticDirectivePolicy = /** @type {const} */ ({ Ignore: 0, Expect: 1 });
 
 /**
- * Prefix for mapper-authored diagnostics: `error TSRX2002: ...`, in capitals
- * like TypeScript's own `TS2322`. The numbers
- * are `MAPPER_CODES` and the prefixes in `@tsrx/core/diagnostics`.
- */
-export const DIAGNOSTIC_SOURCE = 'TSRX';
-
-/**
  * @typedef {[
  * 	generatedStart: number,
  * 	generatedLength: number,

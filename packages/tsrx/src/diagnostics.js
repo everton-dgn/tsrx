@@ -127,9 +127,17 @@ export const DIAGNOSTIC_CODES = {
 };
 
 /**
+ * The source TSRX's errors are reported under, in capitals like TypeScript's
+ * own `TS2322`: `@tsrx/content-mapper` declares it to TypeScript 7, which shows
+ * its errors as `TSRX2002`, and the TSRX language server reports its compile
+ * errors with it.
+ */
+export const DIAGNOSTIC_SOURCE = 'TSRX';
+
+/**
  * TypeScript 7's content-mapper protocol takes a number as an error's code, and
- * shows every error `@tsrx/content-mapper` reports as `tsrx<number>`. Each kind
- * of code gets its own numbers:
+ * shows every error `@tsrx/content-mapper` reports as {@link DIAGNOSTIC_SOURCE}
+ * then that number. Each kind of code gets its own numbers:
  *
  * - a TSRX code, its number: `TSRX2002` → `2002`
  * - a TypeScript code, `TYPESCRIPT_CODE_PREFIX` then its number: `TS1005` → `111005`

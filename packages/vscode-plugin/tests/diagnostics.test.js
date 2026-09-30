@@ -2,10 +2,9 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { TS_ERRORS, TSRX_ERRORS } from '@tsrx/core/diagnostics';
+import { DIAGNOSTIC_SOURCE, TS_ERRORS, TSRX_ERRORS } from '@tsrx/core/diagnostics';
 import {
 	CompileErrorDedupe,
-	TSRX_DIAGNOSTIC_SOURCE,
 	has_mapper_diagnostics,
 	has_server_compile_errors,
 	reported_by_typescript,
@@ -19,16 +18,16 @@ const ts = { source: 'ts', message: 'Type error' };
 
 describe('TSRX compile errors are shown once', () => {
 	it("tells the mapper's errors from the server's by their codes, under the source both emit", () => {
-		const protocol = readFileSync(
-			resolve(__dirname, '../../content-mapper/src/protocol.js'),
+		const mapper_source = readFileSync(
+			resolve(__dirname, '../../content-mapper/src/mapper.js'),
 			'utf8',
 		);
-		expect(protocol).toContain(`DIAGNOSTIC_SOURCE = '${TSRX_DIAGNOSTIC_SOURCE}'`);
+		expect(mapper_source).toContain('diagnosticSource: DIAGNOSTIC_SOURCE');
 		const plugin = readFileSync(
 			resolve(__dirname, '../../language-server/src/compileErrorDiagnosticPlugin.js'),
 			'utf8',
 		);
-		expect(plugin).toContain(`source: '${TSRX_DIAGNOSTIC_SOURCE}'`);
+		expect(plugin).toContain('source: DIAGNOSTIC_SOURCE');
 		expect(has_mapper_diagnostics([ts, compile_error])).toBe(false);
 		// The server's copy of a mistake with a TypeScript code keeps it as a string.
 		expect(has_mapper_diagnostics([{ ...compile_error, code: 'TS1186' }])).toBe(false);
@@ -108,9 +107,9 @@ describe('a mistake tsserver also reports is shown once (TypeScript 5.9 or 6)', 
 			message: TSRX_ERRORS.UNEXPECTED_CLOSING_TAG.message,
 		};
 		expect(reported_by_typescript(tsrx_only, [{ ...typescript, code: 1003 }])).toBe(false);
-		expect(
-			reported_by_typescript(collected, [{ ...typescript, source: TSRX_DIAGNOSTIC_SOURCE }]),
-		).toBe(false);
+		expect(reported_by_typescript(collected, [{ ...typescript, source: DIAGNOSTIC_SOURCE }])).toBe(
+			false,
+		);
 		expect(reported_by_typescript(compile_error, [typescript])).toBe(false);
 	});
 

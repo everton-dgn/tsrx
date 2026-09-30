@@ -9,6 +9,7 @@ import { getVirtualCode, createLogging } from './utils.js';
 
 const { log } = createLogging('[TSRX Compile Error Diagnostic Plugin]');
 import { DiagnosticSeverity } from '@volar/language-server';
+import { DIAGNOSTIC_SOURCE } from '@tsrx/core/diagnostics';
 
 /**
  * @returns {LanguageServicePlugin}
@@ -165,7 +166,7 @@ function parseCompilationErrorWithDocument(error, virtualCode, sourceMap, docume
 			severity: DiagnosticSeverity.Error,
 			range: get_error_range_from_source(error, document),
 			message: error.message,
-			source: 'TSRX',
+			source: DIAGNOSTIC_SOURCE,
 			code: 'tsrx-compile-error',
 		};
 	}
@@ -219,7 +220,7 @@ function parseCompilationErrorWithDocument(error, virtualCode, sourceMap, docume
 		severity: DiagnosticSeverity.Error,
 		range: { start, end },
 		message: error.message,
-		source: 'TSRX',
+		source: DIAGNOSTIC_SOURCE,
 		// Coded usage errors (`DIAGNOSTIC_CODES` in @tsrx/core, e.g. `TSRX3002`)
 		// keep their code so editors and tooling can tell them apart; uncoded ones fall back
 		// to the generic marker.

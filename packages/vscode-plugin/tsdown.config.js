@@ -22,6 +22,10 @@ const ROOT_EXTERNAL_PACKAGES = [
 const REGEX_EXTERNAL_PACKAGES = [
 	// also definitely need it for monkey patching
 	/^volar-service-typescript(?:\/.*)?$/,
+	// Every `@tsrx/core` path but `@tsrx/core/diagnostics` (the error codes and the
+	// diagnostic source), a file that imports nothing, which is inlined like the
+	// content mapper does.
+	/^@tsrx\/core(?!\/diagnostics$)(?:\/.*)?$/,
 ];
 // Always external (provided by VS Code)
 const ALWAYS_EXTERNAL = ['vscode'];
