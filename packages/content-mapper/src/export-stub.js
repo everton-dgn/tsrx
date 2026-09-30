@@ -4,9 +4,8 @@
  * Build a TypeScript stub that preserves a module's export surface while the
  * file cannot be compiled.
  *
- * The native content-mapper protocol offers no way to suppress TypeScript's
- * own diagnostics, so feeding raw TSRX (or the last good TSX, which may carry
- * type errors of its own) to the checker would produce noise. Instead every
+ * Raw TSRX, or the last good TSX (which may carry type errors of its own),
+ * would give the checker noise to report. Instead every
  * export from the last successful transform's source AST is re-declared as
  * `any` (both as a value and as a type, so `new X()`, `X.y` and `let v: X` all
  * keep resolving), re-exports from other modules are kept as written (including
@@ -69,10 +68,21 @@ export function build_export_stub(program) {
 		}
 	}
 
+	// A name no declaration can have (`null`, `if`, `string` for a type, an
+	// arbitrary module namespace name such as `"foo-bar"`) is exported from a
+	// local binding of another name.
+	let next_local = 0;
 	for (const name of names) {
-		if (!identifier_pattern.test(name)) continue;
-		lines.push(`export declare const ${name}: any;`);
-		lines.push(`export type ${name} = any;`);
+		if (identifier_pattern.test(name) && !UNDECLARABLE_NAMES.has(name)) {
+			lines.push(`export declare const ${name}: any;`);
+			lines.push(`export type ${name} = any;`);
+			continue;
+		}
+		let local = `_$_export_${next_local++}`;
+		while (names.has(local)) local = `_$_export_${next_local++}`;
+		lines.push(`declare const ${local}: any;`);
+		lines.push(`type ${local} = any;`);
+		lines.push(`export { ${local} as ${module_export_name(name)} };`);
 	}
 	if (has_default) {
 		lines.push('declare const _default: any;');
@@ -97,6 +107,74 @@ function type_modifier(node) {
 const identifier_pattern = /^[\p{ID_Start}_$][\p{ID_Continue}$]*$/u;
 
 /**
+ * Identifier names that `export declare const x: any; export type x = any;`
+ * can't declare in a module: reserved words (TS1389), words reserved in strict
+ * mode (TS1214), `await`, `let`, `arguments` and `eval`, the names of
+ * TypeScript's own types (TS2457), and `as`, which `export type as` misreads.
+ */
+const UNDECLARABLE_NAMES = new Set([
+	'break',
+	'case',
+	'catch',
+	'class',
+	'const',
+	'continue',
+	'debugger',
+	'default',
+	'delete',
+	'do',
+	'else',
+	'enum',
+	'export',
+	'extends',
+	'false',
+	'finally',
+	'for',
+	'function',
+	'if',
+	'import',
+	'in',
+	'instanceof',
+	'new',
+	'null',
+	'return',
+	'super',
+	'switch',
+	'this',
+	'throw',
+	'true',
+	'try',
+	'typeof',
+	'var',
+	'void',
+	'while',
+	'with',
+	'implements',
+	'interface',
+	'package',
+	'private',
+	'protected',
+	'public',
+	'static',
+	'yield',
+	'await',
+	'let',
+	'arguments',
+	'eval',
+	'any',
+	'bigint',
+	'boolean',
+	'never',
+	'number',
+	'object',
+	'string',
+	'symbol',
+	'undefined',
+	'unknown',
+	'as',
+]);
+
+/**
  * The name an export binds, as a plain string: `a` for `export { a }` and
  * `foo-bar` for `export { "foo-bar" as a } from`.
  * @param {AST.Identifier | AST.Literal | AST.Expression} node
@@ -116,7 +194,16 @@ function export_name(node) {
  * @returns {string}
  */
 function print_name(node) {
-	const name = export_name(node);
+	return module_export_name(export_name(node));
+}
+
+/**
+ * A name as an export specifier takes it: any identifier name, reserved words
+ * too, as is, and anything else quoted.
+ * @param {string} name
+ * @returns {string}
+ */
+function module_export_name(name) {
 	return identifier_pattern.test(name) ? name : JSON.stringify(name);
 }
 

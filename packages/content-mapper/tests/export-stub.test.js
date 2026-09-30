@@ -1,6 +1,11 @@
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseModule } from '@tsrx/core';
 import { build_export_stub } from '../src/export-stub.js';
+import { native_tsc_path } from './fixture-utils.js';
 
 /** @param {string} source */
 function stub(source) {
@@ -55,6 +60,53 @@ export { "default" as d } from './c.tsrx';
 		expect(text).toContain(`export { "foo-bar" as baz, qux as "quux corge" } from "./a.tsrx";`);
 		expect(text).toContain(`export * as "ns-name" from "./b.tsrx";`);
 		expect(text).toContain(`export { default as d } from "./c.tsrx";`);
+	});
+
+	it('exports a name no declaration can have through a local binding', () => {
+		const text = stub(`
+const x = 1;
+export { x as null, x as if, x as string, x as "foo-bar", x as ok };
+`);
+		expect(text).toContain('export declare const ok: any;');
+		expect(text).not.toMatch(/(?:const|type) (?:null|if|string)\b/);
+		expect(text).toContain(`declare const _$_export_0: any;
+type _$_export_0 = any;
+export { _$_export_0 as null };`);
+		expect(text).toContain('export { _$_export_3 as "foo-bar" };');
+
+		// TypeScript 7 accepts the stub, and an importer gets every name as a value
+		// and as a type.
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tsrx-export-stub-'));
+		try {
+			fs.writeFileSync(path.join(dir, 'stub.ts'), text);
+			fs.writeFileSync(
+				path.join(dir, 'use.ts'),
+				`import { null as a, if as b, string as c, "foo-bar" as d, ok } from './stub';
+export const values: string[] = [a, b, c, d, ok];
+export type Types = [a, b, c, d, ok];
+`,
+			);
+			const result = spawnSync(
+				native_tsc_path(),
+				[
+					'--noEmit',
+					'--strict',
+					'--module',
+					'esnext',
+					'--moduleResolution',
+					'bundler',
+					'--target',
+					'esnext',
+					'stub.ts',
+					'use.ts',
+				],
+				{ cwd: dir, encoding: 'utf8' },
+			);
+			expect(result.stdout).toBe('');
+			expect(result.status).toBe(0);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it('keeps the type modifier of type-only re-exports', () => {
