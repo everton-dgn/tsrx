@@ -766,8 +766,11 @@ function App({ tag }: { tag: string }) @{
 		<script type="application/json">{ "json": 1 }</script>
 		<script type="importmap">{ "imports": { "x": "./x.js" } }</script>
 		<script type="text/template"><p>template</p></script>
+		<script type="text/javascript; charset=utf-8">const parameters = 1;</script>
 	</>
 }`;
+			// HTML runs no script whose type has parameters: 'text/javascript; charset=utf-8'
+			// is not a JavaScript MIME type essence match, so the browser leaves it as data.
 			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
 			expect(result.errors).toEqual([]);
 			expect(result.scriptMappings.map((mapping) => mapping.data.customData.content)).toEqual([
