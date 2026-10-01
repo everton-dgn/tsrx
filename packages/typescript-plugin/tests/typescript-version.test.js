@@ -46,7 +46,9 @@ describe('TypeScript version support', () => {
 			`@typescript/typescript-${process.platform}-${process.arch}@${native}'`,
 		);
 		expect(MINIMUM_NATIVE_TYPESCRIPT_VERSION).toMatch(/^7\.\d+\.\d+(-dev\.\d{8}\.\d+)?$/);
-		expect(TYPESCRIPT_7_TRACKING_URL).toMatch(/^https:\/\/github\.com\/tsrx-org\/tsrx\/pull\/\d+$/);
+		expect(TYPESCRIPT_7_TRACKING_URL).toMatch(
+			/^https:\/\/github\.com\/tsrx-org\/tsrx\/issues\/\d+$/,
+		);
 	});
 
 	it('recognises the native TypeScript package, stable or nightly, by major version', () => {

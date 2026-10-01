@@ -239,7 +239,7 @@ describe('tsrx-tsc with a TypeScript 7 package', () => {
 		expect(result.output).toContain('tsrx-tsc resolved typescript@7.0.2');
 		expect(result.output).toContain('^5.9.3 || ^6.0.0');
 		expect(result.output).toContain('7.1.0-dev.20260923.1');
-		expect(result.output).toContain('https://github.com/tsrx-org/tsrx/pull/135');
+		expect(result.output).toContain('https://github.com/tsrx-org/tsrx/issues/136');
 		expect(result.output).not.toContain('ERR_PACKAGE_PATH_NOT_EXPORTED');
 	});
 

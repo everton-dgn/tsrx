@@ -29,9 +29,9 @@ export const MINIMUM_NATIVE_TYPESCRIPT_VERSION = '7.1.0-dev.20260923.1';
 
 /**
  * Where the gaps in TypeScript 7 support and their upstream issues are tracked:
- * the pull request that added it, the document of record.
+ * the tracking issue, which outlives the pull request that added the support.
  */
-export const TYPESCRIPT_7_TRACKING_URL = 'https://github.com/tsrx-org/tsrx/pull/135';
+export const TYPESCRIPT_7_TRACKING_URL = 'https://github.com/tsrx-org/tsrx/issues/136';
 
 /** One sentence to append to every message that mentions TypeScript 7. */
 export const TYPESCRIPT_7_SUPPORT_NOTE = `TypeScript 7 support for .tsrx files is not complete yet; the gaps and the upstream TypeScript issues behind them are tracked in ${TYPESCRIPT_7_TRACKING_URL}. If you run into one that is not listed there, please file a new issue on the tsrx repository.`;

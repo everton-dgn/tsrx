@@ -8,7 +8,7 @@ Volar path.
 
 Implementation issue: https://github.com/tsrx-org/tsrx/issues/41. Gaps in
 TypeScript 7 support and the upstream issues behind them:
-https://github.com/tsrx-org/tsrx/pull/135.
+https://github.com/tsrx-org/tsrx/issues/136.
 
 ## Requirements
 

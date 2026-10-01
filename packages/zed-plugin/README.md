@@ -99,7 +99,7 @@ serve `.tsrx` files.
 
 TypeScript 7 support for `.tsrx` files is not complete yet. The gaps and the
 upstream TypeScript issues behind them are tracked in
-[tsrx-org/tsrx#135](https://github.com/tsrx-org/tsrx/pull/135); if you run into
+[tsrx-org/tsrx#136](https://github.com/tsrx-org/tsrx/issues/136); if you run into
 one that is not listed there, please file a new issue.
 
 The server also has a `native` backend that leaves TypeScript features to

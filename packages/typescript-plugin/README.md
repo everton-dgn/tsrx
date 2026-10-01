@@ -37,7 +37,7 @@ and resolves compiler packages itself (`src/tsconfig-resolution.js`,
 mapper and the language server's native backend run in a project whose only
 `typescript` is the native compiler. TypeScript 7 support is not complete yet; the
 gaps are tracked in
-[tsrx-org/tsrx#135](https://github.com/tsrx-org/tsrx/pull/135).
+[tsrx-org/tsrx#136](https://github.com/tsrx-org/tsrx/issues/136).
 
 ## Configuration
 
@@ -55,7 +55,7 @@ editor:
   and 6 ignore `contentMappers`, so both entries can share one tsconfig.
   TypeScript 7 support is not complete yet; the gaps and the upstream issues
   behind them are tracked in
-  [tsrx-org/tsrx#135](https://github.com/tsrx-org/tsrx/pull/135).
+  [tsrx-org/tsrx#136](https://github.com/tsrx-org/tsrx/issues/136).
 
 The compiler and `jsxImportSource` should match the chosen target. For example, a
 React project on TypeScript 5.9 or 6 can use:

@@ -1124,11 +1124,11 @@ export function GettingStartedPage() @{
 								TypeScript issues behind them are tracked in
 								<a
 									class="inline-link"
-									href="https://github.com/tsrx-org/tsrx/pull/135"
+									href="https://github.com/tsrx-org/tsrx/issues/136"
 									target="_blank"
 									rel="noopener noreferrer"
 								>
-									tsrx-org/tsrx#135
+									tsrx-org/tsrx#136
 								</a>
 								; if you run into one that is not listed there, please file a new issue.
 							</p>
