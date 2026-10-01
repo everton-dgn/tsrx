@@ -231,6 +231,51 @@ exports.run = async () => {
 			diagnostics: diagnostics_of(main.uri),
 		};
 
+		// Format Document on a messy .tsrx file, written into the project copy here (the
+		// repository formats its own files). VS Code takes the first formatter that returns
+		// edits; TypeScript's .tsrx formatters return none.
+		const format_file = path.join(path.dirname(config.file), 'Format.tsrx');
+		fs.writeFileSync(
+			format_file,
+			`import { useState } from "react";
+
+export function Format() @{
+      const [count,setCount]=useState(0);
+  <button   onClick={() => setCount(count+1)}>{count}</button>
+}
+`,
+		);
+		const format_document = await vscode.workspace.openTextDocument(format_file);
+		/** @type {vscode.TextEdit[] | undefined} */
+		const format_edits = await within(
+			vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', format_document.uri, {
+				tabSize: 2,
+				insertSpaces: false,
+			}),
+			30000,
+			undefined,
+		);
+		// The edits are applied to a copy of the text, not to the document: a changed
+		// document makes VS Code ask to save it when the instance closes, and that dialog
+		// brings the hidden window to the front.
+		let formatted = format_document.getText();
+		const by_offset = (/** @type {vscode.Position} */ position) =>
+			format_document.offsetAt(position);
+		for (const edit of [...(format_edits ?? [])].sort(
+			(a, b) => by_offset(b.range.start) - by_offset(a.range.start),
+		)) {
+			formatted =
+				formatted.slice(0, by_offset(edit.range.start)) +
+				edit.newText +
+				formatted.slice(by_offset(edit.range.end));
+		}
+		result.formatting = {
+			defaultFormatter: vscode.workspace
+				.getConfiguration('editor', { languageId: 'tsrx' })
+				.get('defaultFormatter'),
+			text: formatted,
+		};
+
 		// TSRX's Go to Source Definition on `useState`: the file it opens.
 		const source_editor = await vscode.window.showTextDocument(document);
 		const use_state = document.positionAt(document.getText().indexOf('useState(0)') + 2);
@@ -260,6 +305,11 @@ exports.run = async () => {
 			5000,
 			undefined,
 		);
+		// Nothing may stay changed: VS Code would ask to save it when the instance closes,
+		// and that dialog brings the hidden window to the front.
+		result.unsavedDocuments = vscode.workspace.textDocuments
+			.filter((document) => document.isDirty)
+			.map((document) => document.uri.path.split('/').pop());
 	} catch (error) {
 		result.error = error instanceof Error ? error.stack : String(error);
 	}

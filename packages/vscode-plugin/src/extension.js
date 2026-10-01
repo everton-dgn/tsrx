@@ -6,7 +6,8 @@
  *   `registerContentMappers` and runs the mapper each tsconfig.json declares.
  *
  * The TSRX language server runs alongside it in `plugin` mode for snippets, CSS,
- * document symbols, CSS-class navigation and keyword highlights, and closes tags while
+ * document symbols, CSS-class navigation, keyword highlights and formatting (with the
+ * project's Prettier and `@tsrx/prettier-plugin`), and closes tags while
  * TypeScript 7 does not (`closing-tags.js`). A status item on `.tsrx` files names the
  * TypeScript that serves them, and a notice says what to do when none can
  * (`typescript-guidance.js`).
@@ -29,7 +30,6 @@ import { CompileErrorDedupe } from './diagnostics.js';
 import { activate_typescript } from './typescript.js';
 import { activate_typescript_guidance } from './typescript-guidance.js';
 
-const TSRX_FILE_SELECTORS = ['**/*.tsrx'];
 const RESTART_EXTENSIONS_ACTION = 'Restart Extensions';
 
 /**
@@ -200,13 +200,12 @@ export async function activate(context) {
 
 		activate_closing_tags(context, client);
 
-		// Configure Prettier to handle .tsrx files. This sets Prettier as the default
-		// formatter for `[tsrx]`, so "Format Document" routes to it directly. We deliberately
-		// do not register our own DocumentFormattingEditProvider: it would show up as a second,
-		// redundant "TSRX Syntax for VS Code" entry in "Format Document With…" alongside the one the
-		// language client already contributes (volar-service-typescript / -css), and it broke
-		// whenever the Prettier extension's format command was unavailable.
-		await configurePrettier();
+		// Formatting: the TSRX language server formats .tsrx files with the project's Prettier
+		// and @tsrx/prettier-plugin, and this extension's configurationDefaults make it the
+		// [tsrx] default formatter. The extension registers no formatter of its own and writes
+		// no settings: before, it wrote Prettier's document selectors and the whole [tsrx]
+		// block into the user settings on every start, and a provider of its own showed up as a
+		// second "TSRX" entry in Format Document With…
 
 		// The menus in package.json reuse the built-in TypeScript extension's commands on .tsrx
 		// files. VS Code manages .tsrx documents itself (the contributed plugin declares the
@@ -252,32 +251,6 @@ export async function activate(context) {
 		const message = error instanceof Error ? error.message : String(error);
 		vscode.window.showErrorMessage(`Failed to start TSRX language server: ${message}`);
 		return { typescriptGuidance: typescript_guidance };
-	}
-}
-
-async function configurePrettier() {
-	try {
-		const config = vscode.workspace.getConfiguration();
-
-		// Tell Prettier extension to enable formatting for tsrx language
-		await config.update(
-			'prettier.documentSelectors',
-			TSRX_FILE_SELECTORS,
-			vscode.ConfigurationTarget.Global,
-		);
-
-		// Set Prettier as default formatter for .tsrx files
-		await config.update(
-			'[tsrx]',
-			{
-				'editor.defaultFormatter': 'esbenp.prettier-vscode',
-			},
-			vscode.ConfigurationTarget.Global,
-		);
-
-		console.log('Prettier configuration updated for TSRX files');
-	} catch (error) {
-		console.error('Failed to configure Prettier:', error);
 	}
 }
 

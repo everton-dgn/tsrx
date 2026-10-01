@@ -1,7 +1,7 @@
 # TSRX Syntax for VS Code
 
-Provides syntax highlighting and rich intellisense for `.tsrx` files in VS Code,
-using the TSRX language server.
+Provides syntax highlighting, rich intellisense and [formatting](#formatting) for
+`.tsrx` files in VS Code, using the TSRX language server.
 
 ## TypeScript backends
 
@@ -183,6 +183,43 @@ block statement, and TypeScript's navigation tree skips block statements
   [`BENCHMARKS.md`](https://github.com/tsrx-org/tsrx/blob/main/packages/content-mapper/BENCHMARKS.md):
   how the two backends compare
 
+## Formatting
+
+The extension formats `.tsrx` files with your project's Prettier and
+[`@tsrx/prettier-plugin`](https://github.com/tsrx-org/tsrx/tree/main/packages/prettier-plugin).
+You do not need the Prettier extension.
+
+1. Install both in your project:
+
+   ```sh
+   npm install -D prettier @tsrx/prettier-plugin
+   # or
+   pnpm add -D prettier @tsrx/prettier-plugin
+   ```
+
+2. Run **Format Document**, or turn on `editor.formatOnSave`.
+
+TSRX is the default formatter for `.tsrx` files. Your Prettier config
+(`.prettierrc`), `.editorconfig` and `.prettierignore` apply, so VS Code gives the
+same result as the `prettier` command. To run Prettier from the command line, also
+add the plugin to your Prettier config:
+
+```json
+{ "plugins": ["@tsrx/prettier-plugin"] }
+```
+
+If a package is missing, TSRX shows a message with the install command, once per
+project. To turn formatting off, set `"tsrx.format.enable": false`.
+
+To use the Prettier extension instead, make it the default formatter for `.tsrx`
+files. It also needs the plugin in your Prettier config:
+
+```json
+{
+  "[tsrx]": { "editor.defaultFormatter": "esbenp.prettier-vscode" }
+}
+```
+
 ## Legacy settings
 
 ### tsconfig `plugins` entry
@@ -202,3 +239,20 @@ VS Code no longer needs it (only other editors do). On TypeScript 5.9 or 6, this
 extension gives the plugin to VS Code's TypeScript. TypeScript 7 ignores `plugins`
 and uses the `contentMappers` entry instead (see
 [Native backend setup](#native-backend-setup)).
+
+### Prettier settings written by older versions
+
+Older versions of this extension wrote these settings into your user settings
+every time VS Code started:
+
+```jsonc
+{
+  "prettier.documentSelectors": ["**/*.tsrx"],
+  "[tsrx]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+}
+```
+
+The extension no longer writes them. While they stay, the Prettier extension
+formats `.tsrx` files instead of TSRX. To use TSRX, remove both settings (see
+[Formatting](#formatting)). Each time, these settings also replaced any other
+`[tsrx]` settings and Prettier document selectors that you had set.

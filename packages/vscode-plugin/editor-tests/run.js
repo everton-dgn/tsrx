@@ -242,6 +242,9 @@ function create_project(scenario) {
 		'@tsrx/content-mapper': path.join(repo_root, 'packages', 'content-mapper'),
 		react: installed_package_dir(tsrx_react, 'react'),
 		'@types/react': installed_package_dir(tsrx_react, '@types/react'),
+		// The TSRX language server formats with the project's Prettier and plugin.
+		prettier: installed_package_dir(repo_root, 'prettier'),
+		'@tsrx/prettier-plugin': path.join(repo_root, 'packages', 'prettier-plugin'),
 	};
 	if (scenario.projectTypeScript) {
 		links.typescript =
@@ -414,6 +417,30 @@ function source_definition_problem(scenario, result) {
 		: `expected Go to Source Definition to open ${expected}, got ${JSON.stringify(result.sourceDefinition)}`;
 }
 
+/** What the harness's messy `Format.tsrx` must become. */
+const FORMATTED = `import { useState } from "react";
+
+export function Format() @{
+	const [count, setCount] = useState(0);
+	<button onClick={() => setCount(count + 1)}>{count}</button>
+}
+`;
+
+/**
+ * In every setup, the TSRX language server formats `.tsrx` files with the project's
+ * Prettier and `@tsrx/prettier-plugin` (no Prettier extension installed), and it is the
+ * default `.tsrx` formatter.
+ * @param {Record<string, any>} result
+ */
+function formatting_problem(result) {
+	if (result.formatting?.defaultFormatter !== 'TSRX.tsrx-vscode-plugin') {
+		return `expected TSRX to be the default .tsrx formatter, got ${JSON.stringify(result.formatting?.defaultFormatter)}`;
+	}
+	return result.formatting?.text === FORMATTED
+		? undefined
+		: `expected Format Document to give ${JSON.stringify(FORMATTED)}, got ${JSON.stringify(result.formatting?.text)}`;
+}
+
 /**
  * The fallback for `hide-test-windows.swift`: VS Code brings its first window to the
  * front even when `open` starts it hidden in the background. When the instance is in
@@ -493,7 +520,10 @@ for (const scenario of selected) {
 	const imports = scenario.expect === 'nothing' ? undefined : imports_problem(result ?? {});
 	const source_definition =
 		scenario.expect === 'nothing' ? undefined : source_definition_problem(scenario, result ?? {});
-	const feature = imports ?? source_definition;
+	const unsaved = result?.unsavedDocuments?.length
+		? `expected no unsaved documents at the end (VS Code would ask to save them and come to the front), got ${JSON.stringify(result.unsavedDocuments)}`
+		: undefined;
+	const feature = imports ?? source_definition ?? formatting_problem(result ?? {}) ?? unsaved;
 	const problem =
 		observed !== scenario.expect
 			? `expected ${scenario.expect}, got ${observed}`
@@ -514,6 +544,7 @@ for (const scenario of selected) {
 		observed,
 		imports: scenario.expect === 'nothing' ? '-' : imports ? 'FAIL' : 'ok',
 		'source definition': result?.sourceDefinition?.split('/').pop() ?? '-',
+		formatting: formatting_problem(result ?? {}) ? 'FAIL' : 'ok',
 		'after typing <b>': closing_tag,
 		'TypeScript status': [status, result?.typescriptStatus?.version].filter(Boolean).join(' '),
 		notices,

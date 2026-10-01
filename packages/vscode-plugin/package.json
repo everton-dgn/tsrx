@@ -93,15 +93,10 @@
           "default": true,
           "markdownDescription": "Close tags when typing `>` in `.tsrx` files on TypeScript 7, which does not close them there yet ([microsoft/TypeScript#64564](https://github.com/microsoft/TypeScript/issues/64564)). With VS Code's built-in TypeScript, TypeScript closes them instead (`#js/ts.autoClosingTags.enabled#`)."
         },
-        "tsrx.preferences.preferTypeOnlyAutoImports": {
-          "type": "boolean",
-          "default": true,
-          "description": "Prefer adding 'type' modifier to auto imports when possible"
-        },
         "tsrx.format.enable": {
           "type": "boolean",
           "default": true,
-          "description": "Enable/disable default TSRX formatter"
+          "markdownDescription": "Format `.tsrx` files with the project's Prettier and `@tsrx/prettier-plugin`. Both must be installed in the project. The TSRX extension is the default formatter for `.tsrx` files (`#editor.defaultFormatter#`)."
         }
       }
     },
@@ -135,6 +130,9 @@
       }
     ],
     "configurationDefaults": {
+      "[tsrx]": {
+        "editor.defaultFormatter": "TSRX.tsrx-vscode-plugin"
+      },
       "emmet.includeLanguages": {
         "tsrx": "html"
       },

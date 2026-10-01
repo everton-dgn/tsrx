@@ -32,6 +32,19 @@ describe('@tsrx/vscode-plugin package contract', () => {
 		});
 	});
 
+	it('makes the TSRX language server the default .tsrx formatter without writing settings', () => {
+		// The published extension id: the publisher and the name the package gets at release.
+		expect(package_json.scripts['pkg-name-release']).toContain(' name tsrx-vscode-plugin');
+		expect(package_json.contributes.configurationDefaults['[tsrx]']).toEqual({
+			'editor.defaultFormatter': `${package_json.publisher}.tsrx-vscode-plugin`,
+		});
+		// The server formats (formattingHandler.js); the extension registers no formatter of
+		// its own and no longer writes Prettier settings into the user settings.
+		const extension_source = readFileSync(resolve(__dirname, '../src/extension.js'), 'utf8');
+		expect(extension_source).not.toContain('registerDocumentFormattingEditProvider');
+		expect(extension_source).not.toContain('prettier.documentSelectors');
+	});
+
 	it('activates when only a .tsrx file is open, not just for workspaces containing one', () => {
 		expect(package_json.activationEvents).toEqual(
 			expect.arrayContaining(['onLanguage:tsrx', 'workspaceContains:**/*.tsrx']),
