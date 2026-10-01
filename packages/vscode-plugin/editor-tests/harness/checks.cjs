@@ -230,6 +230,19 @@ exports.run = async () => {
 			),
 			diagnostics: diagnostics_of(main.uri),
 		};
+
+		// TSRX's Go to Source Definition on `useState`: the file it opens.
+		const source_editor = await vscode.window.showTextDocument(document);
+		const use_state = document.positionAt(document.getText().indexOf('useState(0)') + 2);
+		source_editor.selection = new vscode.Selection(use_state, use_state);
+		await within(vscode.commands.executeCommand('tsrx.goToSourceDefinition'), 30000, undefined);
+		const source_deadline = Date.now() + 10000;
+		while (vscode.window.activeTextEditor?.document === document && Date.now() < source_deadline) {
+			await sleep(250);
+		}
+		const opened = vscode.window.activeTextEditor?.document;
+		result.sourceDefinition =
+			opened && opened !== document ? opened.uri.path.split('/node_modules/').pop() : undefined;
 		// Back to the file, so it is what gets reverted and closed below.
 		await vscode.window.showTextDocument(document);
 

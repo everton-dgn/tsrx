@@ -398,6 +398,23 @@ function imports_problem(result) {
 }
 
 /**
+ * TSRX's Go to Source Definition on `useState`: React's JavaScript where VS Code's
+ * own TypeScript serves the file, the `.d.ts` definition on TypeScript 7 (which has
+ * no way to run it in `.tsrx` files yet, microsoft/TypeScript#64576).
+ * @param {import('./scenarios.js').Scenario} scenario
+ * @param {Record<string, any>} result
+ */
+function source_definition_problem(scenario, result) {
+	const expected =
+		scenario.expect === 'vscode-typescript'
+			? /^react\/cjs\/react\.\w+\.js$/
+			: /^@types\/react\/index\.d\.ts$/;
+	return expected.test(result.sourceDefinition ?? '')
+		? undefined
+		: `expected Go to Source Definition to open ${expected}, got ${JSON.stringify(result.sourceDefinition)}`;
+}
+
+/**
  * The fallback for `hide-test-windows.swift`: VS Code brings its first window to the
  * front even when `open` starts it hidden in the background. When the instance is in
  * front, hide it: macOS then gives the front back to the app that had it. Hiding
@@ -474,11 +491,14 @@ for (const scenario of selected) {
 		(result?.notices ?? []).map((/** @type {{ id: string }} */ notice) => notice.id).join(', ') ||
 		'none';
 	const imports = scenario.expect === 'nothing' ? undefined : imports_problem(result ?? {});
+	const source_definition =
+		scenario.expect === 'nothing' ? undefined : source_definition_problem(scenario, result ?? {});
+	const feature = imports ?? source_definition;
 	const problem =
 		observed !== scenario.expect
 			? `expected ${scenario.expect}, got ${observed}`
-			: imports
-				? imports
+			: feature
+				? feature
 				: scenario.closingTag !== undefined && closing_tag !== scenario.closingTag
 					? `expected ${JSON.stringify(scenario.closingTag)} after typing <b>, got ${JSON.stringify(closing_tag)}`
 					: status !== scenario.typescript
@@ -493,6 +513,7 @@ for (const scenario of selected) {
 		expected: scenario.expect,
 		observed,
 		imports: scenario.expect === 'nothing' ? '-' : imports ? 'FAIL' : 'ok',
+		'source definition': result?.sourceDefinition?.split('/').pop() ?? '-',
 		'after typing <b>': closing_tag,
 		'TypeScript status': [status, result?.typescriptStatus?.version].filter(Boolean).join(' '),
 		notices,

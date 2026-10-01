@@ -157,6 +157,13 @@ On the native backend (TypeScript 7):
   keyword highlights from the TSRX language server do not show. In this case, VS
   Code uses only the multi-document highlight provider of the TypeScript 7
   extension.
+- **Go to Source Definition:** TSRX's command opens the definition instead, and
+  says why the first time. `tsc --lsp` can find the source definition in `.tsrx`
+  files, but the TypeScript 7 extension runs its command only in TypeScript and
+  JavaScript files
+  ([microsoft/TypeScript#64576](https://github.com/microsoft/TypeScript/issues/64576)).
+  On the classic backend, the command goes past a `.d.ts` file to the JavaScript
+  behind it.
 
 ### Known limitation on both backends
 

@@ -158,7 +158,7 @@
         {
           "command": "tsrx.goToSourceDefinition",
           "when": "resourceLangId == tsrx",
-          "group": "navigation@9"
+          "group": "navigation@1.41"
         }
       ],
       "explorer/context": [

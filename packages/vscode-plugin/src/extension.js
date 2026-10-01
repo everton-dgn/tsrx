@@ -24,6 +24,7 @@ import * as lsp from 'vscode-languageclient/node';
 import { createLabsInfo } from '@volar/vscode';
 import { activate_closing_tags } from './closing-tags.js';
 import { register_restart_command } from './restart.js';
+import { register_source_definition_command } from './source-definition.js';
 import { CompileErrorDedupe } from './diagnostics.js';
 import { activate_typescript } from './typescript.js';
 import { activate_typescript_guidance } from './typescript-guidance.js';
@@ -98,8 +99,12 @@ export async function activate(context) {
 
 	// Which TypeScript serves .tsrx files, and what to do when none can.
 	const typescript_guidance = activate_typescript_guidance(context);
-	// Registered before the server starts, so it can retry a server that failed to start.
-	context.subscriptions.push(register_restart_command(() => client));
+	// Registered before the server starts: the restart command can retry a server that
+	// failed to start, and Go to Source Definition needs only TypeScript.
+	context.subscriptions.push(
+		register_restart_command(() => client),
+		register_source_definition_command(),
+	);
 
 	const serverModule = path.join(__dirname, 'server.js');
 
@@ -239,9 +244,6 @@ export async function activate(context) {
 
 		await activate_typescript(context);
 
-		addCustomCommands(context);
-		console.log('[TSRX] Registered custom commands');
-
 		console.log('[TSRX] Extension activated successfully');
 		// `typescriptGuidance` is read by the editor tests (`editor-tests/harness`).
 		return { ...volar_labs.extensionExports, typescriptGuidance: typescript_guidance };
@@ -251,78 +253,6 @@ export async function activate(context) {
 		vscode.window.showErrorMessage(`Failed to start TSRX language server: ${message}`);
 		return { typescriptGuidance: typescript_guidance };
 	}
-}
-
-/**
- * The extension's own commands.
- * @param {import('vscode').ExtensionContext} context
- */
-function addCustomCommands(context) {
-	context.subscriptions.push(
-		vscode.commands.registerCommand('tsrx.goToSourceDefinition', async () => {
-			try {
-				const editor = vscode.window.activeTextEditor;
-				if (!editor) {
-					console.log('[TSRX] No active editor');
-					return;
-				}
-
-				const position = editor.selection.active;
-				console.log('[TSRX] Getting definitions at position:', position);
-
-				// Use VS Code's definition provider API
-				const definitions = await vscode.commands.executeCommand(
-					'vscode.executeDefinitionProvider',
-					editor.document.uri,
-					position,
-				);
-
-				console.log('[TSRX] Definitions result:', definitions);
-
-				if (!definitions || !Array.isArray(definitions) || definitions.length === 0) {
-					vscode.window.showInformationMessage('No definition found');
-					return;
-				}
-
-				// Filter for .tsrx files (prefer source over .d.ts)
-				// Definition objects can have either `uri` or `targetUri`
-				const tsrxDefinition = definitions.find((d) => {
-					const uri = d?.uri || d?.targetUri;
-					if (!uri) {
-						console.warn('[TSRX] Definition has no uri:', d);
-						return false;
-					}
-					const is_tsrx = is_tsrx_file_path(uri.path);
-					console.log('[TSRX] Checking definition:', uri.path, 'isTSRX:', is_tsrx);
-					return is_tsrx;
-				});
-
-				if (tsrxDefinition) {
-					const uri = tsrxDefinition.uri || tsrxDefinition.targetUri;
-					const range = tsrxDefinition.range || tsrxDefinition.targetRange;
-					console.log('[TSRX] Found tsrx definition:', uri.path);
-					await vscode.window.showTextDocument(uri, {
-						selection: range,
-					});
-				} else {
-					// If no .tsrx file found, just go to the first definition (might be .d.ts)
-					const firstDef = definitions[0];
-					const uri = firstDef?.uri || firstDef?.targetUri;
-					const range = firstDef?.range || firstDef?.targetRange;
-					console.log('[TSRX] No .tsrx definition, using first result:', uri?.path);
-					if (uri) {
-						await vscode.window.showTextDocument(uri, {
-							selection: range,
-						});
-					}
-				}
-			} catch (error) {
-				console.error('[TSRX] Error in goToSourceDefinition:', error);
-				const message = error instanceof Error ? error.message : String(error);
-				vscode.window.showErrorMessage(`Go to Source Definition failed: ${message}`);
-			}
-		}),
-	);
 }
 
 async function configurePrettier() {
