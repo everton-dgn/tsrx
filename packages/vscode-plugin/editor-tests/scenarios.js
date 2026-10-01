@@ -9,6 +9,12 @@
  * - `nothing`: no TypeScript features at all. Such a scenario records a gap
  *   and says why in `gap`.
  *
+ * Unless `expect` is `nothing`, the runner also checks that `.ts` and `.tsrx`
+ * files import each other (`main.ts` imports `App.tsrx`, which imports
+ * `label.ts`). The fixture's tsconfig.json has no `plugins` entry. `result.tsserver`
+ * lists the tsservers VS Code's own TypeScript started: their versions, and
+ * whether they loaded `@tsrx/typescript-plugin`.
+ *
  * `extensions` are installed into the instance's own extensions directory:
  * `tsrx` is the VSIX under test, `ts7` the marketplace TypeScript 7 extension
  * (`TypeScriptTeam.native-preview`), `ts7-nightly` its TypeScript 7 Nightly
@@ -54,6 +60,19 @@ function status_version(result, version) {
 	return result.typescriptStatus?.version === version
 		? undefined
 		: `expected the status to name TypeScript ${version}, got ${result.typescriptStatus?.version}`;
+}
+
+/**
+ * @param {Record<string, any>} result
+ * @param {string} version
+ */
+function tsserver_version(result, version) {
+	const versions = (result.tsserver ?? []).map(
+		(/** @type {{ version: string }} */ log) => log.version,
+	);
+	return versions.length > 0 && versions.every((logged) => logged === version)
+		? undefined
+		: `expected VS Code's TypeScript to run tsserver ${version}, got ${JSON.stringify(versions)}`;
 }
 
 /**
@@ -323,5 +342,17 @@ export const SCENARIOS = [
 		expect: 'vscode-typescript',
 		typescript: 'vscode',
 		closingTag: '<b></b>',
+	},
+	{
+		name: 'vscode-typescript-classic-project',
+		description:
+			"TSRX extension only, js/ts.tsdk.path = node_modules/typescript/lib, project has TypeScript 5.9: the project's tsserver serves",
+		extensions: ['tsrx'],
+		settings: { 'js/ts.tsdk.path': 'node_modules/typescript/lib' },
+		projectTypeScript: 'classic',
+		expect: 'vscode-typescript',
+		typescript: 'vscode',
+		closingTag: '<b></b>',
+		check: (result) => tsserver_version(result, '5.9.3'),
 	},
 ];

@@ -6,7 +6,8 @@
  * and extensions directories, so your own VS Code and settings are never
  * touched), opens a copy of `fixtures/react`, and checks which TypeScript
  * serves its `.tsrx` file (hover, definition, and a type error typed into the
- * unsaved buffer). Run from the repository root after building the VSIX:
+ * unsaved buffer) and, where one does, that `.ts` and `.tsrx` files import each
+ * other. Run from the repository root after building the VSIX:
  *
  *   pnpm --filter @tsrx/vscode-plugin build-and-package
  *   pnpm --filter @tsrx/vscode-plugin test:editor [-- --scenario <name>] [--verbose] [--keep]
@@ -265,8 +266,12 @@ async function run_scenario(scenario, index) {
 	// Short on purpose: VS Code's IPC socket is created in it.
 	const user_data = path.join(root, `u${index + 1}`);
 	fs.mkdirSync(path.join(user_data, 'User'), { recursive: true });
+	// VS Code's own TypeScript logs which tsserver it starts and the plugins it loads.
 	const settings = JSON.parse(
-		JSON.stringify(scenario.settings ?? {}).replaceAll('${project}', project),
+		JSON.stringify({ 'js/ts.tsserver.log': 'normal', ...scenario.settings }).replaceAll(
+			'${project}',
+			project,
+		),
 	);
 	fs.writeFileSync(
 		path.join(user_data, 'User', 'settings.json'),
@@ -349,7 +354,47 @@ async function run_scenario(scenario, index) {
 	await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5000))]);
 	fs.closeSync(log_fd);
 	const result = fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, 'utf8')) : undefined;
+	if (result) result.tsserver = tsserver_logs(user_data);
 	return { result, installed: extensions.installed, log };
+}
+
+/**
+ * The tsservers VS Code's own TypeScript started in an instance: the version each
+ * one logged, and whether it loaded `@tsrx/typescript-plugin`.
+ * @param {string} user_data
+ */
+function tsserver_logs(user_data) {
+	const logs = path.join(user_data, 'logs');
+	if (!fs.existsSync(logs)) return [];
+	return fs
+		.readdirSync(logs, { recursive: true, encoding: 'utf8' })
+		.filter((file) => path.basename(file) === 'tsserver.log')
+		.map((file) => {
+			const text = fs.readFileSync(path.join(logs, file), 'utf8');
+			return {
+				version: /Version: (\S+)/.exec(text)?.[1],
+				plugin: /Plugin validation succeeded/.test(text)
+					? 'loaded'
+					: /@tsrx\/typescript-plugin/.test(text)
+						? 'not loaded'
+						: 'not requested',
+			};
+		});
+}
+
+/**
+ * Where TypeScript serves the `.tsrx` file, imports between `.ts` and `.tsrx` files
+ * resolve both ways, with no `plugins` entry in the fixture's tsconfig.json.
+ * @param {Record<string, any>} result
+ */
+function imports_problem(result) {
+	if (!/label: string/.test(result.tsImportHover ?? '')) {
+		return `expected App.tsrx to resolve ./label, got the hover ${JSON.stringify(result.tsImportHover)}`;
+	}
+	if (!/function App/.test(result.tsrxImport?.hover ?? '')) {
+		return `expected main.ts to resolve ./App.tsrx, got the hover ${JSON.stringify(result.tsrxImport?.hover)} and the diagnostics ${JSON.stringify(result.tsrxImport?.diagnostics)}`;
+	}
+	return undefined;
 }
 
 /**
@@ -428,22 +473,26 @@ for (const scenario of selected) {
 	const notices =
 		(result?.notices ?? []).map((/** @type {{ id: string }} */ notice) => notice.id).join(', ') ||
 		'none';
+	const imports = scenario.expect === 'nothing' ? undefined : imports_problem(result ?? {});
 	const problem =
 		observed !== scenario.expect
 			? `expected ${scenario.expect}, got ${observed}`
-			: scenario.closingTag !== undefined && closing_tag !== scenario.closingTag
-				? `expected ${JSON.stringify(scenario.closingTag)} after typing <b>, got ${JSON.stringify(closing_tag)}`
-				: status !== scenario.typescript
-					? `expected the TypeScript status ${scenario.typescript}, got ${status}`
-					: notices !== (scenario.notice ?? 'none')
-						? `expected the notices ${scenario.notice ?? 'none'}, got ${notices}`
-						: scenario.check?.(result ?? {});
+			: imports
+				? imports
+				: scenario.closingTag !== undefined && closing_tag !== scenario.closingTag
+					? `expected ${JSON.stringify(scenario.closingTag)} after typing <b>, got ${JSON.stringify(closing_tag)}`
+					: status !== scenario.typescript
+						? `expected the TypeScript status ${scenario.typescript}, got ${status}`
+						: notices !== (scenario.notice ?? 'none')
+							? `expected the notices ${scenario.notice ?? 'none'}, got ${notices}`
+							: scenario.check?.(result ?? {});
 	if (problem) failures++;
 	console.log(problem ? `FAIL (${problem})` : 'ok');
 	rows.push({
 		scenario: scenario.name,
 		expected: scenario.expect,
 		observed,
+		imports: scenario.expect === 'nothing' ? '-' : imports ? 'FAIL' : 'ok',
 		'after typing <b>': closing_tag,
 		'TypeScript status': [status, result?.typescriptStatus?.version].filter(Boolean).join(' '),
 		notices,

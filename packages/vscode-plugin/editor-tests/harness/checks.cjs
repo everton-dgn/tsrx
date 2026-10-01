@@ -2,8 +2,9 @@
  * Runs inside an isolated VS Code instance (`--extensionTestsPath`) started by
  * `../run.js`. Opens the fixture's `.tsrx` file, asks the editor for a hover, a
  * definition and the diagnostics of a type error typed into the unsaved
- * buffer, and writes what it saw to the `out` file named in `config.json`
- * (written next to this file by the runner). It never saves the document.
+ * buffer, checks the imports between `.ts` and `.tsrx` files both ways, and
+ * writes what it saw to the `out` file named in `config.json` (written next to
+ * this file by the runner). It never saves the documents.
  */
 
 const fs = require('node:fs');
@@ -40,15 +41,17 @@ function hover_text(hovers) {
 }
 
 /**
- * The hover on `count` in `{count}`, polled until it names the type or time runs out.
+ * The hover at `offset(text)`, polled until it matches `expected` or time runs out.
  * @param {vscode.TextDocument} document
+ * @param {(text: string) => number} offset
+ * @param {RegExp} expected
  * @param {number} timeout_ms
  */
-async function hover_on_count(document, timeout_ms) {
+async function poll_hover(document, offset, expected, timeout_ms) {
 	let hover = '';
 	const deadline = Date.now() + timeout_ms;
-	while (!/number/.test(hover) && Date.now() < deadline) {
-		const position = document.positionAt(document.getText().indexOf('{count}') + 1);
+	while (!expected.test(hover) && Date.now() < deadline) {
+		const position = document.positionAt(offset(document.getText()));
 		hover = hover_text(
 			await within(
 				vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, position),
@@ -56,9 +59,28 @@ async function hover_on_count(document, timeout_ms) {
 				[],
 			),
 		);
-		if (!/number/.test(hover)) await sleep(1000);
+		if (!expected.test(hover)) await sleep(1000);
 	}
 	return hover;
+}
+
+/**
+ * The hover on `count` in `{count}`, polled until it names the type or time runs out.
+ * @param {vscode.TextDocument} document
+ * @param {number} timeout_ms
+ */
+function hover_on_count(document, timeout_ms) {
+	return poll_hover(document, (text) => text.indexOf('{count}') + 1, /number/, timeout_ms);
+}
+
+/** @param {vscode.Uri} uri */
+function diagnostics_of(uri) {
+	return vscode.languages.getDiagnostics(uri).map((diagnostic) => ({
+		source: diagnostic.source,
+		code:
+			typeof diagnostic.code === 'object' ? String(diagnostic.code.value) : String(diagnostic.code),
+		message: diagnostic.message,
+	}));
 }
 
 /** @param {string} key */
@@ -79,6 +101,16 @@ exports.run = async () => {
 
 		const text = document.getText();
 		result.hover = await hover_on_count(document, config.hoverTimeoutMs);
+		// Without a TypeScript that answers, the import checks below only look once.
+		const answering = /number/.test(result.hover);
+
+		// `App.tsrx` imports `label.ts`.
+		result.tsImportHover = await poll_hover(
+			document,
+			(text) => text.indexOf('{label}') + 1,
+			/label: string/,
+			answering ? 10000 : 0,
+		);
 
 		/** @type {Array<vscode.Location | vscode.LocationLink>} */
 		const definitions = await within(
@@ -114,14 +146,7 @@ exports.run = async () => {
 			await sleep(1000);
 			diagnostics = vscode.languages.getDiagnostics(uri);
 		}
-		result.diagnostics = diagnostics.map((diagnostic) => ({
-			source: diagnostic.source,
-			code:
-				typeof diagnostic.code === 'object'
-					? String(diagnostic.code.value)
-					: String(diagnostic.code),
-			message: diagnostic.message,
-		}));
+		result.diagnostics = diagnostics_of(uri);
 
 		// Closing tags: type `<b` and then `>` inside the button, and record what
 		// follows: `<b></b>` once, nothing, or a closing tag inserted by more than
@@ -145,8 +170,7 @@ exports.run = async () => {
 			}
 			await sleep(config.autoInsertWaitMs);
 			const line = document.lineAt(before_close.line).text;
-			const typed = line.indexOf('<b', line.indexOf('{count}'));
-			result.closingTag = line.slice(typed, line.lastIndexOf('</button>'));
+			result.closingTag = line.slice(before_close.character, line.lastIndexOf('</button>'));
 		}
 
 		// What the TSRX extension says about the TypeScript serving the file, and the
@@ -190,6 +214,24 @@ exports.run = async () => {
 			);
 			result.afterCommand.symbols = symbols?.length ?? 0;
 		}
+
+		// `main.ts` imports `App.tsrx`: whatever serves `.ts` files must resolve it,
+		// with no `plugins` entry in the fixture's tsconfig.json.
+		const main = await vscode.workspace.openTextDocument(
+			vscode.Uri.file(path.join(path.dirname(config.file), 'main.ts')),
+		);
+		await vscode.window.showTextDocument(main);
+		result.tsrxImport = {
+			hover: await poll_hover(
+				main,
+				(text) => text.lastIndexOf('App') + 1,
+				/function App/,
+				answering ? config.hoverTimeoutMs : 10000,
+			),
+			diagnostics: diagnostics_of(main.uri),
+		};
+		// Back to the file, so it is what gets reverted and closed below.
+		await vscode.window.showTextDocument(document);
 
 		/** @param {string} id */
 		const active = (id) => vscode.extensions.getExtension(id)?.isActive ?? 'not installed';
