@@ -12,6 +12,8 @@ import {
 	typescript_7_on,
 	typescript_7_server_extension,
 	workspace_config_base,
+	workspace_tsdk_set,
+	workspace_typescript,
 } from './typescript-7.js';
 
 const SETUP_URL =
@@ -73,14 +75,6 @@ const INSTALL_TYPESCRIPT_7 = {
 };
 
 /** @type {Action} */
-const OPEN_TSDK_SETTING = {
-	id: 'open-tsdk-setting',
-	label: 'Open Setting',
-	run: () =>
-		vscode.commands.executeCommand('workbench.action.openWorkspaceSettings', 'js/ts.tsdk.path'),
-};
-
-/** @type {Action} */
 const TURN_OFF_TYPESCRIPT_7 = {
 	id: 'turn-off-typescript-7',
 	label: 'Turn Off TypeScript 7',
@@ -104,13 +98,58 @@ const LEARN_MORE = {
 };
 
 /**
- * The project's `typescript` as `js/ts.tsdk.path` would name it: relative to where the
- * TypeScript 7 extension resolves that setting.
- * @param {string} directory
+ * The TypeScript 7.1 a "Use Project TypeScript" click points the TypeScript 7
+ * extension at, and where it writes `js/ts.tsdk.path`:
+ * - The open folder's own `node_modules/typescript`: the user settings get
+ *   `node_modules/typescript`, the README's setting. The extension uses a user setting
+ *   without asking, and the relative path serves every project opened later.
+ * - Otherwise the nearest one to the file, as in a monorepo package: the workspace
+ *   settings get its path from the folder. The extension asks once to allow a
+ *   workspace setting.
+ * A `tsdk` setting already in the workspace outranks the user settings, so it is
+ * replaced there.
+ * @param {TypeScriptStatus} status
+ * @returns {{ version: string, value: string, target: 'user' | 'workspace' } | undefined}
  */
-function tsdk_value(directory) {
+export function project_typescript_target(status) {
+	const root = workspace_typescript();
+	if (root && has_content_mapper_protocol(root.version)) {
+		return workspace_tsdk_set()
+			? { version: root.version, value: 'node_modules/typescript', target: 'workspace' }
+			: { version: root.version, value: 'node_modules/typescript', target: 'user' };
+	}
+	const project = status.project;
+	if (!project || !has_content_mapper_protocol(project.version)) return undefined;
 	const base = workspace_config_base();
-	return base ? path.relative(base, directory) : directory;
+	return {
+		version: project.version,
+		value: base ? path.relative(base, project.directory) : project.directory,
+		target: 'workspace',
+	};
+}
+
+/**
+ * Point the TypeScript 7 extension at the project's TypeScript. The settings watcher
+ * in `activate_typescript_guidance` then restarts it, since it reads `tsdk` settings
+ * only when it starts.
+ * @param {NonNullable<ReturnType<typeof project_typescript_target>>} target
+ * @returns {Action}
+ */
+function use_project_typescript(target) {
+	return {
+		id: 'use-project-typescript',
+		label: 'Use Project TypeScript',
+		run: () =>
+			vscode.workspace
+				.getConfiguration('js/ts')
+				.update(
+					'tsdk.path',
+					target.value,
+					target.target === 'user'
+						? vscode.ConfigurationTarget.Global
+						: vscode.ConfigurationTarget.Workspace,
+				),
+	};
 }
 
 /**
@@ -133,19 +172,26 @@ export function notice_for(status) {
 				severity: 'information',
 				title: 'Use TypeScript 7 for .tsrx files',
 				message:
-					'This project uses TypeScript 7, but VS Code type-checks .tsrx files with its built-in TypeScript. To use TypeScript 7, click Install TypeScript 7. Then set js/ts.tsdk.path to node_modules/typescript.',
+					'This project uses TypeScript 7, but VS Code type-checks .tsrx files with its built-in TypeScript. To use TypeScript 7, click Install TypeScript 7.',
 				actions: [INSTALL_TYPESCRIPT_7, LEARN_MORE],
 			};
 		case 'typescript-7-unsupported': {
-			const what_to_do = project
-				? `Your project has version ${project.version}. To use it, click Open Setting. Then enter ${tsdk_value(project.directory)}.`
-				: `To get it, install typescript@next in your project. ${turn_off}`;
+			const target = project_typescript_target(status);
+			if (target) {
+				return {
+					id: 'typescript-7-unsupported',
+					severity: 'warning',
+					title: 'Fix type checking in .tsrx files',
+					message: `TypeScript 7 uses version ${status.version}. This version cannot type-check .tsrx files. Your project has version ${target.version}. To use it, click Use Project TypeScript.`,
+					actions: [use_project_typescript(target), TURN_OFF_TYPESCRIPT_7],
+				};
+			}
 			return {
 				id: 'typescript-7-unsupported',
 				severity: 'warning',
 				title: 'Fix type checking in .tsrx files',
-				message: `TypeScript 7 uses version ${status.version}. This version cannot type-check .tsrx files. Please use version ${MINIMUM_NATIVE_TYPESCRIPT_VERSION} or newer. ${what_to_do}`,
-				actions: [project ? OPEN_TSDK_SETTING : LEARN_MORE, TURN_OFF_TYPESCRIPT_7],
+				message: `TypeScript 7 uses version ${status.version}. This version cannot type-check .tsrx files. Please use version ${MINIMUM_NATIVE_TYPESCRIPT_VERSION} or newer. To get it, install typescript@next in your project. ${turn_off}`,
+				actions: [LEARN_MORE, TURN_OFF_TYPESCRIPT_7],
 			};
 		}
 		case 'typescript-7-missing':
@@ -268,19 +314,43 @@ export function activate_typescript_guidance(context) {
 		}
 	}
 
+	// The TypeScript 7 extension reads the `tsdk` settings only when it starts. When a
+	// change to them changes the compiler it should run, restart it: its server for a
+	// user setting, the extension host for a workspace one, because only its start-up
+	// asks to allow a workspace setting.
+	const compiler_key = () =>
+		typescript_7_on() ? JSON.stringify(typescript_7_compiler() ?? null) : 'off';
+	let last_compiler = compiler_key();
+	function restart_if_compiler_changed() {
+		const compiler = compiler_key();
+		if (compiler === last_compiler) return;
+		last_compiler = compiler;
+		if (!typescript_7_on() || !typescript_7_server_extension()) return;
+		void vscode.commands.executeCommand(
+			typescript_7_compiler()?.scope === 'workspace'
+				? 'workbench.action.restartExtensionHost'
+				: 'typescript.native-preview.restart',
+		);
+	}
+
 	update();
 	context.subscriptions.push(
 		item,
 		vscode.window.onDidChangeActiveTextEditor(update),
-		vscode.extensions.onDidChange(update),
+		vscode.extensions.onDidChange(() => {
+			last_compiler = compiler_key();
+			update();
+		}),
 		vscode.workspace.onDidChangeConfiguration((event) => {
-			if (
-				[...USE_TSGO_SETTINGS, ...TSDK_SETTING_NAMES].some((setting) =>
-					event.affectsConfiguration(setting),
-				)
-			) {
-				update();
+			if (TSDK_SETTING_NAMES.some((setting) => event.affectsConfiguration(setting))) {
+				restart_if_compiler_changed();
+			} else if (USE_TSGO_SETTINGS.some((setting) => event.affectsConfiguration(setting))) {
+				// The TypeScript 7 extension restarts itself for these.
+				last_compiler = compiler_key();
+			} else {
+				return;
 			}
+			update();
 		}),
 		vscode.commands.registerCommand(FIX_COMMAND, async () => {
 			if (!notice) return;

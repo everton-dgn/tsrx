@@ -47,6 +47,9 @@ To type-check `.tsrx` files with TypeScript 7.1 in VS Code:
    then asks once whether to use the project's TypeScript. Choose **Allow** to
    enable it.
 
+   If TypeScript 7 is on without `js/ts.tsdk.path`, TSRX shows a notice. Its **Use
+   Project TypeScript** button adds the setting for you.
+
 3. Install the
    [TypeScript 7 extension](https://marketplace.visualstudio.com/items?itemName=TypeScriptTeam.native-preview).
 

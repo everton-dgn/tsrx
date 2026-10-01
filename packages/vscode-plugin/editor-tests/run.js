@@ -460,6 +460,9 @@ for (const scenario of selected) {
 console.log('');
 console.table(rows);
 hider?.kill();
-if (!options.keep) fs.rmSync(root, { recursive: true, force: true });
-else console.log(`Kept ${root}`);
+// An instance can still be writing into its data directory while it exits.
+spawnSync('pkill', ['-f', '--', root]);
+if (!options.keep) {
+	fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+} else console.log(`Kept ${root}`);
 process.exit(failures === 0 ? 0 : 1);

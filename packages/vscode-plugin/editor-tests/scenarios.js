@@ -132,23 +132,28 @@ export const SCENARIOS = [
 		gap: "The TypeScript 7 extension's built-in compiler is 7.0.2, which has no content-mapper protocol, and VS Code's own TypeScript stands down while TypeScript 7 is on. The extension does not find the project's `node_modules/typescript` by itself (microsoft/TypeScript#64565). The TSRX extension's notice says to set `js/ts.tsdk.path`.",
 		check: (result) =>
 			status_version(result, '7.0.2') ??
-			notice_actions(result, ['Open Setting', 'Turn Off TypeScript 7']),
+			notice_actions(result, ['Use Project TypeScript', 'Turn Off TypeScript 7']),
 	},
 	{
-		name: 'ts7-bundled-open-setting',
-		description: "ts7-bundled, then the notice's Open Setting",
+		name: 'ts7-bundled-use-project-typescript',
+		description:
+			"ts7-bundled, then the notice's Use Project TypeScript: TSRX writes js/ts.tsdk.path and restarts TypeScript 7",
 		extensions: ['tsrx', 'ts7'],
 		settings: { 'js/ts.experimental.useTsgo': true },
 		projectTypeScript: true,
 		expect: 'nothing',
 		typescript: 'typescript-7-unsupported',
 		notice: 'typescript-7-unsupported',
-		action: 'open-tsdk-setting',
+		action: 'use-project-typescript',
 		closingTag: '<b></b>',
 		check: (result) =>
-			result.afterAction?.activeTab === 'Settings'
-				? undefined
-				: `expected the Settings editor, got ${result.afterAction?.activeTab}`,
+			result.afterAction?.tsdkPath !== 'node_modules/typescript'
+				? `expected js/ts.tsdk.path node_modules/typescript in the user settings, got ${JSON.stringify(result.afterAction?.tsdkPath)}`
+				: result.afterAction?.typescriptStatus?.version !== PROJECT_NIGHTLY
+					? `expected the status to name ${PROJECT_NIGHTLY} afterwards, got ${JSON.stringify(result.afterAction?.typescriptStatus)}`
+					: /number/.test(result.afterAction?.hover ?? '')
+						? undefined
+						: `expected TypeScript 7 to serve the file afterwards, got the hover ${JSON.stringify(result.afterAction?.hover)}`,
 	},
 	{
 		name: 'ts7-bundled-turn-off',

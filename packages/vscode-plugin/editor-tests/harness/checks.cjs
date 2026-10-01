@@ -163,6 +163,7 @@ exports.run = async () => {
 			result.afterAction = {
 				activeTab: vscode.window.tabGroups.activeTabGroup.activeTab?.label,
 				useTsgo: use_tsgo('experimental.useTsgo'),
+				tsdkPath: vscode.workspace.getConfiguration('js/ts').inspect('tsdk.path')?.globalValue,
 				typescriptStatus: guidance?.status(),
 				hover: await hover_on_count(document, config.hoverTimeoutMs),
 			};

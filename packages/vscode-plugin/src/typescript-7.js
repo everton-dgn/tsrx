@@ -133,8 +133,8 @@ function has_tsserver(tsdk) {
 /**
  * The explicit values of the `tsdk` settings in the TypeScript 7 extension's order: the
  * most specific scope first, language-specific values before plain ones, then the
- * settings' own order.
- * @returns {string[]}
+ * settings' own order. Scope 1 is the user settings, 2 and 3 the workspace's.
+ * @returns {Array<{ value: string, scope: number }>}
  */
 function tsdk_candidates() {
 	/** @type {Array<{ value: string, scope: number, order: number }>} */
@@ -157,9 +157,16 @@ function tsdk_candidates() {
 			candidates.push({ value, scope, order: order + setting_index * 10 });
 		});
 	});
-	return candidates
-		.sort((a, b) => b.scope - a.scope || a.order - b.order)
-		.map((candidate) => candidate.value);
+	return candidates.sort((a, b) => b.scope - a.scope || a.order - b.order);
+}
+
+/**
+ * Whether a `tsdk` setting is set in the workspace's settings, where it outranks the
+ * user settings.
+ * @returns {boolean}
+ */
+export function workspace_tsdk_set() {
+	return tsdk_candidates().some((candidate) => candidate.scope > 1);
 }
 
 /** @param {import('vscode').Extension<unknown> | undefined} extension */
@@ -170,9 +177,12 @@ function bundled_version(extension) {
 }
 
 /**
+ * `scope` and `tsdk` say where a compiler from a setting comes from.
  * @typedef {{
  * 	version: string,
  * 	from: 'setting' | 'nightly-extension' | 'bundled',
+ * 	scope?: 'user' | 'workspace',
+ * 	tsdk?: string,
  * }} TypeScript7Compiler
  */
 
@@ -189,12 +199,37 @@ export function typescript_7_compiler() {
 	const server = typescript_7_server_extension();
 	if (!server) return undefined;
 	for (const candidate of tsdk_candidates()) {
-		const version = tsdk_version(candidate);
-		if (version) return { version, from: 'setting' };
+		const version = tsdk_version(candidate.value);
+		if (version) {
+			return {
+				version,
+				from: 'setting',
+				scope: candidate.scope > 1 ? 'workspace' : 'user',
+				tsdk: candidate.value,
+			};
+		}
 	}
 	const nightly = vscode.extensions.getExtension(TYPESCRIPT_7_NIGHTLY_EXTENSION);
 	if (nightly) return { version: bundled_version(nightly), from: 'nightly-extension' };
 	return { version: bundled_version(server), from: 'bundled' };
+}
+
+/**
+ * The `typescript` package installed in a directory's `node_modules`.
+ * @param {string} directory
+ * @returns {{ version: string, directory: string } | undefined}
+ */
+function installed_typescript(directory) {
+	const package_directory = path.join(directory, 'node_modules', 'typescript');
+	try {
+		const manifest = JSON.parse(
+			fs.readFileSync(path.join(package_directory, 'package.json'), 'utf8'),
+		);
+		if (typeof manifest.version === 'string') {
+			return { version: manifest.version, directory: package_directory };
+		}
+	} catch {}
+	return undefined;
 }
 
 /**
@@ -208,17 +243,20 @@ export function project_typescript(uri) {
 	const folder = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath;
 	let directory = path.dirname(uri.fsPath);
 	for (;;) {
-		const package_directory = path.join(directory, 'node_modules', 'typescript');
-		try {
-			const manifest = JSON.parse(
-				fs.readFileSync(path.join(package_directory, 'package.json'), 'utf8'),
-			);
-			if (typeof manifest.version === 'string') {
-				return { version: manifest.version, directory: package_directory };
-			}
-		} catch {}
+		const installed = installed_typescript(directory);
+		if (installed) return installed;
 		const parent = path.dirname(directory);
 		if (directory === folder || parent === directory) return undefined;
 		directory = parent;
 	}
+}
+
+/**
+ * The `typescript` package the open folder installs at its root: what a relative
+ * `"js/ts.tsdk.path": "node_modules/typescript"` names.
+ * @returns {{ version: string, directory: string } | undefined}
+ */
+export function workspace_typescript() {
+	const base = workspace_config_base();
+	return base ? installed_typescript(base) : undefined;
 }

@@ -20,6 +20,10 @@ const host = vi.hoisted(() => ({
 	/** @type {string[]} */
 	commands: [],
 	executeCommand: vi.fn(),
+	/** @type {Array<(event: { affectsConfiguration: (name: string) => boolean }) => void>} */
+	configuration_listeners: [],
+	/** @type {Array<{ name: string, value: unknown, target: number }>} */
+	updates: [],
 	showWarningMessage: vi.fn(),
 	showInformationMessage: vi.fn(),
 	/** @type {Record<string, any>} */
@@ -42,6 +46,22 @@ vi.mock('vscode', () => {
 						const scopes = host.settings.get(`${section}.${key}`) ?? {};
 						return scopes.workspaceValue ?? scopes.globalValue;
 					},
+					// As VS Code does: store the value in its scope, then tell the listeners.
+					update: async (
+						/** @type {string} */ key,
+						/** @type {unknown} */ value,
+						/** @type {number} */ target,
+					) => {
+						const name = `${section}.${key}`;
+						host.updates.push({ name, value, target });
+						host.settings.set(name, {
+							...host.settings.get(name),
+							[target === 1 ? 'globalValue' : 'workspaceValue']: value,
+						});
+						for (const listener of host.configuration_listeners) {
+							listener({ affectsConfiguration: (setting) => setting === name });
+						}
+					},
 				}),
 				get workspaceFile() {
 					return undefined;
@@ -55,7 +75,10 @@ vi.mock('vscode', () => {
 					);
 					return folder ? { uri: file(folder) } : undefined;
 				},
-				onDidChangeConfiguration: listener,
+				onDidChangeConfiguration: (/** @type {any} */ callback) => {
+					host.configuration_listeners.push(callback);
+					return { dispose() {} };
+				},
 			},
 			extensions: {
 				getExtension: (/** @type {string} */ id) => {
@@ -90,6 +113,7 @@ vi.mock('vscode', () => {
 			env: { openExternal: vi.fn() },
 			Uri: { parse: (/** @type {string} */ value) => value },
 			LanguageStatusSeverity: { Information: 0, Warning: 1, Error: 2 },
+			ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
 		},
 	};
 });
@@ -135,6 +159,8 @@ beforeEach(() => {
 	host.extensions.clear();
 	host.active_editor = undefined;
 	host.commands = [];
+	host.configuration_listeners = [];
+	host.updates = [];
 	vi.clearAllMocks();
 });
 
@@ -241,7 +267,7 @@ describe('notices', () => {
 	it('suggest the TypeScript 7 extension to a TypeScript 7 project that lacks it', () => {
 		const notice = notice_for({ kind: 'vscode', project });
 		expect(notice?.message).toBe(
-			'This project uses TypeScript 7, but VS Code type-checks .tsrx files with its built-in TypeScript. To use TypeScript 7, click Install TypeScript 7. Then set js/ts.tsdk.path to node_modules/typescript.',
+			'This project uses TypeScript 7, but VS Code type-checks .tsrx files with its built-in TypeScript. To use TypeScript 7, click Install TypeScript 7.',
 		);
 		expect(labels(notice)).toEqual(['Install TypeScript 7', 'Learn More']);
 	});
@@ -257,12 +283,13 @@ describe('notices', () => {
 		).toBeUndefined();
 	});
 
-	it("name the project's TypeScript and the value for js/ts.tsdk.path when TypeScript 7 cannot check .tsrx files", () => {
+	it("offer the project's TypeScript when TypeScript 7 cannot check .tsrx files", () => {
+		write_typescript(project.directory, project.version);
 		const notice = notice_for({ kind: 'typescript-7-unsupported', version: '7.0.2', project });
 		expect(notice?.message).toBe(
-			'TypeScript 7 uses version 7.0.2. This version cannot type-check .tsrx files. Please use version 7.1.0-dev.20260923.1 or newer. Your project has version 7.1.0-dev.20260930.4. To use it, click Open Setting. Then enter node_modules/typescript.',
+			'TypeScript 7 uses version 7.0.2. This version cannot type-check .tsrx files. Your project has version 7.1.0-dev.20260930.4. To use it, click Use Project TypeScript.',
 		);
-		expect(labels(notice)).toEqual(['Open Setting', 'Turn Off TypeScript 7']);
+		expect(labels(notice)).toEqual(['Use Project TypeScript', 'Turn Off TypeScript 7']);
 	});
 
 	it('tell a project without TypeScript 7.1 to install typescript@next', () => {
@@ -358,14 +385,77 @@ describe('status item and notices in the editor', () => {
 		expect(host.executeCommand).toHaveBeenLastCalledWith('typescript.native-preview.disable');
 	});
 
-	it("opens the workspace setting for the project's TypeScript", async () => {
+	it("points TypeScript 7 at the folder's TypeScript through the user settings, and restarts it", async () => {
 		host.showWarningMessage.mockResolvedValue(undefined);
 		write_typescript(path.join(workspace, 'node_modules', 'typescript'), '7.1.0-dev.20260930.4');
 		const guidance = activate_typescript_guidance(context());
-		await guidance.run('open-tsdk-setting');
-		expect(host.executeCommand).toHaveBeenCalledWith(
-			'workbench.action.openWorkspaceSettings',
-			'js/ts.tsdk.path',
+		await guidance.run('use-project-typescript');
+		expect(host.updates).toEqual([
+			{ name: 'js/ts.tsdk.path', value: 'node_modules/typescript', target: 1 },
+		]);
+		expect(host.executeCommand).toHaveBeenCalledExactlyOnceWith(
+			'typescript.native-preview.restart',
 		);
+		expect(guidance.status()).toMatchObject({
+			kind: 'typescript-7',
+			version: '7.1.0-dev.20260930.4',
+		});
+	});
+
+	it('uses the workspace settings for a TypeScript only a subfolder installs, and restarts the extension host so TypeScript 7 asks to allow it', async () => {
+		host.showWarningMessage.mockResolvedValue(undefined);
+		write_typescript(
+			path.join(workspace, 'src', 'node_modules', 'typescript'),
+			'7.1.0-dev.20260930.4',
+		);
+		const guidance = activate_typescript_guidance(context());
+		await guidance.run('use-project-typescript');
+		expect(host.updates).toEqual([
+			{
+				name: 'js/ts.tsdk.path',
+				value: path.join('src', 'node_modules', 'typescript'),
+				target: 2,
+			},
+		]);
+		expect(host.executeCommand).toHaveBeenCalledExactlyOnceWith(
+			'workbench.action.restartExtensionHost',
+		);
+	});
+
+	it('replaces a tsdk setting already in the workspace there, where it outranks the user settings', async () => {
+		host.showWarningMessage.mockResolvedValue(undefined);
+		write_typescript(path.join(workspace, 'node_modules', 'typescript'), '7.1.0-dev.20260930.4');
+		write_typescript(path.join(workspace, 'old'), '7.1.0-dev.20260918.1');
+		set('js/ts', 'tsdk.path', { workspaceValue: 'old' });
+		const guidance = activate_typescript_guidance(context());
+		await guidance.run('use-project-typescript');
+		expect(host.updates).toEqual([
+			{ name: 'js/ts.tsdk.path', value: 'node_modules/typescript', target: 2 },
+		]);
+	});
+
+	it('restarts TypeScript 7 when a hand edit changes its compiler, and only then', () => {
+		host.showWarningMessage.mockResolvedValue(undefined);
+		write_typescript(path.join(workspace, 'node_modules', 'typescript'), '7.1.0-dev.20260930.4');
+		activate_typescript_guidance(context());
+		/** @param {string} name */
+		const changed = (name) => {
+			for (const listener of host.configuration_listeners) {
+				listener({ affectsConfiguration: (setting) => setting === name });
+			}
+		};
+		set('js/ts', 'tsdk.path', { globalValue: 'node_modules/typ' });
+		changed('js/ts.tsdk.path');
+		expect(host.executeCommand).not.toHaveBeenCalled();
+		set('js/ts', 'tsdk.path', { globalValue: 'node_modules/typescript' });
+		changed('js/ts.tsdk.path');
+		expect(host.executeCommand).toHaveBeenCalledExactlyOnceWith(
+			'typescript.native-preview.restart',
+		);
+		set('js/ts', 'experimental.useTsgo', { globalValue: false });
+		changed('js/ts.experimental.useTsgo');
+		set('js/ts', 'tsdk.path', {});
+		changed('js/ts.tsdk.path');
+		expect(host.executeCommand).toHaveBeenCalledOnce();
 	});
 });
