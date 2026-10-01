@@ -57,8 +57,7 @@ export function ignore_directives(errors, source_ast, mappings, original_length,
 			: typeof error.end === 'number' && error.end > error.pos
 				? error.end
 				: error.pos + 1;
-		const generated = generated_range(mappings, start, end);
-		if (generated) {
+		for (const generated of generated_ranges(mappings, start, end)) {
 			ranges.push([
 				Math.min(start, original_length),
 				Math.min(end, original_length),
@@ -145,18 +144,23 @@ function child_at(node, position) {
 }
 
 /**
- * The generated range of the mapped code between `start` and `end` in the
- * original: from the first to the last generated offset of the segments inside
- * it. A segment of the same length on both sides that encloses the range, as a
- * verbatim `<script>` body does, gives the matching part of its generated text.
+ * The generated ranges of the mapped code between `start` and `end` in the
+ * original. A node's generated code need not be in one piece: a compiler can
+ * hoist part of it (a static element above the component), and a `<script>`
+ * body is checked as a block at the end of the file. So each range runs from
+ * the first to the last generated offset of the node's segments until code
+ * mapped from outside the node follows, and the next of its segments starts a
+ * new range; a range never covers another component's code. A segment of the
+ * same length on both sides that encloses the original range, as a verbatim
+ * `<script>` body does, gives the matching part of its generated text.
  * @param {readonly CodeMapping[]} mappings
  * @param {number} start
  * @param {number} end
- * @returns {[number, number] | null}
+ * @returns {Array<[number, number]>}
  */
-function generated_range(mappings, start, end) {
-	let generated_start = Infinity;
-	let generated_end = -Infinity;
+function generated_ranges(mappings, start, end) {
+	/** @type {Array<[generated_start: number, generated_end: number, inside: boolean]>} */
+	const segments = [];
 	for (const mapping of mappings) {
 		for (let i = 0; i < mapping.sourceOffsets.length; i++) {
 			const source = mapping.sourceOffsets[i];
@@ -164,13 +168,32 @@ function generated_range(mappings, start, end) {
 			const generated = mapping.generatedOffsets[i];
 			const generated_length = mapping.generatedLengths?.[i] ?? length;
 			if (source >= start && source + length <= end) {
-				generated_start = Math.min(generated_start, generated);
-				generated_end = Math.max(generated_end, generated + generated_length);
+				segments.push([generated, generated + generated_length, true]);
 			} else if (source <= start && end <= source + length && generated_length === length) {
-				generated_start = Math.min(generated_start, generated + start - source);
-				generated_end = Math.max(generated_end, generated + end - source);
+				segments.push([generated + start - source, generated + end - source, true]);
+			} else {
+				segments.push([generated, generated + generated_length, false]);
 			}
 		}
 	}
-	return generated_end > generated_start ? [generated_start, generated_end] : null;
+	segments.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+	/** @type {Array<[number, number]>} */
+	const ranges = [];
+	/** @type {[number, number] | null} */
+	let range = null;
+	for (const [segment_start, segment_end, inside] of segments) {
+		if (inside) {
+			if (range) {
+				range[1] = Math.max(range[1], segment_end);
+			} else {
+				range = [segment_start, segment_end];
+			}
+		} else if (range && segment_start >= range[1]) {
+			// Code from elsewhere follows: the node's next segment starts a new range.
+			if (range[1] > range[0]) ranges.push(range);
+			range = null;
+		}
+	}
+	if (range && range[1] > range[0]) ranges.push(range);
+	return ranges;
 }

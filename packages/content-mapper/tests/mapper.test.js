@@ -262,6 +262,48 @@ export { rest };
 		expect(generated_start <= default_at && default_at < generated_end).toBe(true);
 	});
 
+	it("never hides another component's errors when an error's element holds a <script> body", () => {
+		// The body is checked as a block at the end of the generated file, and the
+		// React target hoists the static <script> element above the component, so
+		// the fragment's generated code comes in three pieces with B in between.
+		const mapper = create_tsrx_content_mapper();
+		mapper.openProject({
+			configFileName: path.join(consumer_fixture_dir, 'tsconfig.json'),
+			projectHandle: 'p1',
+			compilerOptions: {},
+		});
+		const content = `export function A() @{
+	<>
+		{'x';}
+		<script>const s = 1;</script>
+	</>
+}
+
+export function B() {
+	const wrong: string = 1;
+	return <div>{wrong}</div>;
+}
+`;
+		const result = mapper.transform({
+			fileName: path.join(consumer_fixture_dir, 'Script.tsrx'),
+			content,
+			projectHandle: 'p1',
+		});
+		const directives = result.diagnosticDirectives?.directives ?? [];
+		expect(
+			directives.map(([start, length, generated_start, generated_end]) => [
+				content.slice(start, start + length),
+				result.text.slice(generated_start, generated_end),
+			]),
+		).toEqual([
+			[content.slice(content.indexOf('<>'), content.indexOf('</>') + 3), '<script></script>;'],
+			[content.slice(content.indexOf('<>'), content.indexOf('</>') + 3), "{'x'}"],
+			[content.slice(content.indexOf('<>'), content.indexOf('</>') + 3), 'const s = 1;'],
+		]);
+		const wrong_at = result.text.indexOf('wrong: string');
+		expect(directives.some(([, , start, end]) => start <= wrong_at && wrong_at < end)).toBe(false);
+	});
+
 	it('keeps the export stub across a project reopen while the file still fails', () => {
 		// TypeScript reopens a project (with the same or a new handle) when its
 		// identity or a watched file changes; the last good AST must survive that.
