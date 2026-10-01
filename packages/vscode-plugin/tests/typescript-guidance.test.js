@@ -241,7 +241,7 @@ describe('notices', () => {
 	it('suggest the TypeScript 7 extension to a TypeScript 7 project that lacks it', () => {
 		const notice = notice_for({ kind: 'vscode', project });
 		expect(notice?.message).toBe(
-			'This project uses TypeScript 7. VS Code type-checks .tsrx files with its built-in TypeScript, not with TypeScript 7. To type-check them with TypeScript 7, click Install TypeScript 7.',
+			'This project uses TypeScript 7, but VS Code type-checks .tsrx files with its built-in TypeScript. To use TypeScript 7, click Install TypeScript 7. Then set js/ts.tsdk.path to node_modules/typescript.',
 		);
 		expect(labels(notice)).toEqual(['Install TypeScript 7', 'Learn More']);
 	});
@@ -262,23 +262,18 @@ describe('notices', () => {
 		expect(notice?.message).toBe(
 			'TypeScript 7 uses version 7.0.2. This version cannot type-check .tsrx files. Please use version 7.1.0-dev.20260923.1 or newer. Your project has version 7.1.0-dev.20260930.4. To use it, click Open Setting. Then enter node_modules/typescript.',
 		);
-		expect(labels(notice)).toEqual([
-			'Open Setting',
-			'Install TypeScript 7 Nightly',
-			'Turn Off TypeScript 7',
-		]);
+		expect(labels(notice)).toEqual(['Open Setting', 'Turn Off TypeScript 7']);
 	});
 
-	it('offer only what applies', () => {
-		expect(notice_for({ kind: 'typescript-7-unsupported', version: '7.0.2' })?.message).toBe(
-			"TypeScript 7 uses version 7.0.2. This version cannot type-check .tsrx files. Please use version 7.1.0-dev.20260923.1 or newer. To get it, click Install TypeScript 7 Nightly. To use VS Code's built-in TypeScript instead, click Turn Off TypeScript 7.",
-		);
-		install('TypeScriptTeam.vscode-typescript-nightly', NIGHTLY);
+	it('tell a project without TypeScript 7.1 to install typescript@next', () => {
 		const notice = notice_for({ kind: 'typescript-7-unsupported', version: '7.0.2' });
 		expect(notice?.message).toBe(
-			"TypeScript 7 uses version 7.0.2. This version cannot type-check .tsrx files. Please use version 7.1.0-dev.20260923.1 or newer. To use VS Code's built-in TypeScript instead, click Turn Off TypeScript 7.",
+			"TypeScript 7 uses version 7.0.2. This version cannot type-check .tsrx files. Please use version 7.1.0-dev.20260923.1 or newer. To get it, install typescript@next in your project. To use VS Code's built-in TypeScript instead, click Turn Off TypeScript 7.",
 		);
-		expect(labels(notice)).toEqual(['Turn Off TypeScript 7']);
+		expect(labels(notice)).toEqual(['Learn More', 'Turn Off TypeScript 7']);
+	});
+
+	it('explain that the Nightly extension alone serves nothing', () => {
 		const missing = notice_for({ kind: 'typescript-7-missing' });
 		expect(missing?.message).toBe(
 			"No TypeScript features work in .tsrx files. The TypeScript 7 Nightly extension only adds a compiler. The editor features come from the TypeScript 7 extension, which is not installed. To add it, click Install TypeScript 7. To use VS Code's built-in TypeScript instead, click Turn Off TypeScript 7.",
@@ -330,7 +325,7 @@ describe('status item and notices in the editor', () => {
 		expect(first.shown.map((notice) => notice.id)).toEqual(['typescript-7-unsupported']);
 		expect(host.showWarningMessage).toHaveBeenCalledWith(
 			expect.stringContaining('TypeScript 7 uses version 7.0.2'),
-			'Install TypeScript 7 Nightly',
+			'Learn More',
 			'Turn Off TypeScript 7',
 			"Don't Show Again",
 		);
@@ -346,13 +341,10 @@ describe('status item and notices in the editor', () => {
 	});
 
 	it('runs the chosen action', async () => {
-		host.showWarningMessage.mockResolvedValue('Install TypeScript 7 Nightly');
+		host.showWarningMessage.mockResolvedValue('Turn Off TypeScript 7');
 		activate_typescript_guidance(context());
 		await vi.waitFor(() =>
-			expect(host.executeCommand).toHaveBeenCalledWith(
-				'workbench.extensions.installExtension',
-				'TypeScriptTeam.vscode-typescript-nightly',
-			),
+			expect(host.executeCommand).toHaveBeenCalledWith('typescript.experimental.disableTsgo'),
 		);
 	});
 

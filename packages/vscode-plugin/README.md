@@ -8,34 +8,14 @@ using the TSRX language server.
 VS Code's own TypeScript owns every TypeScript feature for `.tsrx` files: the
 extension never loads or bundles TypeScript and never patches another extension.
 It activates Microsoft's installed TypeScript extensions and lets them choose
-which server runs, without adding a selection setting of its own; it reads theirs
-only to close tags itself when TypeScript 7 serves `.tsrx` files, and to say which
-TypeScript serves them (below). Pick the TypeScript with the **TypeScript: Select
-TypeScript Version** picker as for any `.ts` file; the two rows below are what
-happens in each case. Only one TypeScript ever serves a file.
+which server runs, without adding a selection setting of its own. The two rows
+below are what happens with TypeScript 5.9 or 6 and with TypeScript 7. Only one
+TypeScript ever serves a file.
 
 | Backend   | How it works                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `classic` | TypeScript 7 off: VS Code's built-in TypeScript extension runs its tsserver (its own copy or the workspace version, 5.9 or 6) with `@tsrx/typescript-plugin`, which this extension contributes as a tsserver plugin (`typescriptServerPlugins`) and ships. VS Code manages `.tsrx` documents like `.ts` ones, so its commands and menus work on them and `.ts` importers resolve `.tsrx` modules with no tsconfig `plugins` entry. TypeScript closes tags (`js/ts.autoClosingTags.enabled`). The TSRX language server adds TSRX compile errors, snippets, CSS in `<style>`, document symbols and CSS-class hover and definition. |
 | `native`  | TypeScript 7 on: the [TypeScript 7 extension](https://github.com/microsoft/TypeScript/tree/main/packages/vscode-typescript) owns every TypeScript feature for `.tsrx` files through [`@tsrx/content-mapper`](https://www.npmjs.com/package/@tsrx/content-mapper), declared in `tsconfig.json`, including TSRX compile errors. The TSRX language server serves the same TSRX-only features minus compile errors, and closes tags.                                                                                                                                                                                                 |
-
-### Which TypeScript serves a file
-
-On a `.tsrx` file, a status item in the language status area (`{}` in the status
-bar) names the TypeScript that serves it, for example **VS Code TypeScript** or
-**TypeScript 7.1.0-dev.20260930.4**, and opens the version picker. When a setup
-leaves `.tsrx` files unchecked, or checked by another TypeScript than the
-project's, a notice says what to do, once per window, and the status item offers
-the same fixes (as a warning when nothing checks the file):
-
-| Setup                                                                                         | Notice buttons                                                                                                                                             |
-| --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The project installs a 7.1 nightly, and the TypeScript 7 extension is not installed           | **Install TypeScript 7**: until then VS Code's built-in TypeScript checks `.tsrx` files                                                                    |
-| TypeScript 7 is on with a compiler that cannot check `.tsrx` files, such as its bundled 7.0.2 | **Open Setting** (the notice gives the `js/ts.tsdk.path` value for the project's 7.1 nightly), **Install TypeScript 7 Nightly**, **Turn Off TypeScript 7** |
-| TypeScript 7 is on with only the TypeScript 7 Nightly extension, which only adds a compiler   | **Install TypeScript 7**, **Turn Off TypeScript 7**                                                                                                        |
-
-**Don't Show Again** silences a notice for the workspace. The extension only
-changes a setting or installs an extension when you click a button.
 
 ### Native backend setup
 
@@ -44,35 +24,29 @@ upstream TypeScript issues behind them are tracked in
 [tsrx-org/tsrx#135](https://github.com/tsrx-org/tsrx/pull/135); if you run into
 one that is not listed there, please file a new issue.
 
-Which TypeScript you run decides whether `.tsrx` files work in VS Code:
+To type-check `.tsrx` files with TypeScript 7.1 in VS Code:
 
-| TypeScript compiler                                                                       | Who runs it                                                                  | `.tsrx` files                                                                                                                       |
-| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| 5.9 or 6                                                                                  | VS Code's built-in TypeScript, TypeScript 7 off                              | Work (classic backend)                                                                                                              |
-| 7.0, including 7.0.2 bundled with the TypeScript 7 extension                              | TypeScript 7 extension                                                       | Get no TypeScript features: 7.0 has no content-mapper protocol                                                                      |
-| 7.1 nightly, `7.1.0-dev.20260923.1` or newer, from the **TypeScript 7 Nightly** extension | TypeScript 7 extension 1.0.1 or newer                                        | Work (native backend)                                                                                                               |
-| 7.1 nightly, `7.1.0-dev.20260923.1` or newer, in the project's `node_modules/typescript`  | TypeScript 7 extension 1.0.1 or newer, with `js/ts.tsdk.path` pointing at it | Work (native backend)                                                                                                               |
-| the same project nightly, without `js/ts.tsdk.path`                                       | TypeScript 7 extension, with its bundled 7.0                                 | Get no TypeScript features: the extension does not pick up `node_modules/typescript` by itself, and TSRX's notice gives the setting |
+1. Install `typescript@next` in your project (TypeScript 7.1 is not released yet):
 
-Tested with the TypeScript 7 extension 1.0.1, the TypeScript 7 Nightly extension
-0.20260930.4 and TypeScript `7.1.0-dev.20260930.4`
-(`pnpm --filter @tsrx/vscode-plugin test:editor`).
+   ```sh
+   npm install -D typescript@next
+   # or
+   pnpm add -D typescript@next
+   ```
 
-1. Install the **TypeScript 7** extension (`TypeScriptTeam.native-preview`) and
-   give it a 7.1 nightly compiler in one of two ways:
-   - Install the **TypeScript 7 Nightly** extension
-     (`TypeScriptTeam.vscode-typescript-nightly`). It only ships the compiler, and
-     the TypeScript 7 extension uses it instead of its bundled 7.0.
-   - Or install the nightly in your project (`typescript@7.1.0-dev.…`) and point
-     `js/ts.tsdk.path` at its `node_modules/typescript`. When that setting is in
-     workspace settings, the TypeScript 7 extension also asks you once to allow
-     the workspace version.
+2. Add these two settings to your VS Code user settings:
 
-   Then turn TypeScript 7 on (`js/ts.experimental.useTsgo`, the **TypeScript:
-   Select TypeScript Version** picker or the **TypeScript: Enable TypeScript 7**
-   command) and keep its `js/ts.contentMappers.enabled` setting on (the default).
+   ```json
+   {
+     "js/ts.experimental.useTsgo": true,
+     "js/ts.tsdk.path": "node_modules/typescript"
+   }
+   ```
 
-2. Declare the mapper in every `tsconfig.json` that contains `.tsrx` files, and
+3. Install the
+   [TypeScript 7 extension](https://marketplace.visualstudio.com/items?itemName=TypeScriptTeam.native-preview).
+
+4. Declare the mapper in every `tsconfig.json` that contains `.tsrx` files, and
    install `@tsrx/content-mapper` next to it. TypeScript 7 reads that entry itself
    and resolves `.tsrx` imports across the whole project:
 
@@ -88,8 +62,26 @@ Tested with the TypeScript 7 extension 1.0.1, the TypeScript 7 Nightly extension
    without the `contentMappers` entry) gets no TypeScript features on the native
    backend.
 
-3. The workspace must be trusted. Neither the mapper nor the TSRX compilers run in
+5. The workspace must be trusted. Neither the mapper nor the TSRX compilers run in
    Restricted Mode.
+
+_Note: `js/ts.tsdk.path` makes the TypeScript 7 extension use your project's
+TypeScript instead of its built-in 7.0.2, which cannot check `.tsrx` files; it
+does not find it by itself yet (microsoft/TypeScript#64565). The settings also
+work in a project's `.vscode/settings.json`, where the extension asks once to
+allow them. These steps will get simpler once that is fixed and TypeScript 7.1 is
+released (tsrx-org/tsrx#991)._
+
+Which compiler serves `.tsrx` files, as tested with the TypeScript 7 extension
+1.0.1 and TypeScript `7.1.0-dev.20260930.4`
+(`pnpm --filter @tsrx/vscode-plugin test:editor`):
+
+| TypeScript compiler                                            | Who runs it                                                 | `.tsrx` files                                                  |
+| -------------------------------------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------- |
+| 5.9 or 6                                                       | VS Code's built-in TypeScript, TypeScript 7 off             | Work (classic backend)                                         |
+| 7.1 nightly in the project's `node_modules/typescript`         | TypeScript 7 extension, with `js/ts.tsdk.path` set as above | Work (native backend)                                          |
+| the same project nightly, without `js/ts.tsdk.path`            | TypeScript 7 extension, with its built-in 7.0.2             | Get no TypeScript features, and TSRX's notice says what to set |
+| 7.0, including the 7.0.2 built into the TypeScript 7 extension | TypeScript 7 extension                                      | Get no TypeScript features: 7.0 has no content-mapper protocol |
 
 Opening a `.tsrx` file is enough to start TypeScript features, including in
 projects with no `.ts` or `.js` source files. TSRX activates Microsoft's

@@ -68,7 +68,7 @@ TypeScript 7 plain `tsc --runExternalCode` can be used directly instead.
   nothing else. The mapper starts in about a third of the time it did with the
   TypeScript API loaded (`BENCHMARKS.md`).
 
-## Requirements and status on 2026-09-19
+## Requirements and status on 2026-09-19 (VS Code updated 2026-10-01)
 
 - The content-mapper protocol needs a TypeScript 7.1 nightly:
   `7.1.0-dev.20260923.1` or newer, the first whose `tsc --watch` recompiles (the
@@ -76,15 +76,14 @@ TypeScript 7 plain `tsc --runExternalCode` can be used directly instead.
   native suite across the nightlies with `TSRX_NATIVE_TSC`). The stable
   `typescript@7.0.2` rejects `--runExternalCode` (TS5023) and ignores
   `contentMappers`; there is no 7.1 beta or release candidate yet.
-- No marketplace release of the VS Code **TypeScript 7** extension
-  (`TypeScriptTeam.native-preview`, last published `0.20260708.2`) supports
-  content mappers: its client predates the feature and never asks the server to
-  run external code, so a `contentMappers` entry is ignored even when the
-  **TypeScript 7 Nightly** companion (`TypeScriptTeam.vscode-typescript-nightly`,
-  compiler only) supplies a 7.1 nightly. Until TypeScript 7.1 and its extension
-  are published, the native backend in VS Code needs the extension built from
-  `packages/vscode-typescript` in the microsoft/TypeScript repository (the
-  typescript-go staging repository is closed). The TSRX extension uses its
+- The marketplace VS Code **TypeScript 7** extension
+  (`TypeScriptTeam.native-preview`) supports content mappers since 1.0.1
+  (2026-09-30), but its built-in compiler is `tsc` 7.0.2, which cannot run them.
+  VS Code therefore needs the project's `typescript@next` through
+  `js/ts.tsdk.path` (see "VS Code" below): the extension finds a workspace
+  compiler only in `node_modules/@typescript/native-preview`, a package last
+  published on 2026-07-07, not in `node_modules/typescript`
+  (microsoft/TypeScript#64565). The TSRX extension uses its
   `registerContentMappers` API to discover projects when only `.tsrx` files are
   open.
 - Packaging verified on macOS x64: the `pnpm pack` tarball of
@@ -185,11 +184,13 @@ long as TypeScript 5.9 and 6 are supported.
 
 ### VS Code
 
-1. Install a TypeScript 7 extension build that supports content mappers and runs
-   TypeScript `7.1.0-dev.20260923.1` or newer (see "Requirements and status" above
-   for what is available today), and enable it (`js/ts.experimental.useTsgo`, the
-   **TypeScript: Select TypeScript Version** picker or the **TypeScript: Enable
-   TypeScript 7** command). Keep `js/ts.contentMappers.enabled` on (default).
+1. Install `typescript@next` in the project (step 1 above), add
+   `"js/ts.experimental.useTsgo": true` and
+   `"js/ts.tsdk.path": "node_modules/typescript"` to the VS Code user settings,
+   and install the
+   [TypeScript 7 extension](https://marketplace.visualstudio.com/items?itemName=TypeScriptTeam.native-preview).
+   Keep its `js/ts.contentMappers.enabled` setting on (default). The TSRX
+   extension's README explains each step.
 2. Declare `contentMappers` in every `tsconfig.json` that contains `.tsrx` files
    and install `@tsrx/content-mapper` next to it (steps 1 and 2 above). A `.tsrx`
    file no such tsconfig covers gets no TypeScript features.

@@ -219,6 +219,11 @@ function installed_package_dir(from, name) {
 
 const tsrx_react = path.join(repo_root, 'packages', 'tsrx-react');
 const project_typescript = installed_package_dir(repo_root, 'typescript');
+// TypeScript 5.9 or 6, as a project on the classic backend installs it.
+const classic_typescript = installed_package_dir(
+	path.join(repo_root, 'packages', 'typescript-plugin'),
+	'typescript',
+);
 const project_typescript_version = JSON.parse(
 	fs.readFileSync(path.join(project_typescript, 'package.json'), 'utf8'),
 ).version;
@@ -237,7 +242,10 @@ function create_project(scenario) {
 		react: installed_package_dir(tsrx_react, 'react'),
 		'@types/react': installed_package_dir(tsrx_react, '@types/react'),
 	};
-	if (scenario.projectTypeScript) links.typescript = project_typescript;
+	if (scenario.projectTypeScript) {
+		links.typescript =
+			scenario.projectTypeScript === 'classic' ? classic_typescript : project_typescript;
+	}
 	for (const [name, target] of Object.entries(links)) {
 		const link = path.join(project, 'node_modules', name);
 		fs.mkdirSync(path.dirname(link), { recursive: true });

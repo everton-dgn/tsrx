@@ -6,7 +6,6 @@ import {
 } from '@tsrx/typescript-plugin/src/typescript-version.js';
 import {
 	TSDK_SETTING_NAMES,
-	TYPESCRIPT_7_NIGHTLY_EXTENSION,
 	USE_TSGO_SETTINGS,
 	project_typescript,
 	typescript_7_compiler,
@@ -74,17 +73,6 @@ const INSTALL_TYPESCRIPT_7 = {
 };
 
 /** @type {Action} */
-const INSTALL_NIGHTLY = {
-	id: 'install-typescript-7-nightly',
-	label: 'Install TypeScript 7 Nightly',
-	run: () =>
-		vscode.commands.executeCommand(
-			'workbench.extensions.installExtension',
-			TYPESCRIPT_7_NIGHTLY_EXTENSION,
-		),
-};
-
-/** @type {Action} */
 const OPEN_TSDK_SETTING = {
 	id: 'open-tsdk-setting',
 	label: 'Open Setting',
@@ -145,26 +133,19 @@ export function notice_for(status) {
 				severity: 'information',
 				title: 'Use TypeScript 7 for .tsrx files',
 				message:
-					'This project uses TypeScript 7. VS Code type-checks .tsrx files with its built-in TypeScript, not with TypeScript 7. To type-check them with TypeScript 7, click Install TypeScript 7.',
+					'This project uses TypeScript 7, but VS Code type-checks .tsrx files with its built-in TypeScript. To use TypeScript 7, click Install TypeScript 7. Then set js/ts.tsdk.path to node_modules/typescript.',
 				actions: [INSTALL_TYPESCRIPT_7, LEARN_MORE],
 			};
 		case 'typescript-7-unsupported': {
-			const offer_nightly = !vscode.extensions.getExtension(TYPESCRIPT_7_NIGHTLY_EXTENSION);
 			const what_to_do = project
 				? `Your project has version ${project.version}. To use it, click Open Setting. Then enter ${tsdk_value(project.directory)}.`
-				: offer_nightly
-					? `To get it, click Install TypeScript 7 Nightly. ${turn_off}`
-					: turn_off;
+				: `To get it, install typescript@next in your project. ${turn_off}`;
 			return {
 				id: 'typescript-7-unsupported',
 				severity: 'warning',
 				title: 'Fix type checking in .tsrx files',
 				message: `TypeScript 7 uses version ${status.version}. This version cannot type-check .tsrx files. Please use version ${MINIMUM_NATIVE_TYPESCRIPT_VERSION} or newer. ${what_to_do}`,
-				actions: [
-					...(project ? [OPEN_TSDK_SETTING] : []),
-					...(offer_nightly ? [INSTALL_NIGHTLY] : []),
-					TURN_OFF_TYPESCRIPT_7,
-				],
+				actions: [project ? OPEN_TSDK_SETTING : LEARN_MORE, TURN_OFF_TYPESCRIPT_7],
 			};
 		}
 		case 'typescript-7-missing':

@@ -1158,12 +1158,23 @@ export function GettingStartedPage() @{
 							<p class="section-body">
 								TypeScript features for
 								<code class="inline-code">.tsrx</code>
-								files follow the TypeScript VS Code runs, chosen with the
-								<strong>TypeScript: Select TypeScript Version</strong>
-								picker: VS Code's tsserver (its own TypeScript or the workspace version, 5.9 or 6)
-								through the TSRX TypeScript plugin the extension ships, so no tsconfig plugins entry
-								is needed in VS Code, or TypeScript 7 through the content mapper declared in
-								tsconfig.json when TypeScript 7 is selected. Opening a TSRX file starts TypeScript
+								files follow the TypeScript VS Code runs: VS Code's tsserver (its own TypeScript or
+								the workspace version, 5.9 or 6) through the TSRX TypeScript plugin the extension
+								ships, so no tsconfig plugins entry is needed in VS Code, or TypeScript 7.1 through
+								the content mapper declared in tsconfig.json. For TypeScript 7.1, install
+								<code class="inline-code">typescript@next</code> in the project, set
+								<code class="inline-code">"js/ts.experimental.useTsgo": true</code> and
+								<code class="inline-code">"js/ts.tsdk.path": "node_modules/typescript"</code> in
+								your VS Code settings, and install the{' '}
+								<a
+									class="inline-link"
+									href="https://marketplace.visualstudio.com/items?itemName=TypeScriptTeam.native-preview"
+									target="_blank"
+									rel="noopener noreferrer"
+								>
+									TypeScript 7 extension
+								</a>
+								from the Visual Studio Code Marketplace. Opening a TSRX file starts TypeScript
 								features through Microsoft's extensions. With TypeScript 7 enabled, set Prettier as
 								the
 								<code class="inline-code">[tsrx]</code>
