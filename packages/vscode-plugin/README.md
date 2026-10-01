@@ -26,18 +26,34 @@ upstream TypeScript issues behind them are tracked in
 [tsrx-org/tsrx#135](https://github.com/tsrx-org/tsrx/pull/135); if you run into
 one that is not listed there, please file a new issue.
 
-1. Install a TypeScript 7 extension build that supports content mappers and runs
-   TypeScript `7.1.0-dev.20260923.1` or newer (a 7.1 nightly; the stable 7.0 line
-   has no content-mapper protocol), then enable it (`js/ts.experimental.useTsgo`,
-   the **TypeScript: Select TypeScript Version** picker or the **TypeScript:
-   Enable TypeScript 7** command) and keep its `js/ts.contentMappers.enabled`
-   setting on (the default). As of 2026-09-19 no marketplace release supports
-   content mappers: **TypeScript 7** (`TypeScriptTeam.native-preview`) stopped at
-   `0.20260708.2`, before the feature, and the **TypeScript 7 Nightly** extension
-   only supplies the compiler. Until TypeScript 7.1 and its extension are
-   published it takes a build of
-   [`packages/vscode-typescript`](https://github.com/microsoft/TypeScript/tree/main/packages/vscode-typescript)
-   from the TypeScript repository.
+Which TypeScript you run decides whether `.tsrx` files work in VS Code:
+
+| TypeScript compiler                                                                       | Who runs it                                                                  | `.tsrx` files                                                                                  |
+| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| 5.9 or 6                                                                                  | VS Code's built-in TypeScript, TypeScript 7 off                              | Work (classic backend)                                                                         |
+| 7.0, including 7.0.2 bundled with the TypeScript 7 extension                              | TypeScript 7 extension                                                       | Get no TypeScript features: 7.0 has no content-mapper protocol                                 |
+| 7.1 nightly, `7.1.0-dev.20260923.1` or newer, from the **TypeScript 7 Nightly** extension | TypeScript 7 extension 1.0.1 or newer                                        | Work (native backend)                                                                          |
+| 7.1 nightly, `7.1.0-dev.20260923.1` or newer, in the project's `node_modules/typescript`  | TypeScript 7 extension 1.0.1 or newer, with `js/ts.tsdk.path` pointing at it | Work (native backend)                                                                          |
+| the same project nightly, without `js/ts.tsdk.path`                                       | TypeScript 7 extension, with its bundled 7.0                                 | Get no TypeScript features: the extension does not pick up `node_modules/typescript` by itself |
+
+Tested with the TypeScript 7 extension 1.0.1, the TypeScript 7 Nightly extension
+0.20260930.4 and TypeScript `7.1.0-dev.20260930.4`
+(`pnpm --filter @tsrx/vscode-plugin test:editor`).
+
+1. Install the **TypeScript 7** extension (`TypeScriptTeam.native-preview`) and
+   give it a 7.1 nightly compiler in one of two ways:
+   - Install the **TypeScript 7 Nightly** extension
+     (`TypeScriptTeam.vscode-typescript-nightly`). It only ships the compiler, and
+     the TypeScript 7 extension uses it instead of its bundled 7.0.
+   - Or install the nightly in your project (`typescript@7.1.0-dev.…`) and point
+     `js/ts.tsdk.path` at its `node_modules/typescript`. When that setting is in
+     workspace settings, the TypeScript 7 extension also asks you once to allow
+     the workspace version.
+
+   Then turn TypeScript 7 on (`js/ts.experimental.useTsgo`, the **TypeScript:
+   Select TypeScript Version** picker or the **TypeScript: Enable TypeScript 7**
+   command) and keep its `js/ts.contentMappers.enabled` setting on (the default).
+
 2. Declare the mapper in every `tsconfig.json` that contains `.tsrx` files, and
    install `@tsrx/content-mapper` next to it. TypeScript 7 reads that entry itself
    and resolves `.tsrx` imports across the whole project:
