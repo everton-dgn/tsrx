@@ -13,9 +13,12 @@
  *
  * Options: `--scenario <name>` (repeatable), `--list`, `--build` (runs
  * build-and-package first), `--vsix <path>`, `--verbose`, `--keep` (keep the
- * temporary directory). Environment: `TSRX_VSCODE_APP` (the VS Code executable)
- * and `TSRX_VSCODE_CLI` (its `code` command), which default to the macOS app.
- * Installing the TypeScript 7 extensions needs network access.
+ * temporary directory), `--foreground` (show each instance; on macOS they
+ * otherwise stay hidden, and a helper compiled with `swiftc` hides each one the
+ * moment VS Code brings it to the front).
+ * Environment: `TSRX_VSCODE_APP` (the VS Code executable) and `TSRX_VSCODE_CLI`
+ * (its `code` command), which default to the macOS app. Installing the
+ * TypeScript 7 extensions needs network access.
  */
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -42,6 +45,7 @@ const { values: options } = parseArgs({
 		vsix: { type: 'string' },
 		verbose: { type: 'boolean' },
 		keep: { type: 'boolean' },
+		foreground: { type: 'boolean' },
 	},
 });
 
@@ -61,6 +65,12 @@ const vscode_app =
 const vscode_cli =
 	process.env.TSRX_VSCODE_CLI ??
 	(process.platform === 'darwin' ? `${MAC_APP}/Contents/Resources/app/bin/code` : 'code');
+// On macOS, `open` can start the app hidden and in the background; that needs the
+// `.app` bundle the executable is in.
+const vscode_bundle =
+	process.platform === 'darwin' && !options.foreground
+		? /^(.*\.app)\/Contents\/MacOS\/[^/]+$/.exec(vscode_app)?.[1]
+		: undefined;
 
 const SCENARIO_TIMEOUT_MS = 240_000;
 const HOVER_TIMEOUT_MS = 60_000;
@@ -133,6 +143,33 @@ if (path.join(root, `u${SCENARIOS.length}`, '1.140-main.sock').length > 103) {
 		`The temporary directory ${root} is too long for VS Code's socket; set TMPDIR to a shorter path.`,
 	);
 	process.exit(1);
+}
+
+/**
+ * On macOS, a helper that hides each test instance the moment it takes the front
+ * (`hide-test-windows.swift`). Without `swiftc`, the runner polls instead
+ * (`hide_if_in_front`), which leaves the instance in front for up to a few seconds.
+ */
+const hider = vscode_bundle ? start_hider(root) : undefined;
+if (vscode_bundle && !hider) {
+	console.warn('swiftc not found: test windows may flash in front until they are hidden.');
+}
+
+/**
+ * @param {string} marker
+ * @returns {import('node:child_process').ChildProcess | undefined}
+ */
+function start_hider(marker) {
+	const binary = path.join(marker, 'hide-test-windows');
+	const compiled = spawnSync(
+		'swiftc',
+		['-O', '-o', binary, path.join(here, 'hide-test-windows.swift')],
+		{ stdio: 'ignore' },
+	);
+	if (compiled.status !== 0) return undefined;
+	const child = spawn(binary, [marker], { stdio: 'ignore' });
+	process.once('exit', () => child.kill());
+	return child;
 }
 
 /** @type {Map<string, { dir: string, installed: string[] }>} */
@@ -246,42 +283,106 @@ async function run_scenario(scenario, index) {
 	);
 
 	const log = path.join(root, `vscode-${scenario.name}.log`);
+	const vscode_args = [
+		'--user-data-dir',
+		user_data,
+		'--extensions-dir',
+		extensions.dir,
+		'--disable-workspace-trust',
+		'--skip-welcome',
+		'--skip-release-notes',
+		'--disable-telemetry',
+		`--extensionDevelopmentPath=${harness}`,
+		`--extensionTestsPath=${path.join(harness, 'checks.cjs')}`,
+		project,
+	];
 	const log_fd = fs.openSync(log, 'w');
-	const child = spawn(
-		vscode_app,
-		[
-			'--user-data-dir',
-			user_data,
-			'--extensions-dir',
-			extensions.dir,
-			'--disable-workspace-trust',
-			'--skip-welcome',
-			'--skip-release-notes',
-			'--disable-telemetry',
-			`--extensionDevelopmentPath=${harness}`,
-			`--extensionTestsPath=${path.join(harness, 'checks.cjs')}`,
-			project,
-		],
-		{ env: clean_env(), stdio: ['ignore', log_fd, log_fd] },
-	);
+	// `open -n -g -j -W`: a new instance, not brought to the foreground, hidden, and
+	// waited for. `open` hands the app its own environment, so it gets the cleaned
+	// one, and `PATH` explicitly: the content mapper runs `node`.
+	const child = vscode_bundle
+		? spawn(
+				'open',
+				[
+					'-n',
+					'-g',
+					'-j',
+					'-W',
+					'--stdout',
+					log,
+					'--stderr',
+					log,
+					'--env',
+					`PATH=${process.env.PATH ?? ''}`,
+					'-a',
+					vscode_bundle,
+					'--args',
+					...vscode_args,
+				],
+				{ env: clean_env(), stdio: 'ignore' },
+			)
+		: spawn(vscode_app, vscode_args, { env: clean_env(), stdio: ['ignore', log_fd, log_fd] });
 	const exited = new Promise((resolve) => child.once('exit', resolve));
 	const deadline = Date.now() + SCENARIO_TIMEOUT_MS;
 	while (!fs.existsSync(out) && Date.now() < deadline && child.exitCode === null) {
-		await new Promise((resolve) => setTimeout(resolve, 500));
+		if (vscode_bundle && !hider) hide_if_in_front(user_data);
+		await new Promise((resolve) => setTimeout(resolve, vscode_bundle ? 100 : 500));
 	}
 	// VS Code closes itself once the checks finish; make sure it is gone either way.
 	if (child.exitCode === null) {
-		child.kill('SIGTERM');
-		const killed = await Promise.race([
+		stop_instance(child, user_data, 'SIGTERM');
+		const stopped = await Promise.race([
 			exited.then(() => true),
 			new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
 		]);
-		if (!killed) child.kill('SIGKILL');
+		if (!stopped) stop_instance(child, user_data, 'SIGKILL');
 	}
 	await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5000))]);
 	fs.closeSync(log_fd);
 	const result = fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, 'utf8')) : undefined;
 	return { result, installed: extensions.installed, log };
+}
+
+/**
+ * The fallback for `hide-test-windows.swift`: VS Code brings its first window to the
+ * front even when `open` starts it hidden in the background. When the instance is in
+ * front, hide it: macOS then gives the front back to the app that had it. Hiding
+ * another app needs no permission, unlike activating one.
+ * @param {string} user_data
+ */
+function hide_if_in_front(user_data) {
+	const asn = spawnSync('lsappinfo', ['front'], { encoding: 'utf8' }).stdout.trim();
+	if (!asn) return;
+	const front = spawnSync('lsappinfo', ['info', '-only', 'pid', asn], { encoding: 'utf8' }).stdout;
+	const pid = /"pid"=(\d+)/.exec(front)?.[1];
+	if (!pid) return;
+	const command = spawnSync('ps', ['-p', pid, '-o', 'command='], { encoding: 'utf8' }).stdout;
+	if (!command.includes(`--user-data-dir ${user_data} `)) return;
+	spawnSync('osascript', [
+		'-l',
+		'JavaScript',
+		'-e',
+		`ObjC.import('AppKit'); $.NSRunningApplication.runningApplicationWithProcessIdentifier(${pid}).hide`,
+	]);
+}
+
+/**
+ * Stop a VS Code instance. Started through `open`, the child is `open` itself, so
+ * the instance's processes are found by the user data directory only it uses.
+ * @param {import('node:child_process').ChildProcess} child
+ * @param {string} user_data
+ * @param {NodeJS.Signals} signal
+ */
+function stop_instance(child, user_data, signal) {
+	if (vscode_bundle) {
+		spawnSync('pkill', [
+			`-${signal.replace(/^SIG/, '')}`,
+			'-f',
+			'--',
+			`--user-data-dir ${user_data}( |$)`,
+		]);
+	}
+	child.kill(signal);
 }
 
 /**
@@ -350,6 +451,7 @@ for (const scenario of selected) {
 
 console.log('');
 console.table(rows);
+hider?.kill();
 if (!options.keep) fs.rmSync(root, { recursive: true, force: true });
 else console.log(`Kept ${root}`);
 process.exit(failures === 0 ? 0 : 1);

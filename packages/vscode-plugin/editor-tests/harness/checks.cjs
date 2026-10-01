@@ -123,9 +123,12 @@ exports.run = async () => {
 			message: diagnostic.message,
 		}));
 
-		// Closing tags: type `<b` and then `>` inside the button, as a user would,
-		// and record what follows: `<b></b>` once, nothing, or a closing tag
-		// inserted by more than one provider.
+		// Closing tags: type `<b` and then `>` inside the button, and record what
+		// follows: `<b></b>` once, nothing, or a closing tag inserted by more than
+		// one provider. Each keystroke is an edit at the cursor, which moves the
+		// cursor past it, as typing does. The `type` command would need the window
+		// to have the focus, and the runner keeps the instance hidden. Both
+		// closing-tag providers react to the document change and the cursor.
 		// Another extension may have opened an editor of its own meanwhile.
 		const editor = await vscode.window.showTextDocument(document);
 		result.activeEditorBeforeTyping = vscode.window.activeTextEditor?.document.uri.path
@@ -134,8 +137,12 @@ exports.run = async () => {
 		if (editor) {
 			const before_close = document.positionAt(document.getText().indexOf('</button>'));
 			editor.selection = new vscode.Selection(before_close, before_close);
-			await vscode.commands.executeCommand('type', { text: '<b' });
-			await vscode.commands.executeCommand('type', { text: '>' });
+			for (const text of ['<b', '>']) {
+				const at = editor.selection.active;
+				await editor.edit((builder) => builder.insert(at, text));
+				const after = at.translate(0, text.length);
+				editor.selection = new vscode.Selection(after, after);
+			}
 			await sleep(config.autoInsertWaitMs);
 			const line = document.lineAt(before_close.line).text;
 			const typed = line.indexOf('<b', line.indexOf('{count}'));
