@@ -66,20 +66,10 @@ const vue_platform = {
 		scanUseServerDirectiveForAwaitWithCustomValidator: false,
 	},
 	hooks: {
-		// Hoist to module scope
-		// in the regular client transform — one
-		// definition per helper keeps bundles small and source mappings 1:1
-		// for editor IntelliSense. The `compile_to_volar_mappings` entry point
-		// opts back out so Volar's type-only output keeps helpers inline,
-		// matching how it generates virtual TSX today.
-		moduleScopedHookComponents: true,
 		initialState: () => ({
 			needs_define_vapor_component: false,
 			needs_vapor_for: false,
 		}),
-		isTopLevelSetupCall(call_expression) {
-			return is_vue_setup_call(call_expression);
-		},
 		wrapHelperComponent(helper_fn, helper_id, ctx, source_node) {
 			ctx.needs_define_vapor_component = true;
 			return wrap_helper_component(helper_fn, helper_id, source_node);
@@ -102,7 +92,9 @@ const vue_platform = {
 			return create_vapor_pending_boundary(try_content, fallback_content);
 		},
 		createErrorFallbackComponent(catch_body_nodes, catch_params, ctx, node) {
-			if (ctx.typeOnly) return null;
+			// Only the runtime `@pending` boundary renders the component (see
+			// `createErrorBoundary`); anything else would be dead module code.
+			if (ctx.typeOnly || !node.pending) return null;
 			return create_module_scoped_error_fallback_component(
 				catch_body_nodes,
 				catch_params,
@@ -119,9 +111,6 @@ const vue_platform = {
 				return create_vapor_error_boundary(try_content, fallback_fn);
 			}
 			const fallback_component = info?.fallbackComponent ?? null;
-			const fallback_renderer = fallback_component
-				? create_fallback_component_renderer(fallback_component, fallback_fn)
-				: fallback_fn;
 			const default_slot = ctx.typeOnly
 				? b.arrow([], jsx_child_to_expression(raw_try_content))
 				: create_sync_error_boundary_slot(
@@ -135,7 +124,7 @@ const vue_platform = {
 				default_slot,
 				fallback_content,
 			);
-			const boundary = create_vapor_error_boundary(suspense, fallback_renderer);
+			const boundary = create_vapor_error_boundary(suspense, fallback_fn);
 			for (const statement of fallback_component?.setup_statements ?? []) {
 				addJsxSetupDeclaration(boundary, statement);
 			}
@@ -214,21 +203,10 @@ function create_vapor_pending_boundary_from_default_slot(default_slot, fallback_
  * @returns {JsxHelperComponent}
  */
 function create_module_scoped_error_fallback_component(catch_body_nodes, catch_params, ctx, node) {
-	const saved_module_scoped = ctx.module_scoped_hook_components;
-	ctx.module_scoped_hook_components = true;
-	try {
-		const source = node.handler ?? node;
-		return createHookSafeHelper(
-			catch_body_nodes,
-			undefined,
-			has_location(source) ? source : undefined,
-			ctx,
-			undefined,
-			{ transientBindings: get_pattern_names(catch_params) },
-		);
-	} finally {
-		ctx.module_scoped_hook_components = saved_module_scoped;
-	}
+	const source = node.handler ?? node;
+	return createHookSafeHelper(catch_body_nodes, has_location(source) ? source : undefined, ctx, {
+		transientBindings: get_pattern_names(catch_params),
+	});
 }
 
 /**
@@ -274,18 +252,6 @@ function create_sync_error_boundary_slot(
 		true,
 	);
 	return b.arrow([], b.block([try_statement]));
-}
-
-/**
- * @param {JsxHelperComponent} fallback_component
- * @param {AST.ArrowFunctionExpression} fallback_fn
- * @returns {AST.ArrowFunctionExpression}
- */
-function create_fallback_component_renderer(fallback_component, fallback_fn) {
-	return b.arrow(
-		fallback_fn.params.map((param) => clone_ast_node(param, false)),
-		b.block([b.return(create_fallback_component_element(fallback_component, fallback_fn))]),
-	);
 }
 
 /**
@@ -1105,41 +1071,6 @@ function function_declaration_to_expression(fn) {
 	expression.generator = fn.generator;
 	expression.metadata = { ...(fn.metadata || {}), path: fn.metadata?.path || [] };
 	return expression;
-}
-
-const VUE_SETUP_CALLS = new Set([
-	'ref',
-	'shallowRef',
-	'computed',
-	'reactive',
-	'shallowReactive',
-	'customRef',
-	'toRef',
-	'toRefs',
-	'useTemplateRef',
-]);
-
-/**
- * @param {AST.CallExpression} call_expression
- * @returns {boolean}
- */
-function is_vue_setup_call(call_expression) {
-	const callee = call_expression?.callee;
-	if (!callee) return false;
-
-	if (callee.type === 'Identifier') {
-		return VUE_SETUP_CALLS.has(callee.name);
-	}
-
-	if (
-		callee.type === 'MemberExpression' &&
-		callee.computed === false &&
-		callee.property?.type === 'Identifier'
-	) {
-		return VUE_SETUP_CALLS.has(callee.property.name);
-	}
-
-	return false;
 }
 
 /**

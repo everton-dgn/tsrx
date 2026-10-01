@@ -6,7 +6,7 @@ import {
 	runSharedCompileDiagnosticsTests,
 	runSharedCompileTests,
 	runSharedComponentParamsTests,
-	runSharedSwitchHelperHoistingTests,
+	runSharedHookBodyTests,
 	runSharedTsxExpressionTsrxTests,
 } from '@tsrx/core/test-harness/compile';
 import { runSharedSourceMappingTests } from '@tsrx/core/test-harness/source-mappings';
@@ -48,12 +48,7 @@ runSharedCompileDiagnosticsTests({ compile_to_volar_mappings, name: 'vue' });
 runSharedCodeBlockChildrenTests({ compile, name: 'vue' });
 runSharedClassFunctionComponentTests({ compile, compile_to_volar_mappings, name: 'vue' });
 runSharedComponentParamsTests({ compile, compile_to_volar_mappings, name: 'vue' });
-runSharedSwitchHelperHoistingTests({
-	compile,
-	compile_to_volar_mappings,
-	name: 'vue',
-	clientHelperShape: 'module-vapor-component',
-});
+runSharedHookBodyTests({ compile, compile_to_volar_mappings, name: 'vue' });
 
 describe('@tsrx/vue basic', () => {
 	it('merges defineVaporComponent into existing vue imports', () => {
@@ -774,6 +769,23 @@ describe('@tsrx/vue basic', () => {
 		expect(code).not.toContain('Suspense');
 	});
 
+	it('does not generate a catch fallback component without @pending', () => {
+		const { code } = compile(
+			`export function App() @{
+				@try {
+					<span>{'Loaded'}</span>
+				} @catch (error) {
+					<span>{'Failed'}</span>
+				}
+			}`,
+			'App.tsrx',
+		);
+
+		expect(code).not.toContain('StatementBodyHook');
+		expect(code.match(/<span>\{'Failed'\}<\/span>/g)).toHaveLength(1);
+		expect(code).toContain('<TsrxErrorBoundary fallback={(error, _reset) =>');
+	});
+
 	it('compiles try/pending into a Vue Suspense slot boundary', () => {
 		const { code } = compile(
 			`function App() @{
@@ -828,6 +840,28 @@ describe('@tsrx/vue basic', () => {
 		const error_boundary_index = code.indexOf('<TsrxErrorBoundary');
 		const suspense_index = code.indexOf('<Suspense');
 		expect(error_boundary_index).toBeLessThan(suspense_index);
+	});
+
+	it('lowers a try/pending/catch catch body only into its fallback component', () => {
+		const { code } = compile(
+			`export function App() @{
+				@try {
+					<span>{'Loaded'}</span>
+				} @pending {
+					<span>{'Loading'}</span>
+				} @catch (error) {
+					<span>{'Failed'}</span>
+				}
+			}`,
+			'App.tsrx',
+		);
+
+		expect(code.match(/<span>\{'Failed'\}<\/span>/g)).toHaveLength(1);
+		expect(code).toMatch(
+			/const App__StatementBodyHook1 = defineVaporComponent\(function App__StatementBodyHook1\(\) \{\n\treturn App__static\d+;/,
+		);
+		expect(code).toContain('fallback={(error, _reset) => {');
+		expect(code.match(/return <App__StatementBodyHook1 \/>;/g)).toHaveLength(2);
 	});
 
 	it('keeps try/pending/catch Suspense lowering valid in type-only output', () => {
