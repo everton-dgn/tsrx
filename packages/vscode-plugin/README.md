@@ -43,6 +43,10 @@ To type-check `.tsrx` files with TypeScript 7.1 in VS Code:
    }
    ```
 
+   You can also add them to the project's `.vscode/settings.json` instead. VS Code
+   then asks once whether to use the project's TypeScript. Choose **Allow** to
+   enable it.
+
 3. Install the
    [TypeScript 7 extension](https://marketplace.visualstudio.com/items?itemName=TypeScriptTeam.native-preview).
 
@@ -67,10 +71,8 @@ To type-check `.tsrx` files with TypeScript 7.1 in VS Code:
 
 _Note: `js/ts.tsdk.path` makes the TypeScript 7 extension use your project's
 TypeScript instead of its built-in 7.0.2, which cannot check `.tsrx` files; it
-does not find it by itself yet (microsoft/TypeScript#64565). The settings also
-work in a project's `.vscode/settings.json`, where the extension asks once to
-allow them. These steps will get simpler once that is fixed and TypeScript 7.1 is
-released (tsrx-org/tsrx#991)._
+does not find it by itself yet (microsoft/TypeScript#64565). These steps will get
+simpler once that is fixed and TypeScript 7.1 is released (tsrx-org/tsrx#991)._
 
 Which compiler serves `.tsrx` files, as tested with the TypeScript 7 extension
 1.0.1 and TypeScript `7.1.0-dev.20260930.4`
