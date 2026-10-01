@@ -665,7 +665,7 @@ function App({ tag }: { tag: string }) @{
 
 			expect(mapping?.data.completion).toBe(true);
 		});
-		it('maps recovered unclosed tags without an off-by-one close name', () => {
+		it('keeps a recovered unclosed tag unclosed and mapped from its own `<`', () => {
 			const source = `export function App() @{
 	<>
 		<span>
@@ -679,7 +679,9 @@ function App({ tag }: { tag: string }) @{
 			const generated_close = result.code.lastIndexOf('</span>');
 
 			expect(generated_open).toBeGreaterThan(-1);
-			expect(generated_close).toBeGreaterThan(generated_open);
+			// No synthesized `</span>`: TypeScript sees the tag as authored (TS17008,
+			// and its closing-tag completion can offer `</span>`).
+			expect(generated_close).toBe(-1);
 
 			/** @param {CodeMapping | undefined} entry */
 			const mapped_source = function (entry) {
