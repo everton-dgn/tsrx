@@ -57,8 +57,7 @@ export function ignore_directives(errors, source_ast, mappings, original_length,
 			: typeof error.end === 'number' && error.end > error.pos
 				? error.end
 				: error.pos + 1;
-		const generated = generated_range(mappings, start, end);
-		if (generated) {
+		for (const generated of generated_ranges(mappings, start, end)) {
 			ranges.push([
 				Math.min(start, original_length),
 				Math.min(end, original_length),
@@ -145,32 +144,52 @@ function child_at(node, position) {
 }
 
 /**
- * The generated range of the mapped code between `start` and `end` in the
- * original: from the first to the last generated offset of the segments inside
- * it. A segment of the same length on both sides that encloses the range, as a
- * verbatim `<script>` body does, gives the matching part of its generated text.
+ * Generated ranges of the mapped code between `start` and `end`. Segments in
+ * the JSX form one range, from the first to the last generated offset, so
+ * synthesized code between them is covered. An appended `<script>` body is
+ * mapped at the end of the file (its mapping carries `customData.embeddedId`)
+ * while the tag stays in the JSX; one range over both would cover that gap and
+ * hide TypeScript diagnostics for the rest of the component, so the body is
+ * its own range. A segment of the same length on both sides that encloses the
+ * range, as a verbatim `<script>` body does, gives the matching part of its
+ * generated text.
  * @param {readonly CodeMapping[]} mappings
  * @param {number} start
  * @param {number} end
- * @returns {[number, number] | null}
+ * @returns {Array<[number, number]>}
  */
-function generated_range(mappings, start, end) {
-	let generated_start = Infinity;
-	let generated_end = -Infinity;
+function generated_ranges(mappings, start, end) {
+	let inline_start = Infinity;
+	let inline_end = -Infinity;
+	let embedded_start = Infinity;
+	let embedded_end = -Infinity;
 	for (const mapping of mappings) {
+		const embedded = typeof mapping.data?.customData?.embeddedId === 'string';
 		for (let i = 0; i < mapping.sourceOffsets.length; i++) {
 			const source = mapping.sourceOffsets[i];
 			const length = mapping.lengths[i];
 			const generated = mapping.generatedOffsets[i];
 			const generated_length = mapping.generatedLengths?.[i] ?? length;
+			/** @type {[number, number] | null} */
+			let span = null;
 			if (source >= start && source + length <= end) {
-				generated_start = Math.min(generated_start, generated);
-				generated_end = Math.max(generated_end, generated + generated_length);
+				span = [generated, generated + generated_length];
 			} else if (source <= start && end <= source + length && generated_length === length) {
-				generated_start = Math.min(generated_start, generated + start - source);
-				generated_end = Math.max(generated_end, generated + end - source);
+				span = [generated + start - source, generated + end - source];
+			}
+			if (!span) continue;
+			if (embedded) {
+				embedded_start = Math.min(embedded_start, span[0]);
+				embedded_end = Math.max(embedded_end, span[1]);
+			} else {
+				inline_start = Math.min(inline_start, span[0]);
+				inline_end = Math.max(inline_end, span[1]);
 			}
 		}
 	}
-	return generated_end > generated_start ? [generated_start, generated_end] : null;
+	/** @type {Array<[number, number]>} */
+	const ranges = [];
+	if (inline_end > inline_start) ranges.push([inline_start, inline_end]);
+	if (embedded_end > embedded_start) ranges.push([embedded_start, embedded_end]);
+	return ranges;
 }
