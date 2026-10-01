@@ -16,5 +16,6 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["vite/client"]
   },
+  "contentMappers": [{ "package": "@tsrx/content-mapper", "extensions": [".tsrx"] }],
   "include": ["src/**/*"]
 }

@@ -7,7 +7,7 @@
     "dev": "vite --host",
     "build": "vite build",
     "preview": "vite preview --host",
-    "typecheck": "tsrx-tsc --noEmit",
+    "typecheck": "tsc --runExternalCode --noEmit",
     "debug-all": "node ../../scripts/debug-mode.js all @tsrx/react",
     "debug-client": "node ../../scripts/debug-mode.js client @tsrx/react",
     "debug-volar": "node ../../scripts/debug-mode.js tsx @tsrx/react",
@@ -18,13 +18,14 @@
     "react-dom": "catalog:default"
   },
   "devDependencies": {
+    "@tsrx/content-mapper": "workspace:*",
     "@tsrx/language-server": "workspace:*",
     "@tsrx/react": "workspace:*",
     "@tsrx/vite-plugin-react": "workspace:*",
     "@tsrx/typescript-plugin": "workspace:*",
     "@types/react": "catalog:default",
     "@types/react-dom": "catalog:default",
-    "typescript": "catalog:default",
+    "typescript": "catalog:native",
     "vite": "catalog:default"
   }
 }

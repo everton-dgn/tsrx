@@ -16,11 +16,12 @@
     "vue": "3.6.0-beta.12"
   },
   "devDependencies": {
+    "@tsrx/content-mapper": "workspace:*",
     "@tsrx/language-server": "workspace:*",
     "@tsrx/typescript-plugin": "workspace:*",
     "@tsrx/vite-plugin-vue": "workspace:*",
     "@tsrx/vue": "workspace:*",
-    "typescript": "catalog:default",
+    "typescript": "catalog:native",
     "vite": "catalog:default",
     "vue-jsx-vapor": "^3.2.14"
   }
