@@ -60,10 +60,13 @@ it does for the same TSX. For a body computed at runtime, write
 
 ## Build integrations
 
-Use [@tsrx/vite-plugin-hono](../vite-plugin-hono/README.md) or
-[@tsrx/bun-plugin-hono](../bun-plugin-hono/README.md) with an explicit
-`mode: 'server'` or `mode: 'dom'`. Separate server and browser build graphs rather
-than selecting modes per file. The Hono mode is independent of `tsrx.platform`.
+Use
+[@tsrx/vite-plugin-hono](https://github.com/tsrx-org/tsrx/tree/main/packages/vite-plugin-hono)
+or
+[@tsrx/bun-plugin-hono](https://github.com/tsrx-org/tsrx/tree/main/packages/bun-plugin-hono)
+with an explicit `mode: 'server'` or `mode: 'dom'`. Separate server and browser
+build graphs rather than selecting modes per file. The Hono mode is independent of
+`tsrx.platform`.
 
 For editor diagnostics in DOM projects, set
 `"tsrx": { "compiler": "@tsrx/hono/dom" }` in `tsconfig.json`.

@@ -200,9 +200,10 @@ long as TypeScript 5.9 and 6 are supported.
    enabled in user settings, its extension warns once that the TSRX extension's
    tsserver plugin will not be loaded; that plugin is only for TypeScript 5.9 or
    6, so the warning is harmless.
-5. Set Prettier as the `[tsrx]` default formatter (`editor.defaultFormatter`):
-   TypeScript 7 registers a formatter for `.tsrx` that returns no edits, and VS
-   Code otherwise asks which of the two to use.
+5. Nothing to set for formatting: the TSRX extension is the `[tsrx]` default
+   formatter (`editor.defaultFormatter`) and formats with the project's Prettier
+   and `@tsrx/prettier-plugin`. TypeScript 7 also registers a formatter for
+   `.tsrx`, which returns no edits.
 
 What changes for the user is listed under "What differs from the classic backend"
 in the extension README: `tsrx`-sourced compile errors, no auto-import that needs

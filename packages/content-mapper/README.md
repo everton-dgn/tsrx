@@ -212,8 +212,8 @@ what editors get:
   extension does not provide one.
 
 The TSRX language server runs beside it with `--typescript-backend=native`; see
-[`@tsrx/language-server`](../language-server/README.md) and the VS Code
-extension's README for the per-editor setup.
+[`@tsrx/language-server`](https://github.com/tsrx-org/tsrx/tree/main/packages/language-server)
+and the VS Code extension's README for the per-editor setup.
 
 ### Known limitations (TypeScript 7.1.0-dev.20260930.4)
 

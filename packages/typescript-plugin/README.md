@@ -14,7 +14,7 @@ TypeScript or the workspace version), so VS Code needs no tsconfig `plugins`
 entry. The entry below is for other editors, whose TypeScript server finds the
 plugin next to the workspace `typescript` package it runs. On TypeScript 7 the
 `contentMappers` entry replaces it everywhere (see
-[`@tsrx/content-mapper`](../content-mapper/README.md)).
+[`@tsrx/content-mapper`](https://github.com/tsrx-org/tsrx/tree/main/packages/content-mapper)).
 
 ## Supported TypeScript versions
 
@@ -25,18 +25,18 @@ on TypeScript 7 through the native compiler, so the peer dependency range is
 launcher for the platform binary with no JavaScript API, so when `tsrx-tsc`
 resolves one it runs that binary itself with `--runExternalCode`, which lets
 TypeScript type-check `.tsrx` files through
-[`@tsrx/content-mapper`](../content-mapper/README.md) (an optional peer dependency
-of this package). That needs a TypeScript 7.1 nightly (`7.1.0-dev.20260923.1` or
-newer; the stable 7.0 releases have no content-mapper protocol, and `tsrx-tsc`
-stops with an explanation when it resolves one), the mapper installed next to the
-project, and a `contentMappers` entry for `.tsrx` in `tsconfig.json`. `tsrx-tsc`
-refuses to run a project without that entry rather than let TypeScript skip its
-`.tsrx` files. No other TypeScript is needed: this package reads `tsconfig.json`
-and resolves compiler packages itself (`src/tsconfig-resolution.js`,
-`src/package-resolution.js`, with `jsonc-parser` and `resolve-pkg-maps`), so the
-mapper and the language server's native backend run in a project whose only
-`typescript` is the native compiler. TypeScript 7 support is not complete yet; the
-gaps are tracked in
+[`@tsrx/content-mapper`](https://github.com/tsrx-org/tsrx/tree/main/packages/content-mapper)
+(an optional peer dependency of this package). That needs a TypeScript 7.1 nightly
+(`7.1.0-dev.20260923.1` or newer; the stable 7.0 releases have no content-mapper
+protocol, and `tsrx-tsc` stops with an explanation when it resolves one), the
+mapper installed next to the project, and a `contentMappers` entry for `.tsrx` in
+`tsconfig.json`. `tsrx-tsc` refuses to run a project without that entry rather
+than let TypeScript skip its `.tsrx` files. No other TypeScript is needed: this
+package reads `tsconfig.json` and resolves compiler packages itself
+(`src/tsconfig-resolution.js`, `src/package-resolution.js`, with `jsonc-parser`
+and `resolve-pkg-maps`), so the mapper and the language server's native backend
+run in a project whose only `typescript` is the native compiler. TypeScript 7
+support is not complete yet; the gaps are tracked in
 [tsrx-org/tsrx#136](https://github.com/tsrx-org/tsrx/issues/136).
 
 ## Configuration
@@ -112,7 +112,7 @@ TypeScript start the mapper, and with it the TSRX compiler, from the workspace;
 execute the project's TSRX compiler, which the classic path does in-process. The
 remaining TypeScript 7 gaps (`--watch`, composite `--build` projects with
 `<script>` bodies, declaration file names) apply on that path; see the
-[content mapper README](../content-mapper/README.md).
+[content mapper README](https://github.com/tsrx-org/tsrx/tree/main/packages/content-mapper).
 
 With Deno 2.8 or newer and the npm dependencies installed locally, add a task to
 `deno.json`:

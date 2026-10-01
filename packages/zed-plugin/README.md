@@ -67,6 +67,8 @@ The extension looks for the language server `@tsrx/language-server` in this orde
 
    ```bash
    npm install -g @tsrx/language-server
+   # or
+   pnpm add -g @tsrx/language-server
    ```
 
 3. The extension automatically downloads the TSRX language server the first time
@@ -104,8 +106,8 @@ one that is not listed there, please file a new issue.
 
 The server also has a `native` backend that leaves TypeScript features to
 TypeScript 7's language server (`tsc --lsp`) through `@tsrx/content-mapper` (see
-[`@tsrx/language-server`](../language-server/README.md)). It only makes sense next
-to a client that runs TypeScript 7 with
+[`@tsrx/language-server`](https://github.com/tsrx-org/tsrx/tree/main/packages/language-server)).
+It only makes sense next to a client that runs TypeScript 7 with
 `initializationOptions.runExternalCode: true` for `.tsrx` files. Zed has no such
 language server yet, so keep the default `classic` backend in Zed. Once Zed can
 run TypeScript 7 for `.tsrx` files, select the backend without an extension update

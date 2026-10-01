@@ -10,7 +10,9 @@ TSRX language support for compatible IntelliJ-based IDEs.
   including TSRX template blocks, JavaScript delimiters, JSX tags, fragments, and
   embedded expressions
 - Diagnostics, completion, navigation, and formatting through
-  `@tsrx/language-server` when the IDE exposes JetBrains' LSP module
+  `@tsrx/language-server` when the IDE exposes JetBrains' LSP module. Formatting
+  needs `prettier` and `@tsrx/prettier-plugin` in the project (see
+  [Formatting](https://github.com/tsrx-org/tsrx/tree/main/packages/language-server#formatting))
 
 ## Requirements
 
@@ -89,8 +91,8 @@ one that is not listed there, please file a new issue.
 
 The server's `native` backend (TypeScript 7 owning TypeScript features through
 `@tsrx/content-mapper`, see
-[`@tsrx/language-server`](../language-server/README.md)) requires a client that
-runs TypeScript 7's language server with
+[`@tsrx/language-server`](https://github.com/tsrx-org/tsrx/tree/main/packages/language-server))
+requires a client that runs TypeScript 7's language server with
 `initializationOptions.runExternalCode: true` for `.tsrx` files. JetBrains IDEs do
 not expose TypeScript 7's language server for that today, so this plugin always
 starts the classic backend.
