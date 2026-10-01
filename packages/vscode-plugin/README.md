@@ -83,59 +83,115 @@ TypeScript instead of its built-in 7.0.2, which cannot check `.tsrx` files; it
 does not find it by itself yet (microsoft/TypeScript#64565). These steps will get
 simpler once that is fixed and TypeScript 7.1 is released (tsrx-org/tsrx#991)._
 
-Which compiler serves `.tsrx` files, as tested with the TypeScript 7 extension
-1.0.1 and TypeScript `7.1.0-dev.20260930.4`
-(`pnpm --filter @tsrx/vscode-plugin test:editor`):
+### Which TypeScript versions work
 
-| TypeScript compiler                                            | Who runs it                                                 | `.tsrx` files                                                  |
-| -------------------------------------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------- |
-| 5.9 or 6                                                       | VS Code's built-in TypeScript, TypeScript 7 off             | Work (classic backend)                                         |
-| 7.1 nightly in the project's `node_modules/typescript`         | TypeScript 7 extension, with `js/ts.tsdk.path` set as above | Work (native backend)                                          |
-| the same project nightly, without `js/ts.tsdk.path`            | TypeScript 7 extension, with its built-in 7.0.2             | Get no TypeScript features, and TSRX's notice says what to set |
-| 7.0, including the 7.0.2 built into the TypeScript 7 extension | TypeScript 7 extension                                      | Get no TypeScript features: 7.0 has no content-mapper protocol |
+This table shows what each TypeScript version does with `.tsrx` files. We tested
+it with the TypeScript 7 extension 1.0.1 and TypeScript `7.1.0-dev.20260930.4`. To
+run the same tests, use `pnpm --filter @tsrx/vscode-plugin test:editor`.
 
-Opening a `.tsrx` file is enough to start TypeScript features, including in
-projects with no `.ts` or `.js` source files. TSRX activates Microsoft's
-TypeScript extensions and calls `registerContentMappers` when their API supports
-it, with `[{ extensions: ['.tsrx'] }]`. That registration discovers the projects
-of already-open and subsequently opened `.tsrx` files. The mapper still comes from
-each project's `tsconfig.json`; TSRX supplies no inferred-project mapper. Version
-selection and any first-run setup follow Microsoft's extensions, just as when
-opening a `.ts` file.
+| TypeScript version                                             | Who runs it                                                 | `.tsrx` files                                                                       |
+| -------------------------------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| 5.9 or 6                                                       | VS Code's built-in TypeScript, with TypeScript 7 off        | Work (classic backend)                                                              |
+| 7.1 nightly in the project's `node_modules/typescript`         | TypeScript 7 extension, with `js/ts.tsdk.path` set (step 2) | Work (native backend)                                                               |
+| 7.1 nightly in the project, but `js/ts.tsdk.path` is not set   | TypeScript 7 extension, which then uses its built-in 7.0.2  | Get no TypeScript features. A TSRX notice tells you which setting to add.           |
+| 7.0, including the 7.0.2 built into the TypeScript 7 extension | TypeScript 7 extension                                      | Get no TypeScript features, because TypeScript 7.0 does not support content mappers |
 
-With TypeScript 7 enabled in your user settings, its extension shows a one-time
-warning that "TypeScript server plugins from the TSRX Syntax for VS Code extension
-will not be loaded". That is expected and harmless: the plugin it refers to is the
-one VS Code's own tsserver uses for `.tsrx` files on TypeScript 5.9 or 6, and
-TypeScript 7 serves them through the content mapper instead. Dismiss it with
-**Don't Show Again**.
+### How TypeScript features start
 
-What differs from the classic backend:
+TypeScript features start when you open a `.tsrx` file. This also works in a
+project that has no `.ts` or `.js` files.
 
-- Closing tags come from the TSRX language server
-  (`tsrx.autoClosingTags.enabled`): `tsc --lsp` can close tags in `.tsrx` files,
-  but the TypeScript 7 extension only asks it to in TypeScript and JavaScript
-  files (upstream microsoft/TypeScript#64564). On classic, VS Code's TypeScript
-  closes them.
-- TSRX compile errors are reported by TypeScript 7 with the `tsrx` source; on
-  classic the TSRX language server reports them with the `TSRX` source.
-- Rename is limited to identifiers whose generated text matches the source
-  (upstream microsoft/TypeScript#63879).
-- Keyword highlights from the TSRX server are not shown while several `.tsrx`
-  editors are visible side by side (VS Code then only consults the TypeScript 7
-  extension's multi-document highlight provider).
+When TSRX starts, it does these steps:
 
-On both backends, declarations inside `<script>` bodies are type-checked in place
-but not listed in the Outline: the body is a block statement in the generated
-TypeScript, which TypeScript's navigation tree skips (tsrx-org/tsrx#137).
+1. It activates Microsoft's TypeScript extensions, the same as opening a `.ts`
+   file does.
+2. If an extension's API supports content mappers, TSRX calls
+   `registerContentMappers` with `[{ extensions: ['.tsrx'] }]`. TypeScript then
+   finds the project of each `.tsrx` file: the files that are open now and the
+   files that you open later.
 
-See the
-[`@tsrx/content-mapper` README](https://github.com/tsrx-org/tsrx/tree/main/packages/content-mapper)
-for the CLI (`tsc --runExternalCode`), declaration output and known limitations,
-its
-[`ROLLOUT.md`](https://github.com/tsrx-org/tsrx/blob/main/packages/content-mapper/ROLLOUT.md)
-for migration and rollback steps, and its
-[`COMPATIBILITY.md`](https://github.com/tsrx-org/tsrx/blob/main/packages/content-mapper/COMPATIBILITY.md)
-and
-[`BENCHMARKS.md`](https://github.com/tsrx-org/tsrx/blob/main/packages/content-mapper/BENCHMARKS.md)
-for how the two backends compare.
+Microsoft's extensions choose the TypeScript version and do any first-run setup,
+the same as for a `.ts` file.
+
+The mapper comes only from the `contentMappers` entry in each project's
+`tsconfig.json` (step 4). TSRX does not add a mapper for files outside such a
+project (TypeScript calls these "inferred projects").
+
+### The "server plugins will not be loaded" warning
+
+If you turn on TypeScript 7 in your user settings, the TypeScript 7 extension
+shows this warning:
+
+> TypeScript server plugins from the "TSRX.tsrx-vscode-plugin" extension will not
+> be loaded because TypeScript 7 is enabled globally.
+
+You can ignore this warning. The plugin in the warning is
+`@tsrx/typescript-plugin`. This extension gives it to VS Code's own TypeScript,
+and only the classic backend (TypeScript 5.9 or 6) uses it. TypeScript 7 uses the
+content mapper instead.
+
+The warning does not come from a `plugins` entry in your `tsconfig.json`, so
+removing that entry does not stop it. The TypeScript 7 extension shows it for each
+installed extension that gives a plugin to VS Code's TypeScript. It shows the
+warning again each time VS Code starts. To hide it, click **Don't Show Again**. An
+extension cannot turn this warning off yet
+([microsoft/TypeScript#64356](https://github.com/microsoft/TypeScript/issues/64356)).
+
+### Differences from the classic backend
+
+On the native backend (TypeScript 7):
+
+- **Closing tags:** the TSRX language server closes tags. The setting is
+  `tsrx.autoClosingTags.enabled`. TypeScript 7 (`tsc --lsp`) can close tags in
+  `.tsrx` files, but the TypeScript 7 extension asks it to do this only in
+  TypeScript and JavaScript files
+  ([microsoft/TypeScript#64564](https://github.com/microsoft/TypeScript/issues/64564)).
+  On the classic backend, VS Code's TypeScript closes tags.
+- **Compile errors:** TypeScript 7 reports TSRX compile errors, with the source
+  `tsrx`. On the classic backend, the TSRX language server reports them, with the
+  source `TSRX`.
+- **Rename:** you can rename an identifier only if the generated TypeScript has
+  the same text for it as the `.tsrx` source
+  ([microsoft/TypeScript#63879](https://github.com/microsoft/TypeScript/issues/63879)).
+- **Keyword highlights:** when two or more `.tsrx` editors show side by side, the
+  keyword highlights from the TSRX language server do not show. In this case, VS
+  Code uses only the multi-document highlight provider of the TypeScript 7
+  extension.
+
+### Known limitation on both backends
+
+TypeScript checks the declarations inside `<script>` bodies, but the Outline does
+not list them. The reason is that the generated TypeScript puts each body in a
+block statement, and TypeScript's navigation tree skips block statements
+([tsrx-org/tsrx#137](https://github.com/tsrx-org/tsrx/issues/137)).
+
+### More about the content mapper
+
+- [`@tsrx/content-mapper` README](https://github.com/tsrx-org/tsrx/tree/main/packages/content-mapper):
+  the CLI (`tsc --runExternalCode`), declaration output, and known limitations
+- [`ROLLOUT.md`](https://github.com/tsrx-org/tsrx/blob/main/packages/content-mapper/ROLLOUT.md):
+  migration and rollback steps
+- [`COMPATIBILITY.md`](https://github.com/tsrx-org/tsrx/blob/main/packages/content-mapper/COMPATIBILITY.md)
+  and
+  [`BENCHMARKS.md`](https://github.com/tsrx-org/tsrx/blob/main/packages/content-mapper/BENCHMARKS.md):
+  how the two backends compare
+
+## Legacy settings
+
+### tsconfig `plugins` entry
+
+Older versions of this extension needed this entry in `tsconfig.json`, so that
+`.ts` and `.tsrx` files could import each other:
+
+```jsonc
+{
+  "compilerOptions": {
+    "plugins": [{ "name": "@tsrx/typescript-plugin" }],
+  },
+}
+```
+
+VS Code no longer needs it (only other editors do). On TypeScript 5.9 or 6, this
+extension gives the plugin to VS Code's TypeScript. TypeScript 7 ignores `plugins`
+and uses the `contentMappers` entry instead (see
+[Native backend setup](#native-backend-setup)).
