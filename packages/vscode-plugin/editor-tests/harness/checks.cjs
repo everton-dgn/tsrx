@@ -114,6 +114,25 @@ exports.run = async () => {
 			message: diagnostic.message,
 		}));
 
+		// Closing tags: type `<b` and then `>` inside the button, as a user would,
+		// and record what follows: `<b></b>` once, nothing, or a closing tag
+		// inserted by more than one provider.
+		// Another extension may have opened an editor of its own meanwhile.
+		const editor = await vscode.window.showTextDocument(document);
+		result.activeEditorBeforeTyping = vscode.window.activeTextEditor?.document.uri.path
+			.split('/')
+			.pop();
+		if (editor) {
+			const before_close = document.positionAt(document.getText().indexOf('</button>'));
+			editor.selection = new vscode.Selection(before_close, before_close);
+			await vscode.commands.executeCommand('type', { text: '<b' });
+			await vscode.commands.executeCommand('type', { text: '>' });
+			await sleep(config.autoInsertWaitMs);
+			const line = document.lineAt(before_close.line).text;
+			const typed = line.indexOf('<b', line.indexOf('{count}'));
+			result.closingTag = line.slice(typed, line.lastIndexOf('</button>'));
+		}
+
 		/** @param {string} id */
 		const active = (id) => vscode.extensions.getExtension(id)?.isActive ?? 'not installed';
 		result.extensions = {

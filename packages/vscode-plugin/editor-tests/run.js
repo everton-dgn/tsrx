@@ -65,6 +65,7 @@ const vscode_cli =
 const SCENARIO_TIMEOUT_MS = 240_000;
 const HOVER_TIMEOUT_MS = 60_000;
 const DIAGNOSTIC_TIMEOUT_MS = 30_000;
+const AUTO_INSERT_WAIT_MS = 3000;
 
 /** @type {Record<string, string>} */
 const EXTENSION_SOURCES = {
@@ -237,6 +238,7 @@ async function run_scenario(scenario, index) {
 			out,
 			hoverTimeoutMs: HOVER_TIMEOUT_MS,
 			diagnosticTimeoutMs: DIAGNOSTIC_TIMEOUT_MS,
+			autoInsertWaitMs: AUTO_INSERT_WAIT_MS,
 		}),
 	);
 
@@ -308,16 +310,20 @@ for (const scenario of selected) {
 	process.stdout.write(`▶ ${scenario.name}: ${scenario.description} … `);
 	const { result, installed, log } = await run_scenario(scenario, selected.indexOf(scenario));
 	const observed = served_by(result);
+	const closing_tag = result?.closingTag ?? '';
 	const problem =
 		observed !== scenario.expect
 			? `expected ${scenario.expect}, got ${observed}`
-			: scenario.check?.(result ?? {});
+			: scenario.closingTag !== undefined && closing_tag !== scenario.closingTag
+				? `expected ${JSON.stringify(scenario.closingTag)} after typing <b>, got ${JSON.stringify(closing_tag)}`
+				: scenario.check?.(result ?? {});
 	if (problem) failures++;
 	console.log(problem ? `FAIL (${problem})` : 'ok');
 	rows.push({
 		scenario: scenario.name,
 		expected: scenario.expect,
 		observed,
+		'after typing <b>': closing_tag,
 		result: problem ? 'FAIL' : 'ok',
 	});
 	if (problem || options.verbose) {

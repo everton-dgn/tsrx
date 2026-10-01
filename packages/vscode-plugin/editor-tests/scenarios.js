@@ -26,6 +26,7 @@
  * 	projectTypeScript?: boolean,
  * 	expect: Server,
  * 	gap?: string,
+ * 	closingTag?: string,
  * 	check?: (result: Record<string, any>) => string | undefined,
  * }} Scenario
  */
@@ -43,6 +44,7 @@ export const SCENARIOS = [
 		},
 		projectTypeScript: true,
 		expect: 'typescript-7',
+		closingTag: '<b></b>',
 	},
 	{
 		name: 'ts7-nightly-extension',
@@ -50,6 +52,17 @@ export const SCENARIOS = [
 		extensions: ['tsrx', 'ts7', 'ts7-nightly'],
 		settings: { 'js/ts.experimental.useTsgo': true },
 		expect: 'typescript-7',
+		closingTag: '<b></b>',
+	},
+	{
+		name: 'ts7-nightly-extension-tsrx-closing-off',
+		description:
+			"TypeScript 7 extension on with the Nightly compiler, TSRX's own closing tags off: what TypeScript 7 closes by itself",
+		extensions: ['tsrx', 'ts7', 'ts7-nightly'],
+		settings: { 'js/ts.experimental.useTsgo': true, 'tsrx.autoClosingTags.enabled': false },
+		expect: 'typescript-7',
+		closingTag: '<b>',
+		gap: 'TypeScript 7 does not close tags in `.tsrx` files: the closing tag comes from the TSRX extension (`tsrx.autoClosingTags.enabled`).',
 	},
 	{
 		name: 'ts7-bundled',
@@ -58,6 +71,7 @@ export const SCENARIOS = [
 		settings: { 'js/ts.experimental.useTsgo': true },
 		projectTypeScript: true,
 		expect: 'nothing',
+		closingTag: '<b></b>',
 		gap: "The TypeScript 7 extension's bundled compiler is the stable 7.0 line, which has no content-mapper protocol, and VS Code's own TypeScript stands down while TypeScript 7 is on. The project's 7.1 nightly is not used: the extension only discovers `node_modules/@typescript/native-preview`, not `node_modules/typescript`.",
 	},
 	{
@@ -65,6 +79,7 @@ export const SCENARIOS = [
 		description: 'TypeScript 7 extension installed, no settings: its first start turns itself on',
 		extensions: ['tsrx', 'ts7'],
 		expect: 'nothing',
+		closingTag: '<b></b>',
 		gap: 'Same as ts7-bundled: on its first start the TypeScript 7 extension sets `js/ts.experimental.useTsgo` to true in the user settings.',
 		check: (result) =>
 			result.useTsgoAtEnd?.user === true
@@ -78,12 +93,14 @@ export const SCENARIOS = [
 		settings: { 'js/ts.experimental.useTsgo': false },
 		projectTypeScript: true,
 		expect: 'vscode-typescript',
+		closingTag: '<b></b>',
 	},
 	{
 		name: 'vscode-typescript',
 		description: 'TSRX extension only',
 		extensions: ['tsrx'],
 		expect: 'vscode-typescript',
+		closingTag: '<b></b>',
 	},
 	{
 		name: 'vscode-typescript-project-ts7',
@@ -92,5 +109,6 @@ export const SCENARIOS = [
 		extensions: ['tsrx'],
 		projectTypeScript: true,
 		expect: 'vscode-typescript',
+		closingTag: '<b></b>',
 	},
 ];
