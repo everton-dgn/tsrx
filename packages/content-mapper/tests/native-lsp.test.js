@@ -703,7 +703,7 @@ describe('editor preferences and file lifecycle on the native server', () => {
 		).toEqual([': Element', ': Element', ': Element']);
 	});
 
-	it('registers formatting for .tsrx and returns no edits, so Prettier must stay the default formatter', async () => {
+	it('registers formatting for .tsrx and returns no edits, so TSRX must stay the default formatter', async () => {
 		const ids = client.registrations.map((r) => r.id);
 		expect(ids).toContain('content-mapper-formatting');
 		expect(ids).toContain('content-mapper-range-formatting');

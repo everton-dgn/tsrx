@@ -5,7 +5,8 @@
 
 Language Server Protocol implementation for `.tsrx` files. It uses Volar and
 TypeScript to provide diagnostics, completions, hover information, navigation,
-document symbols, highlighting, and automatic closing tags.
+document symbols, highlighting, and automatic closing tags. It formats `.tsrx`
+files with the project's Prettier (see [Formatting](#formatting)).
 
 The language server resolves the compiler selected by the active TypeScript
 project, so the same tooling works with React, Preact, Solid, Vue, Ripple, Octane,
@@ -16,6 +17,8 @@ the file is compiled by the Ripple target.
 
 ```bash
 npm install --global @tsrx/language-server
+# or
+pnpm add --global @tsrx/language-server
 ```
 
 Start the server over stdio:
@@ -28,6 +31,8 @@ It can also be run without a global installation:
 
 ```bash
 npx @tsrx/language-server --stdio
+# or
+pnpm dlx @tsrx/language-server --stdio
 ```
 
 Configure your editor's LSP client for `*.tsrx` files with the language ID `tsrx`.
@@ -54,13 +59,13 @@ file.
   Code runs for the workspace. Without the option the server loads the
   `typescript` package resolvable from its own location (the peer dependency).
 - `native`: TypeScript 7 owns every TypeScript feature for `.tsrx` files through
-  [`@tsrx/content-mapper`](../content-mapper/README.md) (diagnostics including
-  TSRX compile errors, hover, completions, signature help, definitions,
-  references, rename, code actions, auto-import, inlay hints, semantic tokens).
-  The TSRX server is slimmed down to what TypeScript does not own: TSRX snippet
-  completions (Ripple-gated), CSS in `<style>` blocks, document symbols,
-  auto-closing tags, CSS-class hover and definition, and keyword highlights.
-  `volar-service-typescript` is never loaded in this mode.
+  [`@tsrx/content-mapper`](https://github.com/tsrx-org/tsrx/tree/main/packages/content-mapper)
+  (diagnostics including TSRX compile errors, hover, completions, signature help,
+  definitions, references, rename, code actions, auto-import, inlay hints,
+  semantic tokens). The TSRX server is slimmed down to what TypeScript does not
+  own: TSRX snippet completions (Ripple-gated), CSS in `<style>` blocks, document
+  symbols, auto-closing tags, CSS-class hover and definition, and keyword
+  highlights. `volar-service-typescript` is never loaded in this mode.
 - `plugin`: the editor's own tsserver owns every TypeScript feature for `.tsrx`
   files through `@tsrx/typescript-plugin` (VS Code on TypeScript 5.9 or 6, where
   the extension hands the plugin to VS Code's tsserver). The server is as slim as
@@ -91,8 +96,75 @@ which bundles and starts this server automatically. Zed users can install the
 [TSRX extension for Zed](https://zed.dev/extensions/tsrx), which also starts this
 server automatically.
 
+## Formatting
+
+The server formats `.tsrx` files (`textDocument/formatting`) with the project's
+own `prettier` and
+[`@tsrx/prettier-plugin`](https://github.com/tsrx-org/tsrx/tree/main/packages/prettier-plugin),
+on every backend.
+
+1. Install both in the project:
+
+   ```bash
+   npm install -D prettier @tsrx/prettier-plugin
+   # or
+   pnpm add -D prettier @tsrx/prettier-plugin
+   ```
+
+2. Run your editor's format command, or turn on format on save.
+
+How it formats:
+
+- The server bundles no Prettier. It uses the project's copy, so the editor gives
+  the same result as the project's `prettier` command. Prettier 3.6 or newer is
+  necessary (the plugin's peer range).
+- The server looks for both packages in the `node_modules` folders above the file,
+  and nowhere else (not `NODE_PATH`).
+- The server adds the plugin and the `tsrx` parser itself. A `.tsrx` file formats
+  even when the Prettier config does not list the plugin. The `prettier` command
+  still needs the plugin in the config.
+- The Prettier config (`.prettierrc` or another config file), `.editorconfig`, and
+  the nearest `.prettierignore` apply, as on the command line. The editor's tab
+  size and its choice of tabs or spaces apply only when the project has no
+  Prettier config and no `.editorconfig`.
+
+When formatting cannot run:
+
+- **A package is missing, or Prettier is older than 3.6:** the server returns no
+  edits. It shows a message once per project (`window/showMessage`), for example:
+
+  > To format .tsrx files, TSRX needs prettier and @tsrx/prettier-plugin in this
+  > project. To install them, run: npm install -D prettier @tsrx/prettier-plugin
+
+  The install command matches the project's package manager, from the nearest
+  lockfile (pnpm, Yarn, Bun or npm; npm without a lockfile).
+
+  The server does not send an error response, because with format on save the
+  editor would report a failure on every save.
+
+- **Prettier cannot parse the file**, which happens while you type: the server
+  returns no edits and writes the error to its log only.
+
+To turn formatting off, set `tsrx.format.enable` to `false`. The server reads it
+through `workspace/configuration`.
+
+Other formatters for `.tsrx` files return no edits:
+
+- **TypeScript 7** (`tsc --lsp`) always offers a formatter for content-mapped
+  files such as `.tsrx`, and a content mapper cannot turn it off yet
+  ([microsoft/TypeScript#64579](https://github.com/microsoft/TypeScript/issues/64579)).
+  In an editor that runs `tsc --lsp` for `.tsrx` files, choose the TSRX language
+  server as the formatter.
+- **VS Code's own TypeScript** (5.9 or 6) offers no `.tsrx` formatter, unless
+  `js/ts.format.enabled` is set in the settings.
+
+In VS Code, TSRX is the default formatter for `.tsrx` files, so neither gets in
+the way.
+
+## More
+
 See the [TSRX documentation](https://tsrx.dev/) and
-[`@tsrx/typescript-plugin`](../typescript-plugin/README.md) for target compiler
-selection and TypeScript configuration, and
-[`@tsrx/content-mapper`'s `ROLLOUT.md`](../content-mapper/ROLLOUT.md) for the
-migration, rollback and default-backend decision behind the two backends.
+[`@tsrx/typescript-plugin`](https://github.com/tsrx-org/tsrx/tree/main/packages/typescript-plugin)
+for target compiler selection and TypeScript configuration, and
+[`@tsrx/content-mapper`'s `ROLLOUT.md`](https://github.com/tsrx-org/tsrx/blob/main/packages/content-mapper/ROLLOUT.md)
+for the migration, rollback and default-backend decision behind the two backends.

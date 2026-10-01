@@ -18,14 +18,14 @@ import { createTypeScriptServices } from './typescriptService.js';
  * The bundled TypeScript (`typescript-syntactic`) and CSS services advertise a
  * `documentFormattingProvider`. Because they run against the virtual TS/CSS code
  * rather than the `.tsrx` source, their edits don't map back and formatting is a
- * no-op — yet the capability still makes the language client contribute a
- * "TSRX Syntax for VS Code" entry to "Format Document With…" that silently does nothing.
- * Formatting for `.tsrx` is owned by Prettier + @tsrx/prettier-plugin (users set
- * it as the `[tsrx]` default formatter), so we drop these capabilities to keep
- * Prettier as the single, working formatter. On-type formatting is left intact.
- * On the native backend TypeScript 7 registers its own formatter for `.tsrx`
- * files that returns no edits (`native-lsp.test.js` pins it), so a `[tsrx]`
- * default formatter is what keeps Prettier winning there.
+ * no-op. The server formats `.tsrx` sources itself, with the project's Prettier
+ * (`formattingHandler.js`): a plugin that offered formatting would make Volar
+ * register its own `textDocument/formatting` handler, which would replace that one,
+ * and the language client would list a second formatter that does nothing
+ * (removed first by Ripple-TS/ripple#1318). On-type formatting is left intact.
+ * TypeScript 7 registers a formatter for `.tsrx` files that returns no edits
+ * (`native-lsp.test.js` pins it), so the VS Code extension makes TSRX the `[tsrx]`
+ * default formatter.
  *
  * @template {{ capabilities?: Record<string, unknown> }} T
  * @param {T} plugin

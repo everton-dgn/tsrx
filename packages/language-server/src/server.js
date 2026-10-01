@@ -11,6 +11,8 @@ import Module from 'node:module';
 import path from 'node:path';
 import { resolve_typescript_backend, resolve_typescript_tsdk } from './backend.js';
 import { createServicePlugins } from './servicePlugins.js';
+import { register_formatting } from './formattingHandler.js';
+import { URI } from 'vscode-uri';
 import {
 	getTsrxLanguagePlugin,
 	invalidateCompilerResolutionCaches,
@@ -35,6 +37,8 @@ export function createTsrxLanguageServer(options = {}) {
 	const argv = options.argv ?? process.argv.slice(2);
 	const connection = createConnection();
 	const server = createServer(connection);
+	// Prettier formats `.tsrx` sources on every backend (`formattingHandler.js`).
+	register_formatting(connection, (uri) => server.documents.get(URI.parse(uri)));
 
 	connection.listen();
 
@@ -159,7 +163,7 @@ export function createTsrxLanguageServer(options = {}) {
 					createServicePlugins(selection.backend),
 				);
 				log('Server initialization complete (native backend, no TypeScript loaded)');
-				return initResult;
+				return with_formatting(initResult);
 			}
 
 			const ts = load_typescript(resolve_typescript_tsdk(params.initializationOptions));
@@ -202,7 +206,7 @@ export function createTsrxLanguageServer(options = {}) {
 			);
 
 			log('Server initialization complete');
-			return initResult;
+			return with_formatting(initResult);
 		} catch (initError) {
 			logError('Server initialization failed:', initError);
 			throw initError;
@@ -259,4 +263,16 @@ export function createTsrxLanguageServer(options = {}) {
 	});
 
 	return { connection, server };
+}
+
+/**
+ * Advertise the formatter `register_formatting` serves; no Volar service plugin
+ * advertises one (`stripDocumentFormatting`).
+ * @template {import('@volar/language-server/node').InitializeResult} T
+ * @param {T} initResult
+ * @returns {T}
+ */
+function with_formatting(initResult) {
+	initResult.capabilities.documentFormattingProvider = true;
+	return initResult;
 }
