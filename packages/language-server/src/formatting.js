@@ -87,9 +87,14 @@ export async function format_tsrx({ file_path, text, tab_size = 2, insert_spaces
 			tabWidth: tab_size,
 			useTabs: !insert_spaces,
 		};
+		// A config entry of `@tsrx/prettier-plugin` is not the copy `resolve` found.
+		// Prettier loads that bare name from its own cwd, which misses a plugin
+		// installed in another `node_modules` than Prettier (a nested package).
 		/** @type {unknown[]} */
-		const plugins = Array.isArray(config.plugins) ? [...config.plugins] : [];
-		if (!plugins.includes(PRETTIER_PLUGIN)) plugins.push(plugin_entry);
+		const plugins = (Array.isArray(config.plugins) ? config.plugins : []).filter(
+			(plugin) => plugin !== PRETTIER_PLUGIN,
+		);
+		if (!plugins.includes(plugin_entry)) plugins.push(plugin_entry);
 		const formatted = await prettier.format(text, {
 			...config,
 			filepath: file_path,

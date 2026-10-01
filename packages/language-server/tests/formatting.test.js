@@ -76,6 +76,43 @@ export function App() @{
 		}
 	});
 
+	it('uses the plugin resolved from the file when the config names it and the packages are in different node_modules', async () => {
+		const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tsrx-format-')));
+		projects.push(dir);
+		const app = path.join(dir, 'packages', 'app');
+		fs.mkdirSync(path.join(app, 'src'), { recursive: true });
+		const file_path = path.join(app, 'src', 'App.tsrx');
+		fs.writeFileSync(file_path, MESSY);
+		fs.writeFileSync(
+			path.join(app, '.prettierrc'),
+			JSON.stringify({ singleQuote: true, tabWidth: 4, plugins: ['@tsrx/prettier-plugin'] }),
+		);
+		// Prettier at the workspace root, the plugin only in the nested package.
+		const prettier_link = path.join(dir, 'node_modules', 'prettier');
+		fs.mkdirSync(path.dirname(prettier_link), { recursive: true });
+		fs.symlinkSync(prettier_package, prettier_link, 'junction');
+		const plugin_link = path.join(app, 'node_modules', '@tsrx', 'prettier-plugin');
+		fs.mkdirSync(path.dirname(plugin_link), { recursive: true });
+		fs.symlinkSync(plugin_package, plugin_link, 'junction');
+
+		const previous = process.cwd();
+		try {
+			// Prettier resolves a bare plugin name from here, not from the file.
+			process.chdir(dir);
+			expect(await format_tsrx({ file_path, text: MESSY, insert_spaces: false })).toEqual({
+				status: 'formatted',
+				text: `import { useState } from 'react';
+export function App() @{
+    const [count, setCount] = useState(0);
+    <button onClick={() => setCount(count + 1)}>{count}</button>
+}
+`,
+			});
+		} finally {
+			process.chdir(previous);
+		}
+	});
+
 	it('reads .editorconfig', async () => {
 		const { file_path } = project({
 			files: { '.editorconfig': '[*.tsrx]\nindent_style = space\nindent_size = 3\n' },
