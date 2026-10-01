@@ -21,7 +21,9 @@
  * `typescript` is what the TSRX extension's status item says serves the file
  * (`src/typescript-guidance.js`), and `notice` the ids of the notices it showed,
  * comma-separated (none when left out). `action` runs one of the notice's actions,
- * as clicking it would; `check` then reads `result.afterAction`.
+ * as clicking it would; `check` then reads `result.afterAction`. `command` runs a
+ * command at the end, as the Command Palette would; `check` then reads
+ * `result.afterCommand`.
  *
  * @typedef {'typescript-7' | 'vscode-typescript' | 'nothing'} Server
  * @typedef {'vscode' | 'typescript-7' | 'typescript-7-unsupported' | 'typescript-7-missing'} Status
@@ -35,6 +37,7 @@
  * 	typescript: Status,
  * 	notice?: string,
  * 	action?: string,
+ * 	command?: string,
  * 	gap?: string,
  * 	closingTag?: string,
  * 	check?: (result: Record<string, any>) => string | undefined,
@@ -70,6 +73,22 @@ const RECOMMENDED = {
 	'js/ts.tsdk.path': 'node_modules/typescript',
 };
 
+/**
+ * After `TSRX: Restart Language Server`, TypeScript answers again and the TSRX server
+ * lists the document symbols.
+ * @param {Record<string, any>} result
+ */
+function restarted(result) {
+	const after = result.afterCommand ?? {};
+	return after.error
+		? `the restart failed: ${after.error}`
+		: !/number/.test(after.hover ?? '')
+			? `expected TypeScript to answer after the restart, got the hover ${JSON.stringify(after.hover)}`
+			: after.symbols > 0
+				? undefined
+				: 'expected document symbols after the restart';
+}
+
 /** @type {Scenario[]} */
 export const SCENARIOS = [
 	{
@@ -95,6 +114,18 @@ export const SCENARIOS = [
 		typescript: 'typescript-7',
 		closingTag: '<b>',
 		gap: 'The TypeScript 7 extension does not close tags in `.tsrx` files (microsoft/TypeScript#64564): the closing tag comes from the TSRX extension (`tsrx.autoClosingTags.enabled`).',
+	},
+	{
+		name: 'ts7-recommended-restart',
+		description: "The README's setup, then TSRX: Restart Language Server",
+		extensions: ['tsrx', 'ts7'],
+		settings: RECOMMENDED,
+		projectTypeScript: true,
+		expect: 'typescript-7',
+		typescript: 'typescript-7',
+		command: 'tsrx.restartServer',
+		closingTag: '<b></b>',
+		check: restarted,
 	},
 	{
 		name: 'ts7-recommended-no-project-typescript',
@@ -228,6 +259,16 @@ export const SCENARIOS = [
 		expect: 'vscode-typescript',
 		typescript: 'vscode',
 		closingTag: '<b></b>',
+	},
+	{
+		name: 'vscode-typescript-restart',
+		description: 'TSRX extension only, then TSRX: Restart Language Server',
+		extensions: ['tsrx'],
+		expect: 'vscode-typescript',
+		typescript: 'vscode',
+		command: 'tsrx.restartServer',
+		closingTag: '<b></b>',
+		check: restarted,
 	},
 	{
 		name: 'vscode-typescript-tsrx-closing-off',

@@ -107,6 +107,11 @@
     },
     "commands": [
       {
+        "command": "tsrx.restartServer",
+        "title": "Restart Language Server",
+        "category": "TSRX"
+      },
+      {
         "command": "tsrx.goToSourceDefinition",
         "title": "Go to Source Definition",
         "category": "TSRX"

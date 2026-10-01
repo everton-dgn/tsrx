@@ -1,0 +1,35 @@
+import vscode from 'vscode';
+import { typescript_7_on } from './typescript-7.js';
+
+export const RESTART_COMMAND = 'tsrx.restartServer';
+
+/**
+ * **TSRX: Restart Language Server** restarts everything that serves `.tsrx` files: the
+ * TSRX language server, and the TypeScript server, which is VS Code's own tsserver
+ * (hosting `@tsrx/typescript-plugin`) or TypeScript 7 (running `@tsrx/content-mapper`).
+ * Nobody has to know which TypeScript serves the file to restart it.
+ * @param {() => import('vscode-languageclient/node').LanguageClient | undefined} get_client
+ * @returns {import('vscode').Disposable}
+ */
+export function register_restart_command(get_client) {
+	return vscode.commands.registerCommand(RESTART_COMMAND, async () => {
+		const typescript_restart = typescript_7_on()
+			? 'typescript.native-preview.restart'
+			: 'typescript.restartTsServer';
+		// Missing while no TypeScript server runs, such as TypeScript 7 on with only the
+		// TypeScript 7 Nightly extension installed.
+		const commands = await vscode.commands.getCommands(true);
+		try {
+			await Promise.all([
+				get_client()?.restart(),
+				commands.includes(typescript_restart)
+					? vscode.commands.executeCommand(typescript_restart)
+					: undefined,
+			]);
+			vscode.window.setStatusBarMessage('TSRX: Restarted the language server.', 3000);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			vscode.window.showErrorMessage(`TSRX could not restart the language server: ${message}`);
+		}
+	});
+}

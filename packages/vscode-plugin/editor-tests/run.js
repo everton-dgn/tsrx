@@ -286,6 +286,7 @@ async function run_scenario(scenario, index) {
 			diagnosticTimeoutMs: DIAGNOSTIC_TIMEOUT_MS,
 			autoInsertWaitMs: AUTO_INSERT_WAIT_MS,
 			action: scenario.action,
+			command: scenario.command,
 			actionWaitMs: ACTION_WAIT_MS,
 		}),
 	);

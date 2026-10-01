@@ -356,6 +356,10 @@ export function activate_typescript_guidance(context) {
 			if (!notice) return;
 			/** @type {Array<import('vscode').QuickPickItem & { run: () => Thenable<unknown> }>} */
 			const items = notice.actions.map((action) => ({ label: action.label, run: action.run }));
+			items.push({
+				label: 'Restart Language Server',
+				run: () => vscode.commands.executeCommand('tsrx.restartServer'),
+			});
 			// The version pickers: VS Code's own while it serves TypeScript files, else the
 			// TypeScript 7 extension's, which only exists when that extension is installed.
 			if (status?.kind === 'vscode' || typescript_7_server_extension()) {

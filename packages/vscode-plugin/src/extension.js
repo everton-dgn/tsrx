@@ -23,6 +23,7 @@ import protocol from '@volar/language-server/protocol';
 import * as lsp from 'vscode-languageclient/node';
 import { createLabsInfo } from '@volar/vscode';
 import { activate_closing_tags } from './closing-tags.js';
+import { register_restart_command } from './restart.js';
 import { CompileErrorDedupe } from './diagnostics.js';
 import { activate_typescript } from './typescript.js';
 import { activate_typescript_guidance } from './typescript-guidance.js';
@@ -97,6 +98,8 @@ export async function activate(context) {
 
 	// Which TypeScript serves .tsrx files, and what to do when none can.
 	const typescript_guidance = activate_typescript_guidance(context);
+	// Registered before the server starts, so it can retry a server that failed to start.
+	context.subscriptions.push(register_restart_command(() => client));
 
 	const serverModule = path.join(__dirname, 'server.js');
 

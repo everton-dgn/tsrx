@@ -171,6 +171,26 @@ exports.run = async () => {
 			await vscode.window.showTextDocument(document);
 		}
 
+		if (config.command) {
+			// A command of the TSRX extension, as the Command Palette would run it; then
+			// TypeScript must answer again, and the TSRX server list the symbols.
+			result.afterCommand = {};
+			try {
+				await within(vscode.commands.executeCommand(config.command), 30000, undefined);
+			} catch (error) {
+				result.afterCommand.error = error instanceof Error ? error.message : String(error);
+			}
+			await sleep(config.actionWaitMs);
+			result.afterCommand.hover = await hover_on_count(document, config.hoverTimeoutMs);
+			/** @type {unknown[] | undefined} */
+			const symbols = await within(
+				vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', document.uri),
+				10000,
+				undefined,
+			);
+			result.afterCommand.symbols = symbols?.length ?? 0;
+		}
+
 		/** @param {string} id */
 		const active = (id) => vscode.extensions.getExtension(id)?.isActive ?? 'not installed';
 		result.extensions = {
