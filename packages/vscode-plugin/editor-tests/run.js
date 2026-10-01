@@ -66,6 +66,7 @@ const SCENARIO_TIMEOUT_MS = 240_000;
 const HOVER_TIMEOUT_MS = 60_000;
 const DIAGNOSTIC_TIMEOUT_MS = 30_000;
 const AUTO_INSERT_WAIT_MS = 3000;
+const ACTION_WAIT_MS = 5000;
 
 /** @type {Record<string, string>} */
 const EXTENSION_SOURCES = {
@@ -239,6 +240,8 @@ async function run_scenario(scenario, index) {
 			hoverTimeoutMs: HOVER_TIMEOUT_MS,
 			diagnosticTimeoutMs: DIAGNOSTIC_TIMEOUT_MS,
 			autoInsertWaitMs: AUTO_INSERT_WAIT_MS,
+			action: scenario.action,
+			actionWaitMs: ACTION_WAIT_MS,
 		}),
 	);
 
@@ -311,12 +314,20 @@ for (const scenario of selected) {
 	const { result, installed, log } = await run_scenario(scenario, selected.indexOf(scenario));
 	const observed = served_by(result);
 	const closing_tag = result?.closingTag ?? '';
+	const status = result?.typescriptStatus?.kind ?? 'none';
+	const notices =
+		(result?.notices ?? []).map((/** @type {{ id: string }} */ notice) => notice.id).join(', ') ||
+		'none';
 	const problem =
 		observed !== scenario.expect
 			? `expected ${scenario.expect}, got ${observed}`
 			: scenario.closingTag !== undefined && closing_tag !== scenario.closingTag
 				? `expected ${JSON.stringify(scenario.closingTag)} after typing <b>, got ${JSON.stringify(closing_tag)}`
-				: scenario.check?.(result ?? {});
+				: status !== scenario.typescript
+					? `expected the TypeScript status ${scenario.typescript}, got ${status}`
+					: notices !== (scenario.notice ?? 'none')
+						? `expected the notices ${scenario.notice ?? 'none'}, got ${notices}`
+						: scenario.check?.(result ?? {});
 	if (problem) failures++;
 	console.log(problem ? `FAIL (${problem})` : 'ok');
 	rows.push({
@@ -324,6 +335,8 @@ for (const scenario of selected) {
 		expected: scenario.expect,
 		observed,
 		'after typing <b>': closing_tag,
+		'TypeScript status': [status, result?.typescriptStatus?.version].filter(Boolean).join(' '),
+		notices,
 		result: problem ? 'FAIL' : 'ok',
 	});
 	if (problem || options.verbose) {

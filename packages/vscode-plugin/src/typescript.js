@@ -9,11 +9,11 @@ const TYPESCRIPT_EXTENSIONS = [
 
 /**
  * Activate Microsoft's TypeScript extensions as opening a JS/TS file would. Each
- * extension decides whether to start its server; only closing tags read their
- * selection settings (`closing-tags.js`). Register our file extensions with any API
- * that supports content mappers, so it can discover configured projects for
- * already-open and future TSRX documents. Each project still declares its own mapper
- * in tsconfig.json.
+ * extension decides whether to start its server; only closing tags and the TypeScript
+ * status read their selection settings (`typescript-7.js`). Register our file
+ * extensions with any API that supports content mappers, so it can discover configured
+ * projects for already-open and future TSRX documents. Each project still declares its
+ * own mapper in tsconfig.json.
  * @param {import('vscode').ExtensionContext} context
  */
 export function activate_typescript(context) {

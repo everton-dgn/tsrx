@@ -39,6 +39,28 @@ function hover_text(hovers) {
 		.trim();
 }
 
+/**
+ * The hover on `count` in `{count}`, polled until it names the type or time runs out.
+ * @param {vscode.TextDocument} document
+ * @param {number} timeout_ms
+ */
+async function hover_on_count(document, timeout_ms) {
+	let hover = '';
+	const deadline = Date.now() + timeout_ms;
+	while (!/number/.test(hover) && Date.now() < deadline) {
+		const position = document.positionAt(document.getText().indexOf('{count}') + 1);
+		hover = hover_text(
+			await within(
+				vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, position),
+				5000,
+				[],
+			),
+		);
+		if (!/number/.test(hover)) await sleep(1000);
+	}
+	return hover;
+}
+
 /** @param {string} key */
 function use_tsgo(key) {
 	const inspected = vscode.workspace.getConfiguration('js/ts').inspect(key);
@@ -56,20 +78,7 @@ exports.run = async () => {
 		result.useTsgoAtStart = use_tsgo('experimental.useTsgo');
 
 		const text = document.getText();
-		const count_position = document.positionAt(text.indexOf('{count}') + 1);
-		let hover = '';
-		const hover_deadline = Date.now() + config.hoverTimeoutMs;
-		while (!/number/.test(hover) && Date.now() < hover_deadline) {
-			hover = hover_text(
-				await within(
-					vscode.commands.executeCommand('vscode.executeHoverProvider', uri, count_position),
-					5000,
-					[],
-				),
-			);
-			if (!/number/.test(hover)) await sleep(1000);
-		}
-		result.hover = hover;
+		result.hover = await hover_on_count(document, config.hoverTimeoutMs);
 
 		/** @type {Array<vscode.Location | vscode.LocationLink>} */
 		const definitions = await within(
@@ -131,6 +140,27 @@ exports.run = async () => {
 			const line = document.lineAt(before_close.line).text;
 			const typed = line.indexOf('<b', line.indexOf('{count}'));
 			result.closingTag = line.slice(typed, line.lastIndexOf('</button>'));
+		}
+
+		// What the TSRX extension says about the TypeScript serving the file, and the
+		// notices it showed (src/typescript-guidance.js), read from its exports.
+		const tsrx = vscode.extensions.getExtension('tsrx.tsrx-vscode-plugin');
+		const exports = tsrx ? await within(tsrx.activate(), 30000, undefined) : undefined;
+		const guidance = exports?.typescriptGuidance;
+		result.typescriptStatus = guidance?.status();
+		result.notices = guidance?.shown;
+		if (config.action) {
+			// One of the notice's actions, as clicking it would run it.
+			await within(guidance?.run(config.action), 30000, undefined);
+			await sleep(config.actionWaitMs);
+			result.afterAction = {
+				activeTab: vscode.window.tabGroups.activeTabGroup.activeTab?.label,
+				useTsgo: use_tsgo('experimental.useTsgo'),
+				typescriptStatus: guidance?.status(),
+				hover: await hover_on_count(document, config.hoverTimeoutMs),
+			};
+			// Back to the file, so it is what gets reverted and closed below.
+			await vscode.window.showTextDocument(document);
 		}
 
 		/** @param {string} id */

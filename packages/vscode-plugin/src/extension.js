@@ -7,7 +7,9 @@
  *
  * The TSRX language server runs alongside it in `plugin` mode for snippets, CSS,
  * document symbols, CSS-class navigation and keyword highlights, and closes tags while
- * TypeScript 7 does not (`closing-tags.js`).
+ * TypeScript 7 does not (`closing-tags.js`). A status item on `.tsrx` files names the
+ * TypeScript that serves them, and a notice says what to do when none can
+ * (`typescript-guidance.js`).
  * It also reports compile errors; `diagnostics.js` removes that copy once the native
  * mapper reports for the file, and removes each one tsserver reports itself. This
  * extension neither loads TypeScript nor patches another extension, and has no
@@ -23,6 +25,7 @@ import { createLabsInfo } from '@volar/vscode';
 import { activate_closing_tags } from './closing-tags.js';
 import { CompileErrorDedupe } from './diagnostics.js';
 import { activate_typescript } from './typescript.js';
+import { activate_typescript_guidance } from './typescript-guidance.js';
 
 const TSRX_FILE_SELECTORS = ['**/*.tsrx'];
 const RESTART_EXTENSIONS_ACTION = 'Restart Extensions';
@@ -91,6 +94,9 @@ export async function activate(context) {
 		console.warn('[TSRX] Workspace is not trusted; TSRX language features stay off.');
 		return;
 	}
+
+	// Which TypeScript serves .tsrx files, and what to do when none can.
+	const typescript_guidance = activate_typescript_guidance(context);
 
 	const serverModule = path.join(__dirname, 'server.js');
 
@@ -234,11 +240,13 @@ export async function activate(context) {
 		console.log('[TSRX] Registered custom commands');
 
 		console.log('[TSRX] Extension activated successfully');
-		return volar_labs.extensionExports;
+		// `typescriptGuidance` is read by the editor tests (`editor-tests/harness`).
+		return { ...volar_labs.extensionExports, typescriptGuidance: typescript_guidance };
 	} catch (error) {
 		console.error('Failed to start language client:', error);
 		const message = error instanceof Error ? error.message : String(error);
 		vscode.window.showErrorMessage(`Failed to start TSRX language server: ${message}`);
+		return { typescriptGuidance: typescript_guidance };
 	}
 }
 

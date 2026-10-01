@@ -17,7 +17,13 @@
  * fixture copy's path. `projectTypeScript` links the repository's TypeScript
  * 7.1 nightly into the fixture's `node_modules`.
  *
+ * `typescript` is what the TSRX extension's status item says serves the file
+ * (`src/typescript-guidance.js`), and `notice` the ids of the notices it showed,
+ * comma-separated (none when left out). `action` runs one of the notice's actions,
+ * as clicking it would; `check` then reads `result.afterAction`.
+ *
  * @typedef {'typescript-7' | 'vscode-typescript' | 'nothing'} Server
+ * @typedef {'vscode' | 'typescript-7' | 'typescript-7-unsupported' | 'typescript-7-missing'} Status
  * @typedef {{
  * 	name: string,
  * 	description: string,
@@ -25,11 +31,37 @@
  * 	settings?: Record<string, unknown>,
  * 	projectTypeScript?: boolean,
  * 	expect: Server,
+ * 	typescript: Status,
+ * 	notice?: string,
+ * 	action?: string,
  * 	gap?: string,
  * 	closingTag?: string,
  * 	check?: (result: Record<string, any>) => string | undefined,
  * }} Scenario
  */
+
+const PROJECT_NIGHTLY = '7.1.0-dev.20260930.4';
+
+/**
+ * @param {Record<string, any>} result
+ * @param {string} version
+ */
+function status_version(result, version) {
+	return result.typescriptStatus?.version === version
+		? undefined
+		: `expected the status to name TypeScript ${version}, got ${result.typescriptStatus?.version}`;
+}
+
+/**
+ * @param {Record<string, any>} result
+ * @param {string[]} actions
+ */
+function notice_actions(result, actions) {
+	const shown = result.notices?.[0]?.actions;
+	return JSON.stringify(shown) === JSON.stringify(actions)
+		? undefined
+		: `expected the notice to offer ${JSON.stringify(actions)}, got ${JSON.stringify(shown)}`;
+}
 
 /** @type {Scenario[]} */
 export const SCENARIOS = [
@@ -44,7 +76,9 @@ export const SCENARIOS = [
 		},
 		projectTypeScript: true,
 		expect: 'typescript-7',
+		typescript: 'typescript-7',
 		closingTag: '<b></b>',
+		check: (result) => status_version(result, PROJECT_NIGHTLY),
 	},
 	{
 		name: 'ts7-nightly-extension',
@@ -52,6 +86,7 @@ export const SCENARIOS = [
 		extensions: ['tsrx', 'ts7', 'ts7-nightly'],
 		settings: { 'js/ts.experimental.useTsgo': true },
 		expect: 'typescript-7',
+		typescript: 'typescript-7',
 		closingTag: '<b></b>',
 	},
 	{
@@ -61,6 +96,7 @@ export const SCENARIOS = [
 		extensions: ['tsrx', 'ts7', 'ts7-nightly'],
 		settings: { 'js/ts.experimental.useTsgo': true, 'tsrx.autoClosingTags.enabled': false },
 		expect: 'typescript-7',
+		typescript: 'typescript-7',
 		closingTag: '<b>',
 		gap: 'The TypeScript 7 extension does not close tags in `.tsrx` files (microsoft/TypeScript#64564): the closing tag comes from the TSRX extension (`tsrx.autoClosingTags.enabled`).',
 	},
@@ -71,20 +107,79 @@ export const SCENARIOS = [
 		settings: { 'js/ts.experimental.useTsgo': true },
 		projectTypeScript: true,
 		expect: 'nothing',
+		typescript: 'typescript-7-unsupported',
+		notice: 'typescript-7-unsupported',
 		closingTag: '<b></b>',
-		gap: "The TypeScript 7 extension's bundled compiler is the stable 7.0 line, which has no content-mapper protocol, and VS Code's own TypeScript stands down while TypeScript 7 is on. The project's 7.1 nightly is not used: the extension only discovers `node_modules/@typescript/native-preview`, not `node_modules/typescript`.",
+		gap: "The TypeScript 7 extension's bundled compiler is the stable 7.0 line, which has no content-mapper protocol, and VS Code's own TypeScript stands down while TypeScript 7 is on. The project's 7.1 nightly is not used: the extension only discovers `node_modules/@typescript/native-preview`, not `node_modules/typescript`. The TSRX extension's notice says so and offers the project's TypeScript.",
+		check: (result) =>
+			status_version(result, '7.0.2') ??
+			notice_actions(result, [
+				'Open Setting',
+				'Install TypeScript 7 Nightly',
+				'Turn Off TypeScript 7',
+			]),
+	},
+	{
+		name: 'ts7-bundled-open-setting',
+		description: "ts7-bundled, then the notice's Open Setting",
+		extensions: ['tsrx', 'ts7'],
+		settings: { 'js/ts.experimental.useTsgo': true },
+		projectTypeScript: true,
+		expect: 'nothing',
+		typescript: 'typescript-7-unsupported',
+		notice: 'typescript-7-unsupported',
+		action: 'open-tsdk-setting',
+		closingTag: '<b></b>',
+		check: (result) =>
+			result.afterAction?.activeTab === 'Settings'
+				? undefined
+				: `expected the Settings editor, got ${result.afterAction?.activeTab}`,
+	},
+	{
+		name: 'ts7-bundled-turn-off',
+		description: "ts7-bundled, then the notice's Turn Off TypeScript 7",
+		extensions: ['tsrx', 'ts7'],
+		settings: { 'js/ts.experimental.useTsgo': true },
+		projectTypeScript: true,
+		expect: 'nothing',
+		typescript: 'typescript-7-unsupported',
+		notice: 'typescript-7-unsupported',
+		action: 'turn-off-typescript-7',
+		closingTag: '<b></b>',
+		check: (result) =>
+			result.afterAction?.useTsgo?.user !== false
+				? `expected js/ts.experimental.useTsgo to be false, got ${JSON.stringify(result.afterAction?.useTsgo)}`
+				: result.afterAction?.typescriptStatus?.kind !== 'vscode'
+					? `expected the status vscode afterwards, got ${result.afterAction?.typescriptStatus?.kind}`
+					: /number/.test(result.afterAction?.hover ?? '')
+						? undefined
+						: `expected VS Code's TypeScript to serve the file afterwards, got the hover ${JSON.stringify(result.afterAction?.hover)}`,
 	},
 	{
 		name: 'ts7-first-run',
 		description: 'TypeScript 7 extension installed, no settings: its first start turns itself on',
 		extensions: ['tsrx', 'ts7'],
 		expect: 'nothing',
+		typescript: 'typescript-7-unsupported',
+		notice: 'typescript-7-unsupported',
 		closingTag: '<b></b>',
 		gap: 'Same as ts7-bundled: on its first start the TypeScript 7 extension sets `js/ts.experimental.useTsgo` to true in the user settings.',
 		check: (result) =>
-			result.useTsgoAtEnd?.user === true
-				? undefined
-				: 'expected the TypeScript 7 extension to turn `js/ts.experimental.useTsgo` on in the user settings',
+			result.useTsgoAtEnd?.user !== true
+				? 'expected the TypeScript 7 extension to turn `js/ts.experimental.useTsgo` on in the user settings'
+				: notice_actions(result, ['Install TypeScript 7 Nightly', 'Turn Off TypeScript 7']),
+	},
+	{
+		name: 'ts7-nightly-only',
+		description:
+			"Only the TypeScript 7 Nightly extension, TypeScript 7 on: it has no server, and VS Code's own TypeScript stands down",
+		extensions: ['tsrx', 'ts7-nightly'],
+		settings: { 'js/ts.experimental.useTsgo': true },
+		expect: 'nothing',
+		typescript: 'typescript-7-missing',
+		notice: 'typescript-7-missing',
+		closingTag: '<b></b>',
+		gap: "The TypeScript 7 Nightly extension only ships a compiler for the TypeScript 7 extension. The TSRX extension's notice offers to install it or turn TypeScript 7 off.",
 	},
 	{
 		name: 'ts7-off',
@@ -93,6 +188,7 @@ export const SCENARIOS = [
 		settings: { 'js/ts.experimental.useTsgo': false },
 		projectTypeScript: true,
 		expect: 'vscode-typescript',
+		typescript: 'vscode',
 		closingTag: '<b></b>',
 	},
 	{
@@ -100,6 +196,7 @@ export const SCENARIOS = [
 		description: 'TSRX extension only',
 		extensions: ['tsrx'],
 		expect: 'vscode-typescript',
+		typescript: 'vscode',
 		closingTag: '<b></b>',
 	},
 	{
@@ -109,6 +206,7 @@ export const SCENARIOS = [
 		extensions: ['tsrx'],
 		settings: { 'tsrx.autoClosingTags.enabled': false },
 		expect: 'vscode-typescript',
+		typescript: 'vscode',
 		closingTag: '<b></b>',
 	},
 	{
@@ -118,6 +216,7 @@ export const SCENARIOS = [
 		extensions: ['tsrx'],
 		settings: { 'js/ts.autoClosingTags.enabled': false },
 		expect: 'vscode-typescript',
+		typescript: 'vscode',
 		closingTag: '<b>',
 	},
 	{
@@ -127,6 +226,8 @@ export const SCENARIOS = [
 		extensions: ['tsrx'],
 		projectTypeScript: true,
 		expect: 'vscode-typescript',
+		typescript: 'vscode',
+		notice: 'install-typescript-7',
 		closingTag: '<b></b>',
 	},
 ];
