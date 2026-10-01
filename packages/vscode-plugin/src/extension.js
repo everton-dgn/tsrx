@@ -6,7 +6,8 @@
  *   `registerContentMappers` and runs the mapper each tsconfig.json declares.
  *
  * The TSRX language server runs alongside it in `plugin` mode for snippets, CSS,
- * document symbols, auto-closing tags, CSS-class navigation and keyword highlights.
+ * document symbols, CSS-class navigation and keyword highlights, and closes tags while
+ * TypeScript 7 does not (`closing-tags.js`).
  * It also reports compile errors; `diagnostics.js` removes that copy once the native
  * mapper reports for the file, and removes each one tsserver reports itself. This
  * extension neither loads TypeScript nor patches another extension, and has no
@@ -18,7 +19,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import protocol from '@volar/language-server/protocol';
 import * as lsp from 'vscode-languageclient/node';
-import { activateAutoInsertion, createLabsInfo } from '@volar/vscode';
+import { createLabsInfo } from '@volar/vscode';
+import { activate_closing_tags } from './closing-tags.js';
 import { CompileErrorDedupe } from './diagnostics.js';
 import { activate_typescript } from './typescript.js';
 
@@ -182,8 +184,7 @@ export async function activate(context) {
 		const volar_labs = createLabsInfo(protocol);
 		volar_labs.addLanguageClient(client);
 
-		context.subscriptions.push(activateAutoInsertion([{ language: 'tsrx' }], client));
-		console.log('[TSRX] Auto-insertion activated');
+		activate_closing_tags(context, client);
 
 		// Configure Prettier to handle .tsrx files. This sets Prettier as the default
 		// formatter for `[tsrx]`, so "Format Document" routes to it directly. We deliberately

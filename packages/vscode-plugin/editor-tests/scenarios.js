@@ -62,7 +62,7 @@ export const SCENARIOS = [
 		settings: { 'js/ts.experimental.useTsgo': true, 'tsrx.autoClosingTags.enabled': false },
 		expect: 'typescript-7',
 		closingTag: '<b>',
-		gap: 'TypeScript 7 does not close tags in `.tsrx` files: the closing tag comes from the TSRX extension (`tsrx.autoClosingTags.enabled`).',
+		gap: 'The TypeScript 7 extension does not close tags in `.tsrx` files (microsoft/TypeScript#64564): the closing tag comes from the TSRX extension (`tsrx.autoClosingTags.enabled`).',
 	},
 	{
 		name: 'ts7-bundled',
@@ -112,11 +112,11 @@ export const SCENARIOS = [
 		closingTag: '<b></b>',
 	},
 	{
-		name: 'vscode-typescript-all-closing-off',
+		name: 'vscode-typescript-closing-off',
 		description:
-			"TSRX extension only, TSRX's and VS Code's TypeScript closing tags off: the control for the scenario above",
+			"TSRX extension only, VS Code's TypeScript closing tags off: TSRX closes tags only for TypeScript 7, so nothing closes it",
 		extensions: ['tsrx'],
-		settings: { 'tsrx.autoClosingTags.enabled': false, 'js/ts.autoClosingTags.enabled': false },
+		settings: { 'js/ts.autoClosingTags.enabled': false },
 		expect: 'vscode-typescript',
 		closingTag: '<b>',
 	},

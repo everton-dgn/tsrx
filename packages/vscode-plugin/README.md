@@ -8,15 +8,16 @@ using the TSRX language server.
 VS Code's own TypeScript owns every TypeScript feature for `.tsrx` files: the
 extension never loads or bundles TypeScript and never patches another extension.
 It activates Microsoft's installed TypeScript extensions and lets them choose
-which server runs, without reading their selection settings or adding its own.
-Pick the TypeScript with the **TypeScript: Select TypeScript Version** picker as
-for any `.ts` file; the two rows below are what happens in each case. Only one
-TypeScript ever serves a file.
+which server runs, without adding a selection setting of its own; it reads theirs
+only to know whether it must close tags itself (below). Pick the TypeScript with
+the **TypeScript: Select TypeScript Version** picker as for any `.ts` file; the
+two rows below are what happens in each case. Only one TypeScript ever serves a
+file.
 
-| Backend   | How it works                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `classic` | TypeScript 7 off: VS Code's built-in TypeScript extension runs its tsserver (its own copy or the workspace version, 5.9 or 6) with `@tsrx/typescript-plugin`, which this extension contributes as a tsserver plugin (`typescriptServerPlugins`) and ships. VS Code manages `.tsrx` documents like `.ts` ones, so its commands and menus work on them and `.ts` importers resolve `.tsrx` modules with no tsconfig `plugins` entry. The TSRX language server adds TSRX compile errors, snippets, CSS in `<style>`, document symbols, auto-closing tags and CSS-class hover and definition. |
-| `native`  | TypeScript 7 on: the [TypeScript 7 extension](https://github.com/microsoft/TypeScript/tree/main/packages/vscode-typescript) owns every TypeScript feature for `.tsrx` files through [`@tsrx/content-mapper`](https://www.npmjs.com/package/@tsrx/content-mapper), declared in `tsconfig.json`, including TSRX compile errors. The TSRX language server serves the same TSRX-only features minus compile errors.                                                                                                                                                                           |
+| Backend   | How it works                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `classic` | TypeScript 7 off: VS Code's built-in TypeScript extension runs its tsserver (its own copy or the workspace version, 5.9 or 6) with `@tsrx/typescript-plugin`, which this extension contributes as a tsserver plugin (`typescriptServerPlugins`) and ships. VS Code manages `.tsrx` documents like `.ts` ones, so its commands and menus work on them and `.ts` importers resolve `.tsrx` modules with no tsconfig `plugins` entry. TypeScript closes tags (`js/ts.autoClosingTags.enabled`). The TSRX language server adds TSRX compile errors, snippets, CSS in `<style>`, document symbols and CSS-class hover and definition. |
+| `native`  | TypeScript 7 on: the [TypeScript 7 extension](https://github.com/microsoft/TypeScript/tree/main/packages/vscode-typescript) owns every TypeScript feature for `.tsrx` files through [`@tsrx/content-mapper`](https://www.npmjs.com/package/@tsrx/content-mapper), declared in `tsconfig.json`, including TSRX compile errors. The TSRX language server serves the same TSRX-only features minus compile errors, and closes tags.                                                                                                                                                                                                 |
 
 ### Native backend setup
 
@@ -74,6 +75,11 @@ TypeScript 7 serves them through the content mapper instead. Dismiss it with
 
 What differs from the classic backend:
 
+- Closing tags come from the TSRX language server
+  (`tsrx.autoClosingTags.enabled`): `tsc --lsp` can close tags in `.tsrx` files,
+  but the TypeScript 7 extension only asks it to in TypeScript and JavaScript
+  files (upstream microsoft/TypeScript#64564). On classic, VS Code's TypeScript
+  closes them.
 - TSRX compile errors are reported by TypeScript 7 with the `tsrx` source; on
   classic the TSRX language server reports them with the `TSRX` source.
 - Rename is limited to identifiers whose generated text matches the source
