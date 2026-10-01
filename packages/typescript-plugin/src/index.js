@@ -8,6 +8,10 @@ import {
 import { getTsrxLanguagePlugin } from './language.js';
 import { without_typescript_diagnostics_on_compile_error } from './plugin-diagnostics.js';
 import { with_jsx_closing_tags } from './plugin-jsx-closing-tag.js';
+import {
+	register_source_definition_command,
+	with_source_definition_project,
+} from './plugin-source-definition.js';
 
 /**
  * The Volar language each decorated language service maps through, for the
@@ -34,18 +38,11 @@ const plugin = (modules) => {
 		/** @param {import('typescript').server.PluginCreateInfo} info */
 		create(info) {
 			if (!isHasAlreadyDecoratedLanguageService(info)) {
-				const created = {
-					languagePlugins: [
-						getTsrxLanguagePlugin({
-							ts,
-							configFileName:
-								info.project.projectKind === ts.server.ProjectKind.Configured
-									? info.project.getProjectName()
-									: undefined,
-							configHost: ts.sys,
-						}),
-					],
-				};
+				const config_file_name =
+					info.project.projectKind === ts.server.ProjectKind.Configured
+						? info.project.getProjectName()
+						: undefined;
+				const created = decorate(ts, info, config_file_name);
 				projectExternalFileExtensions.set(
 					info.project,
 					created.languagePlugins.flatMap(
@@ -55,12 +52,15 @@ const plugin = (modules) => {
 							) ?? [],
 					),
 				);
-				const { proxy, initialize } = createProxyLanguageService(info.languageService);
-				info.languageService = proxy;
-				createLanguageCommon(created, ts, info, (language) => {
-					languages.set(proxy, language);
-					initialize(language);
+				// The helper project of Go to Source Definition reads `.tsrx` files the same
+				// way, with the host project's compiler.
+				with_source_definition_project(info.project, (helper) => {
+					const helper_info = { ...info, project: helper, languageServiceHost: helper };
+					helper_info.languageService = /** @type {any} */ (helper).languageService;
+					decorate(ts, helper_info, config_file_name);
+					/** @type {any} */ (helper).languageService = helper_info.languageService;
 				});
+				register_source_definition_command(info.session);
 			}
 			const decorated = info.languageService;
 			return with_jsx_closing_tags(without_typescript_diagnostics_on_compile_error(decorated), () =>
@@ -70,5 +70,27 @@ const plugin = (modules) => {
 		getExternalFiles: makeGetExternalFiles(ts),
 	};
 };
+
+/**
+ * Serve `.tsrx` files in the project of `info` through a Volar language: decorate its
+ * host, and replace `info.languageService` with a proxy that maps through it.
+ * @param {typeof import('typescript')} ts
+ * @param {import('typescript').server.PluginCreateInfo} info
+ * @param {string | undefined} config_file_name
+ */
+function decorate(ts, info, config_file_name) {
+	const created = {
+		languagePlugins: [
+			getTsrxLanguagePlugin({ ts, configFileName: config_file_name, configHost: ts.sys }),
+		],
+	};
+	const { proxy, initialize } = createProxyLanguageService(info.languageService);
+	info.languageService = proxy;
+	createLanguageCommon(created, ts, info, (language) => {
+		languages.set(proxy, language);
+		initialize(language);
+	});
+	return created;
+}
 
 export default plugin;
