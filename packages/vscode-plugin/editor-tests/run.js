@@ -426,6 +426,15 @@ export function Format() @{
 }
 `;
 
+/** What Format Selection on its `<button>` line must make of it: that line only. */
+const FORMATTED_RANGE = `import { useState } from "react";
+
+export function Format() @{
+      const [count,setCount]=useState(0);
+  <button onClick={() => setCount(count + 1)}>{count}</button>
+}
+`;
+
 /**
  * In every setup, the TSRX language server formats `.tsrx` files with the project's
  * Prettier and `@tsrx/prettier-plugin` (no Prettier extension installed), and it is the
@@ -436,9 +445,12 @@ function formatting_problem(result) {
 	if (result.formatting?.defaultFormatter !== 'TSRX.tsrx-vscode-plugin') {
 		return `expected TSRX to be the default .tsrx formatter, got ${JSON.stringify(result.formatting?.defaultFormatter)}`;
 	}
-	return result.formatting?.text === FORMATTED
+	if (result.formatting?.text !== FORMATTED) {
+		return `expected Format Document to give ${JSON.stringify(FORMATTED)}, got ${JSON.stringify(result.formatting?.text)}`;
+	}
+	return result.formatting?.rangeText === FORMATTED_RANGE
 		? undefined
-		: `expected Format Document to give ${JSON.stringify(FORMATTED)}, got ${JSON.stringify(result.formatting?.text)}`;
+		: `expected Format Selection to give ${JSON.stringify(FORMATTED_RANGE)}, got ${JSON.stringify(result.formatting?.rangeText)}`;
 }
 
 /**

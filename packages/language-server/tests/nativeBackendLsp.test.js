@@ -93,6 +93,7 @@ describe.each(/** @type {const} */ (['native', 'plugin', 'classic']))(
 			}
 			// Prettier formats .tsrx sources on every backend (formattingLsp.test.js).
 			expect(capabilities.documentFormattingProvider).toBe(true);
+			expect(capabilities.documentRangeFormattingProvider).toBe(true);
 		});
 
 		it('completes CSS values inside <style>', async () => {

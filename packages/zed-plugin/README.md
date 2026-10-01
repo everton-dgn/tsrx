@@ -78,6 +78,22 @@ The extension looks for the language server `@tsrx/language-server` in this orde
 Project-local installations (`node_modules/.bin/tsrx-language-server`) are also
 detected automatically.
 
+## Formatting
+
+The TSRX language server formats `.tsrx` files with your project's Prettier and
+`@tsrx/prettier-plugin` (see
+[Formatting](https://github.com/tsrx-org/tsrx/tree/main/packages/language-server#formatting)).
+Install both in the project:
+
+```sh
+npm install -D prettier @tsrx/prettier-plugin
+# or
+pnpm add -D prettier @tsrx/prettier-plugin
+```
+
+Zed's default `formatter` setting (`auto`) uses the language server for `.tsrx`
+files.
+
 ## TypeScript backends
 
 The TSRX language server hosts TypeScript 5 itself (the `classic` backend), so

@@ -91,6 +91,19 @@ export function App() @{
 		expect(await format_tsrx({ file_path, text: MESSY })).toEqual({ status: 'ignored' });
 	});
 
+	it('formats only the selected range (Format Selection, format on paste)', async () => {
+		const { file_path } = project();
+		const start = MESSY.indexOf('<button');
+		const end = MESSY.indexOf('\n', start);
+		expect(await format_tsrx({ file_path, text: MESSY, range: { start, end } })).toEqual({
+			status: 'formatted',
+			text: MESSY.replace(
+				'<button   onClick={() => setCount(count+1)}>{count}</button>',
+				'<button onClick={() => setCount(count + 1)}>{count}</button>',
+			),
+		});
+	});
+
 	it('reports a formatted file as unchanged', async () => {
 		const { file_path } = project();
 		const formatted = await format_tsrx({ file_path, text: MESSY, insert_spaces: false });

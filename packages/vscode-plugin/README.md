@@ -197,7 +197,8 @@ You do not need the Prettier extension.
    pnpm add -D prettier @tsrx/prettier-plugin
    ```
 
-2. Run **Format Document**, or turn on `editor.formatOnSave`.
+2. Run **Format Document** or **Format Selection**, or turn on
+   `editor.formatOnSave` or `editor.formatOnPaste`.
 
 TSRX is the default formatter for `.tsrx` files. Your Prettier config
 (`.prettierrc`), `.editorconfig` and `.prettierignore` apply, so VS Code gives the
@@ -207,6 +208,11 @@ add the plugin to your Prettier config:
 ```json
 { "plugins": ["@tsrx/prettier-plugin"] }
 ```
+
+**Format Document With…** also lists TypeScript for `.tsrx` files: TypeScript 7
+always, and VS Code's own TypeScript when `js/ts.format.enabled` is set. Neither
+can format `.tsrx` files
+([microsoft/TypeScript#64579](https://github.com/microsoft/TypeScript/issues/64579)).
 
 If a package is missing, TSRX shows a message with the install command, once per
 project. To turn formatting off, set `"tsrx.format.enable": false`.

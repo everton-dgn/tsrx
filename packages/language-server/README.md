@@ -98,8 +98,9 @@ server automatically.
 
 ## Formatting
 
-The server formats `.tsrx` files (`textDocument/formatting`) with the project's
-own `prettier` and
+The server formats `.tsrx` files (`textDocument/formatting`, and
+`textDocument/rangeFormatting` for a selection or a paste) with the project's own
+`prettier` and
 [`@tsrx/prettier-plugin`](https://github.com/tsrx-org/tsrx/tree/main/packages/prettier-plugin),
 on every backend.
 
@@ -111,7 +112,8 @@ on every backend.
    pnpm add -D prettier @tsrx/prettier-plugin
    ```
 
-2. Run your editor's format command, or turn on format on save.
+2. Run your editor's format command (whole file or selection), or turn on format
+   on save or on paste.
 
 How it formats:
 

@@ -1,5 +1,5 @@
 // Types only: the LSP types `@volar/language-server` re-exports from vscode-languageserver.
-/** @import { Connection, DocumentFormattingParams, TextEdit } from '@volar/language-server/node' */
+/** @import { Connection, DocumentFormattingParams, DocumentRangeFormattingParams, TextEdit } from '@volar/language-server/node' */
 /** @import { FormatResult } from './formatting.js' */
 
 import fs from 'node:fs';
@@ -8,7 +8,8 @@ import { URI } from 'vscode-uri';
 import { MINIMUM_PRETTIER_VERSION, PRETTIER_PLUGIN, find_up, format_tsrx } from './formatting.js';
 
 /**
- * Answer `textDocument/formatting` for `.tsrx` files with `format_tsrx`, on the
+ * Answer `textDocument/formatting` and `textDocument/rangeFormatting` (Format
+ * Selection, format on paste) for `.tsrx` files with `format_tsrx`, on the
  * plain LSP connection: Volar only formats generated code, never the `.tsrx`
  * source, and its TypeScript and CSS formatters stay off (`stripDocumentFormatting`
  * in `servicePlugins.js`), so this is the server's only formatter.
@@ -19,24 +20,37 @@ import { MINIMUM_PRETTIER_VERSION, PRETTIER_PLUGIN, find_up, format_tsrx } from 
  * failure on every save. A file Prettier cannot parse, which is common while
  * typing, is only logged. `tsrx.format.enable: false` turns formatting off.
  * @param {Connection} connection
- * @param {(uri: string) => { getText(): string, positionAt(offset: number): { line: number, character: number } } | undefined} get_document
+ * @param {(uri: string) => {
+ * 	getText(): string,
+ * 	positionAt(offset: number): { line: number, character: number },
+ * 	offsetAt(position: { line: number, character: number }): number,
+ * } | undefined} get_document
  */
 export function register_formatting(connection, get_document) {
 	/** Projects that were already told what formatting needs. */
 	const told = new Set();
 
-	connection.onDocumentFormatting(async (/** @type {DocumentFormattingParams} */ params) => {
+	/**
+	 * @param {DocumentFormattingParams | DocumentRangeFormattingParams} params
+	 * @returns {Promise<TextEdit[] | null>}
+	 */
+	async function format(params) {
 		const document = get_document(params.textDocument.uri);
 		const uri = URI.parse(params.textDocument.uri);
 		if (!document || uri.scheme !== 'file') return null;
 		if (!(await formatting_enabled(connection, params.textDocument.uri))) return null;
 
+		const range =
+			'range' in params
+				? { start: document.offsetAt(params.range.start), end: document.offsetAt(params.range.end) }
+				: undefined;
 		const text = document.getText();
 		const result = await format_tsrx({
 			file_path: uri.fsPath,
 			text,
 			tab_size: params.options.tabSize,
 			insert_spaces: params.options.insertSpaces,
+			range,
 		});
 		if (result.status === 'formatted') {
 			/** @type {TextEdit[]} */
@@ -65,7 +79,11 @@ export function register_formatting(connection, get_document) {
 			}
 		}
 		return result.status === 'unchanged' || result.status === 'ignored' ? [] : null;
-	});
+	}
+
+	connection.onDocumentFormatting(format);
+	// Format Selection and format on paste.
+	connection.onDocumentRangeFormatting(format);
 }
 
 /**

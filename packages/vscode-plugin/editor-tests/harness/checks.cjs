@@ -73,6 +73,25 @@ function hover_on_count(document, timeout_ms) {
 	return poll_hover(document, (text) => text.indexOf('{count}') + 1, /number/, timeout_ms);
 }
 
+/**
+ * The text of `document` with `edits` applied to a copy: a changed document would make
+ * VS Code ask to save it when the instance closes, and that dialog brings the hidden
+ * window to the front.
+ * @param {vscode.TextDocument} document
+ * @param {vscode.TextEdit[] | undefined} edits
+ */
+function applied(document, edits) {
+	let text = document.getText();
+	const offset = (/** @type {vscode.Position} */ position) => document.offsetAt(position);
+	for (const edit of [...(edits ?? [])].sort(
+		(a, b) => offset(b.range.start) - offset(a.range.start),
+	)) {
+		text =
+			text.slice(0, offset(edit.range.start)) + edit.newText + text.slice(offset(edit.range.end));
+	}
+	return text;
+}
+
 /** @param {vscode.Uri} uri */
 function diagnostics_of(uri) {
 	return vscode.languages.getDiagnostics(uri).map((diagnostic) => ({
@@ -255,25 +274,28 @@ export function Format() @{
 			30000,
 			undefined,
 		);
-		// The edits are applied to a copy of the text, not to the document: a changed
-		// document makes VS Code ask to save it when the instance closes, and that dialog
-		// brings the hidden window to the front.
-		let formatted = format_document.getText();
-		const by_offset = (/** @type {vscode.Position} */ position) =>
-			format_document.offsetAt(position);
-		for (const edit of [...(format_edits ?? [])].sort(
-			(a, b) => by_offset(b.range.start) - by_offset(a.range.start),
-		)) {
-			formatted =
-				formatted.slice(0, by_offset(edit.range.start)) +
-				edit.newText +
-				formatted.slice(by_offset(edit.range.end));
-		}
+		// Format Selection on the <button> line, with the range formatter.
+		const button_line = format_document
+			.getText()
+			.split('\n')
+			.findIndex((line) => line.includes('<button'));
+		/** @type {vscode.TextEdit[] | undefined} */
+		const range_edits = await within(
+			vscode.commands.executeCommand(
+				'vscode.executeFormatRangeProvider',
+				format_document.uri,
+				new vscode.Range(button_line, 0, button_line + 1, 0),
+				{ tabSize: 2, insertSpaces: false },
+			),
+			30000,
+			undefined,
+		);
 		result.formatting = {
 			defaultFormatter: vscode.workspace
 				.getConfiguration('editor', { languageId: 'tsrx' })
 				.get('defaultFormatter'),
-			text: formatted,
+			text: applied(format_document, format_edits),
+			rangeText: applied(format_document, range_edits),
 		};
 
 		// TSRX's Go to Source Definition on `useState`: the file it opens.

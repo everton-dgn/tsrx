@@ -266,7 +266,7 @@ export function createTsrxLanguageServer(options = {}) {
 }
 
 /**
- * Advertise the formatter `register_formatting` serves; no Volar service plugin
+ * Advertise the formatters `register_formatting` serves (whole document and range); no Volar service plugin
  * advertises one (`stripDocumentFormatting`).
  * @template {import('@volar/language-server/node').InitializeResult} T
  * @param {T} initResult
@@ -274,5 +274,6 @@ export function createTsrxLanguageServer(options = {}) {
  */
 function with_formatting(initResult) {
 	initResult.capabilities.documentFormattingProvider = true;
+	initResult.capabilities.documentRangeFormattingProvider = true;
 	return initResult;
 }

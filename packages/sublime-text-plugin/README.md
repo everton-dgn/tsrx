@@ -79,6 +79,34 @@ Verified in this repository: the native server's behaviour for `.tsrx` files
 (`packages/content-mapper/tests/native-lsp.test.js`) and the TSRX server's backend
 flag. The Sublime client configuration above is not covered by automated tests.
 
+## Formatting
+
+The TSRX language server formats `.tsrx` files with your project's Prettier and
+`@tsrx/prettier-plugin` (see
+[Formatting](https://github.com/tsrx-org/tsrx/tree/main/packages/language-server#formatting)).
+Install both in the project:
+
+```sh
+npm install -D prettier @tsrx/prettier-plugin
+# or
+pnpm add -D prettier @tsrx/prettier-plugin
+```
+
+Then run **LSP: Format File** or **LSP: Format Selection**. With the native
+backend, the `tsc` client from step 2 also offers a formatter for `.tsrx` files,
+which does nothing
+([microsoft/TypeScript#64579](https://github.com/microsoft/TypeScript/issues/64579)).
+If formatting a `.tsrx` file changes nothing, LSP asked that client. If you do not
+format TypeScript files with `tsc` either, turn its formatting off in its client
+configuration:
+
+```jsonc
+"disabled_capabilities": {
+  "documentFormattingProvider": true,
+  "documentRangeFormattingProvider": true,
+},
+```
+
 ## Build
 
 ```sh

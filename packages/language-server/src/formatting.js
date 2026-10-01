@@ -48,10 +48,17 @@ export const MINIMUM_PRETTIER_VERSION = '3.6.0';
  */
 
 /**
- * @param {{ file_path: string, text: string, tab_size?: number, insert_spaces?: boolean }} options
+ * @param {{
+ * 	file_path: string,
+ * 	text: string,
+ * 	tab_size?: number,
+ * 	insert_spaces?: boolean,
+ * 	range?: { start: number, end: number },
+ * }} options `range`: format only the code these offsets cover (Format Selection,
+ *   format on paste), as Prettier's `rangeStart` and `rangeEnd` do.
  * @returns {Promise<FormatResult>}
  */
-export async function format_tsrx({ file_path, text, tab_size = 2, insert_spaces = true }) {
+export async function format_tsrx({ file_path, text, tab_size = 2, insert_spaces = true, range }) {
 	const prettier_entry = resolve(file_path, 'prettier');
 	const plugin_entry = resolve(file_path, PRETTIER_PLUGIN);
 	const missing = [
@@ -88,6 +95,7 @@ export async function format_tsrx({ file_path, text, tab_size = 2, insert_spaces
 			filepath: file_path,
 			parser: 'tsrx',
 			plugins,
+			...(range ? { rangeStart: range.start, rangeEnd: range.end } : {}),
 		});
 		return formatted === text ? { status: 'unchanged' } : { status: 'formatted', text: formatted };
 	} catch (error) {

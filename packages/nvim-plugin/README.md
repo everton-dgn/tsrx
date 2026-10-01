@@ -27,6 +27,28 @@ The plugin uses a project-local or global `tsrx-language-server` when available.
 Otherwise, it installs the exact `@tsrx/language-server` version pinned in this
 package's `config` field.
 
+## Formatting
+
+The TSRX language server formats `.tsrx` files with your project's Prettier and
+`@tsrx/prettier-plugin` (see
+[Formatting](https://github.com/tsrx-org/tsrx/tree/main/packages/language-server#formatting)).
+Install both in the project:
+
+```sh
+npm install -D prettier @tsrx/prettier-plugin
+# or
+pnpm add -D prettier @tsrx/prettier-plugin
+```
+
+Then format with `vim.lsp.buf.format()`. With the native backend, TypeScript 7's
+`tsc` client also offers a formatter for `.tsrx` files, which does nothing
+([microsoft/TypeScript#64579](https://github.com/microsoft/TypeScript/issues/64579)).
+To ask only the TSRX server:
+
+```lua
+vim.lsp.buf.format({ name = "tsrx" })
+```
+
 ## TypeScript backends
 
 By default the TSRX language server hosts TypeScript 5 itself (the `classic`
