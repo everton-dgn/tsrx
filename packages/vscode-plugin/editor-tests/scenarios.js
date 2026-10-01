@@ -103,6 +103,24 @@ export const SCENARIOS = [
 		closingTag: '<b></b>',
 	},
 	{
+		name: 'vscode-typescript-tsrx-closing-off',
+		description:
+			"TSRX extension only, TSRX's own closing tags off: VS Code's TypeScript closes the tag through the tsserver plugin",
+		extensions: ['tsrx'],
+		settings: { 'tsrx.autoClosingTags.enabled': false },
+		expect: 'vscode-typescript',
+		closingTag: '<b></b>',
+	},
+	{
+		name: 'vscode-typescript-all-closing-off',
+		description:
+			"TSRX extension only, TSRX's and VS Code's TypeScript closing tags off: the control for the scenario above",
+		extensions: ['tsrx'],
+		settings: { 'tsrx.autoClosingTags.enabled': false, 'js/ts.autoClosingTags.enabled': false },
+		expect: 'vscode-typescript',
+		closingTag: '<b>',
+	},
+	{
 		name: 'vscode-typescript-project-ts7',
 		description:
 			'TSRX extension only, project has the TypeScript 7.1 nightly: VS Code cannot run it, so its bundled TypeScript serves',
