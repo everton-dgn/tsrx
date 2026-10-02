@@ -6,6 +6,44 @@ The goal is Prettier's output wherever TSRX is TSX, so TSRX only differs where i
 syntax does: `@{ … }` blocks, `@if`/`@for`/`@switch`/`@try`, `{value}` shorthand
 props, `<style>`/`<script>` bodies, and comments between JSX children.
 
+## Usage
+
+1. Install Prettier and the plugin as dev dependencies:
+
+   ```sh
+   npm install -D prettier @tsrx/prettier-plugin
+   # or
+   pnpm add -D prettier @tsrx/prettier-plugin
+   ```
+
+2. Add the plugin to your Prettier config, for example `.prettierrc`:
+
+   ```json
+   { "plugins": ["@tsrx/prettier-plugin"] }
+   ```
+
+3. Format with Prettier:
+
+   ```sh
+   npx prettier --write "src/**/*.tsrx"
+   # or
+   pnpm exec prettier --write "src/**/*.tsrx"
+   ```
+
+### In your editor
+
+The
+[TSRX language server](https://github.com/tsrx-org/tsrx/tree/main/packages/language-server#formatting)
+formats `.tsrx` files with your project's Prettier and this plugin. The
+[TSRX Syntax for VS Code](https://github.com/tsrx-org/tsrx/tree/main/packages/vscode-plugin#formatting)
+extension uses it, and so does any editor that formats through the language
+server. You do not need the Prettier extension for VS Code.
+
+The language server adds the plugin itself, so a `.tsrx` file formats in the
+editor even when your Prettier config does not list the plugin. The `prettier`
+command does not do this: for the command line, keep the plugin in your Prettier
+config (step 2).
+
 ## How it works
 
 - **Parser** (`src/parse.js`) parses with `@tsrx/core` in `collect` mode, so

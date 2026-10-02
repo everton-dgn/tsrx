@@ -7,17 +7,18 @@
     "dev": "vite --host",
     "build": "vite build",
     "preview": "vite preview --host",
-    "typecheck": "tsrx-tsc --noEmit"
+    "typecheck": "tsc --runExternalCode --noEmit"
   },
   "dependencies": {
     "hono": "^4.13.7"
   },
   "devDependencies": {
     "@tsrx/hono": "workspace:*",
+    "@tsrx/content-mapper": "workspace:*",
     "@tsrx/language-server": "workspace:*",
     "@tsrx/typescript-plugin": "workspace:*",
     "@tsrx/vite-plugin-hono": "workspace:*",
-    "typescript": "catalog:default",
+    "typescript": "catalog:native",
     "vite": "catalog:default"
   }
 }

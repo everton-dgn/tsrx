@@ -19,5 +19,6 @@
   "tsrx": {
     "compiler": "@tsrx/hono/dom"
   },
+  "contentMappers": [{ "package": "@tsrx/content-mapper", "extensions": [".tsrx"] }],
   "include": ["src/**/*"]
 }

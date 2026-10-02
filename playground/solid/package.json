@@ -7,7 +7,7 @@
     "dev": "vite --host",
     "build": "vite build",
     "preview": "vite preview --host",
-    "typecheck": "tsrx-tsc --noEmit",
+    "typecheck": "tsc --runExternalCode --noEmit",
     "debug-all": "node ../../scripts/debug-mode.js all @tsrx/solid",
     "debug-client": "node ../../scripts/debug-mode.js client @tsrx/solid",
     "debug-volar": "node ../../scripts/debug-mode.js tsx @tsrx/solid",
@@ -18,11 +18,12 @@
     "solid-js": "catalog:default"
   },
   "devDependencies": {
+    "@tsrx/content-mapper": "workspace:*",
     "@tsrx/language-server": "workspace:*",
     "@tsrx/typescript-plugin": "workspace:*",
     "@tsrx/solid": "workspace:*",
     "@tsrx/vite-plugin-solid": "workspace:*",
-    "typescript": "catalog:default",
+    "typescript": "catalog:native",
     "vite": "catalog:default",
     "vite-plugin-solid": "3.0.0-next.5"
   }

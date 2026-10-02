@@ -20,7 +20,7 @@
     }
   },
   "scripts": {
-    "typecheck:tests": "tsrx-tsc --noEmit -p tests/tsconfig.json"
+    "typecheck:tests": "tsc --runExternalCode --noEmit -p tests/tsconfig.json"
   },
   "dependencies": {
     "@tsrx/core": "workspace:*",
@@ -30,9 +30,9 @@
     "vite": "^8.0.0"
   },
   "devDependencies": {
-    "@tsrx/typescript-plugin": "workspace:*",
+    "@tsrx/content-mapper": "workspace:*",
     "hono": "^4.13.7",
-    "typescript": "catalog:default",
+    "typescript": "catalog:native",
     "vite": "catalog:default"
   },
   "files": [

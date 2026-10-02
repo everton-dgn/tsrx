@@ -1,0 +1,13 @@
+{
+  "name": "tsrx-editor-test-react",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tsrx/react": "*",
+    "react": "*"
+  },
+  "devDependencies": {
+    "@tsrx/content-mapper": "*",
+    "@types/react": "*"
+  }
+}

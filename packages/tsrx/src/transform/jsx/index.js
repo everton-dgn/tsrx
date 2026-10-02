@@ -3213,6 +3213,11 @@ function to_jsx_element(
 				),
 				authored_closing,
 			);
+		} else if (transform_context.typeOnly && node.unclosed) {
+			// A tag recovered as unclosed stays unclosed in the type-only output,
+			// as authored: TypeScript then reports it (TS17008) like a half-typed
+			// `.tsx` file, and its closing-tag completion finds the open tag.
+			closingElement = null;
 		} else {
 			// Recovered unclosed tags have no authored close. Map the synthesized
 			// name to the opening name token so rename/hover land on `span`, not

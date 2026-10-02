@@ -48,4 +48,4 @@ example, Ripple-specific `track()` placement and DOM event guidance should be
 provided by Ripple-owned tooling rather than applied to every TSRX target.
 
 See the [TSRX documentation](https://tsrx.dev/) and
-[`@tsrx/eslint-parser`](../eslint-parser/README.md).
+[`@tsrx/eslint-parser`](https://github.com/tsrx-org/tsrx/tree/main/packages/eslint-parser).

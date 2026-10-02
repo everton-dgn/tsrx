@@ -44,6 +44,86 @@ function imports_of(url) {
 }
 
 /**
+ * What in the module at `url` runs when it loads, as written: a top-level
+ * statement that declares nothing, or, outside a function body, a property read,
+ * a `new`, a tagged template, or a call to anything but a function marked
+ * `@__NO_SIDE_EFFECTS__`.
+ * A bundler has to keep such code, and everything it reads.
+ * @param {URL} url
+ * @returns {string[]}
+ */
+function load_time_code_of(url) {
+	const source = readFileSync(url, 'utf8');
+	/** @type {Array<{ value: string, end: number }>} */
+	const comments = [];
+	const program = parse(source, {
+		ecmaVersion: 'latest',
+		sourceType: 'module',
+		onComment: (block, value, start, end) => {
+			if (block) comments.push({ value, end });
+		},
+	});
+	/** @param {any} node */
+	const marked = (node) =>
+		comments.some(
+			(comment) =>
+				/^\s*[@#]__NO_SIDE_EFFECTS__\s*$/.test(comment.value) &&
+				comment.end <= node.start &&
+				source.slice(comment.end, node.start).trim() === '',
+		);
+	/** The functions marked `@__NO_SIDE_EFFECTS__`, which a bundler may drop a call to. */
+	const pure_functions = new Set(
+		program.body
+			.filter((statement) => statement.type === 'FunctionDeclaration' && marked(statement))
+			.map((statement) => /** @type {any} */ (statement).id.name),
+	);
+	/** @param {any} node */
+	const pure = (node) => node.callee.type === 'Identifier' && pure_functions.has(node.callee.name);
+	/** @type {string[]} */
+	const found = [];
+	/** @param {any} node */
+	const visit = (node) => {
+		if (Array.isArray(node)) {
+			node.forEach(visit);
+			return;
+		}
+		if (!node || typeof node.type !== 'string') return;
+		if (
+			node.type === 'FunctionDeclaration' ||
+			node.type === 'FunctionExpression' ||
+			node.type === 'ArrowFunctionExpression'
+		) {
+			return;
+		}
+		if (
+			node.type === 'MemberExpression' ||
+			node.type === 'NewExpression' ||
+			node.type === 'TaggedTemplateExpression' ||
+			(node.type === 'CallExpression' && !pure(node))
+		) {
+			found.push(source.slice(node.start, node.end).split('\n')[0]);
+			return;
+		}
+		for (const [key, value] of Object.entries(node)) {
+			if (key !== 'callee' && value && typeof value === 'object') visit(value);
+		}
+	};
+	for (const statement of program.body) {
+		const declaration =
+			statement.type === 'ExportNamedDeclaration' ? statement.declaration : statement;
+		if (
+			declaration?.type === 'VariableDeclaration' ||
+			declaration?.type === 'FunctionDeclaration'
+		) {
+			visit(declaration);
+		} else {
+			found.push(source.slice(statement.start, statement.end).split('\n')[0]);
+		}
+	}
+	return found;
+}
+
+/**
  * The codes of the errors that parsing `source`, strictly and when collecting,
  * and analyzing it report.
  * @param {string} source
@@ -501,5 +581,11 @@ let E;`,
 		expect(imports_of(new URL('../../src/index.js', import.meta.url))).toContain(
 			"export { DIAGNOSTIC_CODES, TS_ERRORS, TSRX_ERRORS } from './diagnostics.js';",
 		);
+	});
+
+	it('are in a module where nothing runs on load, so a bundle keeps only the tables it reads', () => {
+		expect(load_time_code_of(new URL('../../src/diagnostics.js', import.meta.url))).toEqual([]);
+		// The check finds what runs on load in a module that has it.
+		expect(load_time_code_of(new URL('../../src/index.js', import.meta.url))).not.toEqual([]);
 	});
 });

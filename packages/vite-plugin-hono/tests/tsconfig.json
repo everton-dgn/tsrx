@@ -8,6 +8,7 @@
   "tsrx": {
     "compiler": "@tsrx/hono/dom"
   },
+  "contentMappers": [{ "package": "@tsrx/content-mapper", "extensions": [".tsrx"] }],
   "include": ["runtime.test.tsrx"],
   // Override the parent exclusion of this folder.
   "exclude": []

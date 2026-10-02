@@ -8,6 +8,8 @@ Run the server over stdio:
 
 ```bash
 npx -y @tsrx/mcp
+# or
+pnpm dlx @tsrx/mcp
 ```
 
 Generic MCP client config:

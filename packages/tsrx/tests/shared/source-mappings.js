@@ -665,7 +665,7 @@ function App({ tag }: { tag: string }) @{
 
 			expect(mapping?.data.completion).toBe(true);
 		});
-		it('maps recovered unclosed tags without an off-by-one close name', () => {
+		it('keeps a recovered unclosed tag unclosed and mapped from its own `<`', () => {
 			const source = `export function App() @{
 	<>
 		<span>
@@ -679,7 +679,9 @@ function App({ tag }: { tag: string }) @{
 			const generated_close = result.code.lastIndexOf('</span>');
 
 			expect(generated_open).toBeGreaterThan(-1);
-			expect(generated_close).toBeGreaterThan(generated_open);
+			// No synthesized `</span>`: TypeScript sees the tag as authored (TS17008,
+			// and its closing-tag completion can offer `</span>`).
+			expect(generated_close).toBe(-1);
 
 			/** @param {CodeMapping | undefined} entry */
 			const mapped_source = function (entry) {
@@ -754,6 +756,32 @@ function App({ tag }: { tag: string }) @{
 
 			expect(css_mapping).toBeDefined();
 			expect(css_mapping?.data.customData.embeddedId).toMatch(/^style-/);
+		});
+		it('exposes a <script> body of code as a region, and not a data block (#846)', () => {
+			const source = `export function App(props: { type: string }) @{
+	<>
+		<script>const plain = 1;</script>
+		<script type="module">const module_script = 1;</script>
+		<script type=" TEXT/JavaScript ">const mime = 1;</script>
+		<script type="text/typescript">const typed: number = 1;</script>
+		<script type={props.type}>const dynamic = 1;</script>
+		<script type="application/json">{ "json": 1 }</script>
+		<script type="importmap">{ "imports": { "x": "./x.js" } }</script>
+		<script type="text/template"><p>template</p></script>
+		<script type="text/javascript; charset=utf-8">const parameters = 1;</script>
+	</>
+}`;
+			// HTML runs no script whose type has parameters: 'text/javascript; charset=utf-8'
+			// is not a JavaScript MIME type essence match, so the browser leaves it as data.
+			const result = compile_to_volar_mappings(source, 'App.tsrx', { loose: true });
+			expect(result.errors).toEqual([]);
+			expect(result.scriptMappings.map((mapping) => mapping.data.customData.content)).toEqual([
+				'const plain = 1;',
+				'const module_script = 1;',
+				'const mime = 1;',
+				'const typed: number = 1;',
+				'const dynamic = 1;',
+			]);
 		});
 		it('exposes style blocks, scripts and scoped classes inside attribute values', () => {
 			// The compiler scopes elements in an attribute value too

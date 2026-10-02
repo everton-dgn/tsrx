@@ -10,7 +10,9 @@ TSRX language support for compatible IntelliJ-based IDEs.
   including TSRX template blocks, JavaScript delimiters, JSX tags, fragments, and
   embedded expressions
 - Diagnostics, completion, navigation, and formatting through
-  `@tsrx/language-server` when the IDE exposes JetBrains' LSP module
+  `@tsrx/language-server` when the IDE exposes JetBrains' LSP module. Formatting
+  needs `prettier` and `@tsrx/prettier-plugin` in the project (see
+  [Formatting](https://github.com/tsrx-org/tsrx/tree/main/packages/language-server#formatting))
 
 ## Requirements
 
@@ -60,6 +62,40 @@ The plugin looks for the TSRX language server in this order:
 Automatic resolution and installation run only for trusted projects. Syntax
 highlighting remains available when npm or the network is unavailable; the IDE
 shows an actionable notification instead of repeatedly starting a broken server.
+
+## TypeScript backends
+
+`@tsrx/language-server` runs with its default `classic` backend: it hosts
+TypeScript 5 itself and serves every feature for `.tsrx` files. The IDE's own
+TypeScript service is not involved with `.tsrx` files.
+
+### What goes in tsconfig.json
+
+- **TypeScript 5.9 or 6** (classic backend): install `@tsrx/typescript-plugin` and
+  add `{ "name": "@tsrx/typescript-plugin" }` to `compilerOptions.plugins`. The
+  IDE's TypeScript service (tsserver based) loads the plugin from there, next to
+  the workspace `typescript` package it runs, so `.ts` files that import `.tsrx`
+  modules resolve them. The TSRX language server needs nothing: it serves the
+  `.tsrx` files themselves. Whether the IDE's service honours the entry is not
+  covered by automated tests in this repository.
+- **TypeScript 7** (native backend): declare `@tsrx/content-mapper` under
+  `contentMappers` instead; TypeScript 7 ignores `plugins`. Both entries can sit
+  in one tsconfig, since TypeScript 5 and 6 ignore `contentMappers`.
+- VS Code alone needs no `plugins` entry: its extension hands the plugin to VS
+  Code's own tsserver.
+
+TypeScript 7 support for `.tsrx` files is not complete yet. The gaps and the
+upstream TypeScript issues behind them are tracked in
+[tsrx-org/tsrx#136](https://github.com/tsrx-org/tsrx/issues/136); if you run into
+one that is not listed there, please file a new issue.
+
+The server's `native` backend (TypeScript 7 owning TypeScript features through
+`@tsrx/content-mapper`, see
+[`@tsrx/language-server`](https://github.com/tsrx-org/tsrx/tree/main/packages/language-server))
+requires a client that runs TypeScript 7's language server with
+`initializationOptions.runExternalCode: true` for `.tsrx` files. JetBrains IDEs do
+not expose TypeScript 7's language server for that today, so this plugin always
+starts the classic backend.
 
 ## Development and release
 

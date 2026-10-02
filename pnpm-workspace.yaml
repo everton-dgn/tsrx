@@ -11,6 +11,16 @@ minimumReleaseAgeExclude:
   - '@tsrx/ripple@0.2.0'
   - '@tsrx/runtime@0.2.0'
   - ripple@0.4.0
+  # The TypeScript 7.1 nightly of the `native` catalog (ts_native below) and its
+  # platform binaries, newer than the release-age policy. Keep in step with ts_native.
+  - typescript@7.1.0-dev.20260930.4
+  - '@typescript/typescript-darwin-arm64@7.1.0-dev.20260930.4'
+  - '@typescript/typescript-darwin-x64@7.1.0-dev.20260930.4'
+  - '@typescript/typescript-linux-arm@7.1.0-dev.20260930.4'
+  - '@typescript/typescript-linux-arm64@7.1.0-dev.20260930.4'
+  - '@typescript/typescript-linux-x64@7.1.0-dev.20260930.4'
+  - '@typescript/typescript-win32-arm64@7.1.0-dev.20260930.4'
+  - '@typescript/typescript-win32-x64@7.1.0-dev.20260930.4'
 minimumReleaseAgeIgnoreMissingTime: true
 minimumReleaseAgeStrict: false
 trustPolicy: no-downgrade
@@ -32,6 +42,17 @@ allowBuilds:
 # variables used in the catalog
 prettier_common: &prettier_common ^3.9.9
 ts_common: &ts_common ^5.9.3
+# The TypeScript 7.1 nightly the repository runs `tsc` from (the root `typescript`,
+# `pnpm typecheck`, the content-mapper tests): the `native` catalog. Its
+# minimumReleaseAgeExclude entries above name the same version.
+ts_native: &ts_native 7.1.0-dev.20260930.4
+# The typescript versions TSRX's tooling supports, the `typescript` peer range of
+# @tsrx/typescript-plugin and @tsrx/language-server (see
+# packages/typescript-plugin/src/typescript-version.js): 5.9 and 6, whose JavaScript
+# API the tsserver plugin, `tsrx-tsc` and the classic server run on, and TypeScript
+# 7 from the oldest 7.1 nightly the native path supports, which `tsrx-tsc` and the
+# server's native backend run without that API.
+ts_supported: &ts_supported ^5.9.3 || ^6.0.0 || ^7.1.0-dev.20260923.1
 ts_eslint_parser: &ts_eslint_parser ^8.56.1
 esrap_common: &esrap_common ^2.3.2
 
@@ -57,6 +78,30 @@ overrides:
   babel-preset-solid: '2.0.0-rc.2'
   babel-plugin-jsx-dom-expressions: '0.50.0-next.14'
 
+packageExtensions:
+  # These declaration files import types from `typescript` without declaring it,
+  # so they resolved the repository root's `typescript`, which is the TypeScript 7
+  # launcher (no type declarations). As an optional peer, `typescript` comes from
+  # the package that depends on them instead.
+  '@typescript-eslint/types': &optional_typescript_peer
+    peerDependencies:
+      typescript: '*'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+  '@volar/language-server': *optional_typescript_peer
+  '@volar/language-service': *optional_typescript_peer
+  '@volar/typescript': *optional_typescript_peer
+  'volar-service-typescript': *optional_typescript_peer
+  # It imports `vite` without declaring it, so it took whichever Vite pnpm hoists,
+  # a second copy beside the website's own (TS2320 in rolldown's types).
+  '@ripple-ts/vite-plugin':
+    peerDependencies:
+      vite: '*'
+    peerDependenciesMeta:
+      vite:
+        optional: true
+
 catalogs:
   default:
     '@babel/core': ^7.29.0
@@ -69,6 +114,8 @@ catalogs:
     '@ripple-ts/adapter-node': ^0.4.0
     '@ripple-ts/vite-plugin': ^0.4.0
     '@rollup/pluginutils': ^5.3.0
+    resolve-pkg-maps: ^1.0.0
+    jsonc-parser: ^3.3.1
     '@sveltejs/acorn-typescript': ^1.0.13
     '@solidjs/web': '2.0.0-rc.3'
     '@tailwindcss/vite': ^4.1.12
@@ -128,7 +175,7 @@ catalogs:
     shiki: 4.0.1
     solid-js: '2.0.0-rc.3'
     source-map: ^0.7.6
-    tsdown: ^0.22.0
+    tsdown: ^0.23.0
     tsup: ^8.3.5
     type-fest: ^5.6.0
     typescript: *ts_common
@@ -147,11 +194,11 @@ catalogs:
     wait-on: ^9.0.10
     zod: ^4.3.6
     zimmerframe: ^1.1.2
+  native:
+    typescript: *ts_native
   peer:
     '@typescript-eslint/parser': *ts_eslint_parser
     eslint: '>=9.0.0'
     prettier: '>=2.0.0'
     tailwindcss: ^4.1.12
-    typescript: *ts_common
-  vscode:
-    typescript: *ts_common
+    typescript: *ts_supported
