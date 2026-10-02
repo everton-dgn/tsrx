@@ -61,6 +61,11 @@
   "peerDependencies": {
     "typescript": "catalog:peer"
   },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
+  },
   "publishConfig": {
     "access": "public"
   }
