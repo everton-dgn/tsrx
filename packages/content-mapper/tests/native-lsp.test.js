@@ -400,23 +400,41 @@ describe('native language server on a configured project', () => {
 		},
 	);
 
-	it.each(['source.organizeImports', 'source.sortImports', 'source.removeUnusedImports'])(
-		'returns no %s edits when a comment follows an import (#1024)',
-		async (kind) => {
-			// The comment is not in the generated code, so the end of its line is not the
-			// same text in both files, and TypeScript 7 drops every edit.
-			const source = [
-				"import Panel from './Panel.tsrx'; // keep this",
-				"import Button from './Button.tsrx';",
-				'',
-				'export default function Commented() @{',
-				'\t<Button label="x" />',
-				'}',
-				'',
-			].join('\n');
-			expect(await source_action_edits('Commented.tsrx', source, kind)).toEqual([]);
-		},
-	);
+	it.each([
+		['source.sortImports', ' // keep this'],
+		['source.removeUnusedImports', ' // keep this'],
+		['source.organizeImports', ' // keep this'],
+		['source.sortImports', ' /* keep this */  '],
+		['source.removeUnusedImports', ' /* keep this */  '],
+		['source.sortImports', '  '],
+		['source.removeUnusedImports', '  '],
+	])('applies %s when %j follows an import (#1024)', async (kind, rest) => {
+		// The generated code keeps the rest of the line after an import, so TypeScript
+		// moves or removes a comment with its import, and the whole line is the same
+		// text in both files. As in a `.ts` file, a moved import loses the spaces at
+		// the end of its line.
+		const imports =
+			kind === 'source.sortImports'
+				? [
+						"import Button from './Button.tsrx';",
+						`import Panel from './Panel.tsrx';${rest.trimEnd()}`,
+					]
+				: ["import Button from './Button.tsrx';"];
+		const component = [
+			'',
+			'export default function Commented() @{',
+			'\t<Button label="x" />',
+			'}',
+			'',
+		];
+		const source = [
+			`import Panel from './Panel.tsrx';${rest}`,
+			"import Button from './Button.tsrx';",
+			...component,
+		].join('\n');
+		const edits = await source_action_edits('Commented.tsrx', source, kind);
+		expect(apply_edits(source, edits)).toBe([...imports, ...component].join('\n'));
+	});
 
 	it('reports unused imports on the unused names', async () => {
 		const source = [

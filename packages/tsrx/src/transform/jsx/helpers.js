@@ -4,12 +4,13 @@
 import tsx from 'esrap/languages/tsx';
 import {
 	format_comment,
+	get_line_comments_after,
 	is_file_level_pragma,
 	is_jsx_child_tooling_comment,
 	should_preserve_comment,
 	should_preserve_jsx_tooling_comment,
 } from '../../comment-utils.js';
-import { has_location } from '../../utils/ast.js';
+import { has_location, is_organized_import } from '../../utils/ast.js';
 import { with_deferred_imports } from '../imports.js';
 
 /**
@@ -108,11 +109,15 @@ export function set_node_path_metadata(node, path) {
  * @param {string | null} [hashbang] The source's hashbang line (`#!…`, see
  * `get_hashbang`), printed as the output's first line. The parser also reports
  * it as the `Line` comment at offset 0, which is then never printed as `//…`.
+ * @param {string} [source] The source text. In type-only output, the comments
+ * and spaces after an import or a re-export on its line print after it as
+ * written.
  */
 export function tsx_with_ts_locations(
 	boundary_tokens = false,
 	comments = undefined,
 	hashbang = null,
+	source = undefined,
 ) {
 	const base = with_deferred_imports(tsx({ boundaryTokens: boundary_tokens }));
 	const { _: base_visitor, ...base_visitors } = base;
@@ -142,6 +147,37 @@ export function tsx_with_ts_locations(
 		context.write(format_comment(comment));
 		if (comment.loc) context.location(comment.loc.end.line, comment.loc.end.column);
 		context.newline();
+	};
+
+	/**
+	 * Write the rest of the line after an import or a re-export as written, when
+	 * it has only comments and spaces. TypeScript then keeps a comment with its
+	 * import when Organize Imports moves the import. The line is then the same
+	 * text up to the next line in both files, which TypeScript 7 needs to apply
+	 * an edit (see also `add_line_point` in `segments.js`).
+	 * @param {AST.Node} node
+	 * @param {ESRap.Context} context
+	 */
+	const write_rest_of_line = (node, context) => {
+		if (!emitted_comments || source === undefined || !is_organized_import(node)) return;
+		let end = /** @type {number} */ (node.end);
+		for (const comment of get_line_comments_after(node, source)) {
+			emitted_comments.add(`${comment.start}:${comment.end}:${comment.type}:${comment.value}`);
+			context.write(source.slice(end, comment.start));
+			context.location(comment.loc.start.line, comment.loc.start.column);
+			context.write(source.slice(comment.start, comment.end));
+			context.location(comment.loc.end.line, comment.loc.end.column);
+			end = comment.end;
+		}
+		let spaces_end = end;
+		while (source[spaces_end] === ' ' || source[spaces_end] === '\t') spaces_end++;
+		if (
+			spaces_end === source.length ||
+			source[spaces_end] === '\n' ||
+			source[spaces_end] === '\r'
+		) {
+			context.write(source.slice(end, spaces_end));
+		}
 	};
 
 	/**
@@ -391,6 +427,7 @@ export function tsx_with_ts_locations(
 			} else {
 				visit_with_locations();
 			}
+			if (preserve_owner_comments) write_rest_of_line(node, context);
 		},
 	};
 
