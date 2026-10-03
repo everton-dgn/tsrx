@@ -1,8 +1,9 @@
 /**
  * Which `typescript` package the classic backend runs: the `typescript.tsdk`
  * initialization option, then the project's (each workspace folder and its parent
- * folders), then the one next to the server; and the notice when it found none it
- * can run (nothing, or TypeScript 7).
+ * folders), then the one next to the server; the notice when it skipped the
+ * `typescript.tsdk` option; and the notice when it did not find one it can run
+ * (nothing, or TypeScript 7).
  */
 
 import fs from 'node:fs';
@@ -13,6 +14,7 @@ import {
 	find_typescript,
 	find_typescript_package,
 	is_usable_typescript,
+	tsdk_notice,
 	typescript_notice,
 } from '../src/find-typescript.js';
 
@@ -91,19 +93,33 @@ describe("finding the classic backend's typescript", () => {
 		).toMatchObject({ version: '7.1.0-dev.20261002.1', source: 'workspace' });
 	});
 
-	it('prefers the typescript.tsdk initialization option', () => {
-		expect(
-			find_typescript({
-				tsdk: path.join(root, 'tools/typescript/lib'),
-				workspace_dirs: [path.join(root, 'monorepo')],
-				server_dir: server_dir(),
-			}),
-		).toEqual({
-			dir: at('tools/typescript'),
-			lib: path.join(root, 'tools/typescript/lib'),
-			version: '6.0.2',
-			source: 'tsdk',
-		});
+	it('prefers the typescript.tsdk initialization option, the lib folder or the package folder', () => {
+		for (const tsdk of ['tools/typescript/lib', 'tools/typescript']) {
+			expect(
+				find_typescript({
+					tsdk: path.join(root, tsdk),
+					workspace_dirs: [path.join(root, 'monorepo')],
+					server_dir: server_dir(),
+				}),
+			).toEqual({
+				dir: at('tools/typescript'),
+				lib: path.join(root, 'tools/typescript/lib'),
+				version: '6.0.2',
+				source: 'tsdk',
+			});
+		}
+	});
+
+	it('skips a typescript.tsdk folder with no typescript package', () => {
+		for (const tsdk of ['tools/typo/lib', 'tools']) {
+			expect(
+				find_typescript({
+					tsdk: path.join(root, tsdk),
+					workspace_dirs: [path.join(root, 'monorepo')],
+					server_dir: server_dir(),
+				}),
+			).toMatchObject({ version: '6.0.3', source: 'workspace' });
+		}
 	});
 
 	it('falls back to the typescript next to the server, then to none', () => {
@@ -132,6 +148,50 @@ describe("finding the classic backend's typescript", () => {
 	});
 });
 
+describe('the notice when the typescript.tsdk option is skipped', () => {
+	const typo = () => path.join(root, 'tools/typo/lib');
+
+	it("names the folder, then the project's typescript the server uses", () => {
+		const notice = tsdk_notice(
+			typo(),
+			find_typescript({ workspace_dirs: [path.join(root, 'monorepo')], server_dir: server_dir() }),
+		);
+		expect(notice).toBe(
+			`The TSRX language server does not use the typescript.tsdk startup option. ` +
+				`The folder in this option does not contain TypeScript: ${typo()}. ` +
+				`The server uses TypeScript 6.0.3 from the project instead: ${at('monorepo/node_modules/typescript')}. ` +
+				`Set this option to the lib folder of a TypeScript installation, for example /path/to/node_modules/typescript/lib.`,
+		);
+	});
+
+	it('says when the typescript the server uses comes with the server', () => {
+		const notice = tsdk_notice(
+			typo(),
+			find_typescript({ workspace_dirs: [path.join(root, 'plain')], server_dir: server_dir() }),
+		);
+		expect(notice).toContain(
+			`The server uses TypeScript 5.9.3 from the server installation instead: ${at('server/node_modules/typescript')}.`,
+		);
+	});
+
+	it('names no other typescript when the server did not find one it can run', () => {
+		for (const workspace_dir of ['plain', 'ts7']) {
+			const notice = tsdk_notice(
+				typo(),
+				find_typescript({
+					workspace_dirs: [path.join(root, workspace_dir)],
+					server_dir: path.join(root, 'plain'),
+				}),
+			);
+			expect(notice).toBe(
+				`The TSRX language server does not use the typescript.tsdk startup option. ` +
+					`The folder in this option does not contain TypeScript: ${typo()}. ` +
+					`Set this option to the lib folder of a TypeScript installation, for example /path/to/node_modules/typescript/lib.`,
+			);
+		}
+	});
+});
+
 describe('the notice when no usable typescript is found', () => {
 	it('names the TypeScript 7 version and where it was found', () => {
 		const notice = typescript_notice(
@@ -143,18 +203,26 @@ describe('the notice when no usable typescript is found', () => {
 			},
 			['/project'],
 		);
-		expect(notice).toContain(
-			'found typescript 7.1.0-dev.20261002.1 at /project/node_modules/typescript',
+		expect(notice).toBe(
+			`The TSRX language server found TypeScript 7.1.0-dev.20261002.1 in /project/node_modules/typescript. ` +
+				`The server cannot run TypeScript 7 or newer. ` +
+				`The TSRX language server will not be able to provide type checking, hover or completions in .tsrx files. ` +
+				`These features still work: TSRX compile errors, CSS in <style>, the outline, formatting and closing tags. ` +
+				`To use TypeScript 7, run the TypeScript 7 language server (tsc --lsp) with @tsrx/content-mapper. ` +
+				`To use a different TypeScript, set the typescript.tsdk startup option to the lib folder of that TypeScript. ` +
+				`For more information, see https://github.com/tsrx-org/tsrx/tree/main/packages/language-server#which-typescript-it-uses`,
 		);
-		expect(notice).toContain('cannot run TypeScript 7 or newer');
-		expect(notice).toContain('tsc --lsp');
-		expect(notice).toContain('typescript.tsdk');
 	});
 
 	it('says where it looked and how to install typescript', () => {
 		const notice = typescript_notice(undefined, ['/project/a', '/project/b']);
-		expect(notice).toContain('found no typescript package in /project/a, /project/b');
-		expect(notice).toContain('npm install -D typescript, or pnpm add -D typescript');
+		expect(notice).toBe(
+			`The TSRX language server did not find TypeScript in /project/a, /project/b, in the server installation, or in their parent folders. ` +
+				`The TSRX language server will not be able to provide type checking, hover or completions in .tsrx files. ` +
+				`These features still work: TSRX compile errors, CSS in <style>, the outline, formatting and closing tags. ` +
+				`Install TypeScript in the project: npm install -D typescript, or pnpm add -D typescript. ` +
+				`Then restart the TSRX language server.`,
+		);
 	});
 });
 
