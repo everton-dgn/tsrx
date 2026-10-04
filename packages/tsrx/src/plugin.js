@@ -688,11 +688,7 @@ export function TSRXPlugin(config) {
 					if (this.#isTemplateLineCommentStart(index, start)) {
 						const comment_start = index;
 						index += 2;
-						while (
-							index < this.input.length &&
-							this.input.charCodeAt(index) !== CharCode.lineFeed &&
-							this.input.charCodeAt(index) !== CharCode.carriageReturn
-						) {
+						while (index < this.input.length && !acorn.isNewLine(this.input.charCodeAt(index))) {
 							index++;
 						}
 
@@ -740,10 +736,8 @@ export function TSRXPlugin(config) {
 				node.value = value;
 				node.raw = this.input.slice(start, index);
 
-				if (node.raw.match(regex_newline_characters)) {
-					this.curLine = endLoc.line;
-					this.lineStart = index - endLoc.column;
-				}
+				this.curLine = endLoc.line;
+				this.lineStart = index - endLoc.column;
 				this.pos = index;
 				this.#popTemplateLiteralTokenContext();
 				this.next();
@@ -763,7 +757,7 @@ export function TSRXPlugin(config) {
 				if (!isWhitespaceTextNode(node)) {
 					return true;
 				}
-				return node.value !== '' && !regex_newline_characters.test(node.value);
+				return node.value !== '' && !node.value.includes('\n');
 			}
 
 			#skipTrailingLayoutWhitespace() {
@@ -1191,10 +1185,8 @@ export function TSRXPlugin(config) {
 
 				const endLoc = acorn.getLineInfo(this.input, index);
 				const value = this.input.slice(start, index);
-				if (value.match(regex_newline_characters)) {
-					this.curLine = endLoc.line;
-					this.lineStart = index - endLoc.column;
-				}
+				this.curLine = endLoc.line;
+				this.lineStart = index - endLoc.column;
 				this.pos = index;
 				return this.finishToken(tstt.jsxText, value);
 			}
