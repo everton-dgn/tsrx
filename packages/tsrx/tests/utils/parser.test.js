@@ -13334,6 +13334,7 @@ describe('Unicode line terminators before markup', () => {
 			}
 		},
 	);
+
 	it.each(['\n', '\r', '\r\n', '\u2028', '\u2029'])(
 		'ends comments in directive trivia with %j',
 		(newline) => {
@@ -13342,16 +13343,14 @@ describe('Unicode line terminators before markup', () => {
 			).not.toThrow();
 		},
 	);
+
 	it.each(['\u2028', '\u2029'])(
 		'preserves literal values and expression continuations with %j',
 		(newline) => {
 			const value = 'x' + newline + 'y';
 			const literal = findNode("const a = '" + value + "';", 'Literal');
 			expect(literal.value).toBe(value);
-			const template = findNode(
-				'const a = ' + String.fromCharCode(96) + value + String.fromCharCode(96) + ';',
-				'TemplateLiteral',
-			);
+			const template = findNode('const a = `' + value + '`;', 'TemplateLiteral');
 			expect(template.quasis[0].value.raw).toBe(value);
 			const comparison = findNode('const a = 1' + newline + '< 2;', 'BinaryExpression');
 			expect(comparison.operator).toBe('<');
