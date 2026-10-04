@@ -1745,11 +1745,7 @@ export function TSRXPlugin(config) {
 						const comment_start = index;
 						pieces.push([piece_start, comment_start]);
 						index += 2;
-						while (
-							index < this.input.length &&
-							this.input.charCodeAt(index) !== CharCode.lineFeed &&
-							this.input.charCodeAt(index) !== CharCode.carriageReturn
-						) {
+						while (index < this.input.length && !acorn.isNewLine(this.input.charCodeAt(index))) {
 							index++;
 						}
 
@@ -1806,10 +1802,8 @@ export function TSRXPlugin(config) {
 				}
 
 				const endLoc = get_line_info(this, index);
-				if (this.input.slice(start, index).match(regex_newline_characters)) {
-					this.curLine = endLoc.line;
-					this.lineStart = index - endLoc.column;
-				}
+				this.curLine = endLoc.line;
+				this.lineStart = index - endLoc.column;
 				this.pos = index;
 				this.#popTemplateLiteralTokenContext();
 				this.next();
@@ -2411,10 +2405,8 @@ export function TSRXPlugin(config) {
 
 				const endLoc = get_line_info(this, index);
 				const value = this.input.slice(start, index);
-				if (value.match(regex_newline_characters)) {
-					this.curLine = endLoc.line;
-					this.lineStart = index - endLoc.column;
-				}
+				this.curLine = endLoc.line;
+				this.lineStart = index - endLoc.column;
 				this.pos = index;
 				return this.finishToken(tstt.jsxText, value);
 			}
