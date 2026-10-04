@@ -219,13 +219,7 @@ function can_start_tag_after_lt(input, index) {
 function skip_whitespace_from(input, i) {
 	while (i < input.length) {
 		const ch = input.charCodeAt(i);
-		if (
-			ch !== CharCode.space &&
-			ch !== CharCode.tab &&
-			ch !== CharCode.lineFeed &&
-			ch !== CharCode.carriageReturn
-		)
-			break;
+		if (ch !== CharCode.space && ch !== CharCode.tab && !acorn.isNewLine(ch)) break;
 		i++;
 	}
 	return i;
@@ -628,7 +622,7 @@ export function TSRXPlugin(config) {
 			#isLineStartPosition(index) {
 				for (let i = index - 1; i >= 0; i--) {
 					const ch = this.input.charCodeAt(i);
-					if (ch === CharCode.lineFeed || ch === CharCode.carriageReturn) return true;
+					if (acorn.isNewLine(ch)) return true;
 					if (ch !== CharCode.space && ch !== CharCode.tab) return false;
 				}
 				return true;
@@ -807,7 +801,7 @@ export function TSRXPlugin(config) {
 			 */
 			#isNewlineCharCode(index) {
 				const ch = this.input.charCodeAt(index);
-				return ch === CharCode.lineFeed || ch === CharCode.carriageReturn;
+				return acorn.isNewLine(ch);
 			}
 
 			/**
@@ -2432,12 +2426,7 @@ export function TSRXPlugin(config) {
 			#skipWhitespaceAndComments(index) {
 				while (index < this.input.length) {
 					const ch = this.input.charCodeAt(index);
-					if (
-						ch === CharCode.space ||
-						ch === CharCode.tab ||
-						ch === CharCode.lineFeed ||
-						ch === CharCode.carriageReturn
-					) {
+					if (ch === CharCode.space || ch === CharCode.tab || acorn.isNewLine(ch)) {
 						index++;
 					} else if (
 						ch === CharCode.slash &&
@@ -2449,7 +2438,7 @@ export function TSRXPlugin(config) {
 						index += 2;
 						while (index < this.input.length) {
 							const comment_ch = this.input.charCodeAt(index);
-							if (comment_ch === CharCode.lineFeed || comment_ch === CharCode.carriageReturn) break;
+							if (acorn.isNewLine(comment_ch)) break;
 							index++;
 						}
 					} else {
@@ -3168,8 +3157,7 @@ export function TSRXPlugin(config) {
 					const isTagLikeAfterLt = can_start_tag_after_lt(this.input, this.pos);
 					const prevAllowsTagStart =
 						prevNonWhitespaceChar === null ||
-						prevNonWhitespaceChar === CharCode.lineFeed || // '\n'
-						prevNonWhitespaceChar === CharCode.carriageReturn || // '\r'
+						acorn.isNewLine(prevNonWhitespaceChar) ||
 						prevNonWhitespaceChar === CharCode.openBrace ||
 						prevNonWhitespaceChar === CharCode.closeBrace ||
 						prevNonWhitespaceChar === CharCode.greaterThan;
@@ -3203,11 +3191,7 @@ export function TSRXPlugin(config) {
 
 						// Check if everything before this position on the current line is whitespace
 						let lineStart = this.pos - 1;
-						while (
-							lineStart >= 0 &&
-							this.input.charCodeAt(lineStart) !== CharCode.lineFeed &&
-							this.input.charCodeAt(lineStart) !== CharCode.carriageReturn
-						) {
+						while (lineStart >= 0 && !acorn.isNewLine(this.input.charCodeAt(lineStart))) {
 							lineStart--;
 						}
 						lineStart++; // Move past the newline character

@@ -4886,3 +4886,67 @@ describe('function types in JSX attribute values', () => {
 		).toBe('Sibling');
 	});
 });
+
+describe('Unicode line terminators before markup', () => {
+	it.each(['\u2028', '\u2029'])('preserves JSXText verbatim with %j', (newline) => {
+		for (const value of [newline, 'a' + newline + 'b']) {
+			const source = 'const view = <div>' + value + '</div>;';
+			const text = findNode(source, 'JSXText');
+			expect(text.value).toBe(value);
+			expect(text.raw).toBe(value);
+			expect(source.slice(text.start, text.end)).toBe(value);
+			expect([text.start, text.end]).toEqual([18, 18 + value.length]);
+		}
+	});
+
+	it.each(['\n', '\r', '\r\n', '\u2028', '\u2029'])(
+		'preserves setup and render spans with %j',
+		(newline) => {
+			for (const setup of [
+				"const a = '🚀'",
+				"const a = '🚀';",
+				"const a = '🚀' // comment",
+				"const a = '🚀' /* comment */",
+				'a()',
+			]) {
+				for (const tag of ['<div/>', '<{Tag}/>']) {
+					const source = 'function F() @{' + newline + setup + newline + '  ' + tag + newline + '}';
+					const block = findNode(source, 'JSXCodeBlock');
+					expect(block.body).toHaveLength(1);
+					const render = codeBlockRender(block);
+					expect(render.type).toBe('JSXElement');
+					expect([render.start, render.end]).toEqual([
+						source.indexOf(tag),
+						source.indexOf(tag) + tag.length,
+					]);
+					expect(render.loc?.start).toMatchObject({ line: 3, column: 2 });
+				}
+			}
+		},
+	);
+	it.each(['\n', '\r', '\r\n', '\u2028', '\u2029'])(
+		'accepts directive whitespace with %j',
+		(newline) => {
+			expect(() =>
+				parseModule('function F() @{ @if ' + newline + '(ok) { <div/> } }', 'App.tsrx'),
+			).not.toThrow();
+		},
+	);
+	it.each(['\u2028', '\u2029'])(
+		'preserves literal values and expression continuations with %j',
+		(newline) => {
+			const value = 'x' + newline + 'y';
+			const literal = findNode("const a = '" + value + "';", 'Literal');
+			expect(literal.value).toBe(value);
+			const template = findNode(
+				'const a = ' + String.fromCharCode(96) + value + String.fromCharCode(96) + ';',
+				'TemplateLiteral',
+			);
+			expect(template.quasis[0].value.raw).toBe(value);
+			const comparison = findNode('const a = 1' + newline + '< 2;', 'BinaryExpression');
+			expect(comparison.operator).toBe('<');
+			expect(() => parseModule('const a = (' + newline + '<div/>);', 'App.tsrx')).not.toThrow();
+			expect(() => parseModule('const a = f<' + newline + 'T>();', 'App.tsrx')).not.toThrow();
+		},
+	);
+});
